@@ -1,12 +1,8 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
-from datasets import load_dataset
-import librosa
+from datasets import load_dataset, Audio
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Any
-import soundfile as sf
-from pathlib import Path
-import json
 
 
 class LibriTTSDataset(Dataset):
@@ -19,7 +15,7 @@ class LibriTTSDataset(Dataset):
         dataset_name: str = "tictap11/libritts_p_dataset_20250821_095157",
         split: str = "train",
         sample_rate: int = 48000,
-        max_audio_length: int = 480000,  # 10 seconds at 22050 Hz
+        max_audio_length: int = 480000,  # 10 seconds at 480000 Hz
         cache_dir: Optional[str] = None
     ):
         self.dataset_name = dataset_name
@@ -33,6 +29,11 @@ class LibriTTSDataset(Dataset):
             split=split,
             cache_dir=cache_dir
         )
+
+        # Audio sampling rate resampling with Huggingface datasets library (Audio)
+        self.dataset.cast_column("audio", Audio(
+            sampling_rate=self.sample_rate,
+            ))
         
         print(f"Loaded {len(self.dataset)} samples from {dataset_name}")
     
@@ -57,63 +58,45 @@ class LibriTTSDataset(Dataset):
         if 'audio' in sample:
             # Handle audio data from the dataset
             audio_data = sample['audio']
-            try:
-                # Try accessing as dictionary with 'array' key (for older format)
-                if isinstance(audio_data, dict) and 'array' in audio_data:
-                    audio = np.array(audio_data['array'], dtype=np.float32)
-                    original_sr = audio_data.get('sampling_rate', self.sample_rate)
-                # Handle AudioDecoder objects (new torchcodec format)
-                elif hasattr(audio_data, 'get_all_samples'):
-                    audio_samples = audio_data.get_all_samples()
-                    audio = audio_samples.data.squeeze().numpy().astype(np.float32)
-                    original_sr = audio_samples.sample_rate
-                # Try direct array access
-                elif hasattr(audio_data, 'array'):
-                    audio = np.array(audio_data.array, dtype=np.float32)
-                    original_sr = getattr(audio_data, 'sampling_rate', self.sample_rate)
-                # Try direct numpy conversion
-                elif hasattr(audio_data, '__array__'):
-                    audio = np.array(audio_data, dtype=np.float32)
-                    original_sr = self.sample_rate
-                else:
-                    # Generate dummy audio as fallback
-                    print(f"Warning: Could not decode audio for sample, using dummy data")
-                    audio = np.random.randn(self.sample_rate * 2).astype(np.float32) * 0.01
-                    original_sr = self.sample_rate
-                        
-            except Exception as e:
-                print(f"Error processing audio: {e}")
-                # Generate dummy audio as final fallback
-                audio = np.random.randn(self.sample_rate * 2).astype(np.float32) * 0.01
-                original_sr = self.sample_rate
+            # print("audio_data: ", audio_data)
+            # print("type(audio_data): ", type(audio_data))
 
-        # 민관: 오디오 데이터가, 파일 경로로 제공되는 경우.        
-        elif 'audio_path' in sample:
-            # Load from file path
-            audio, original_sr = librosa.load(sample['audio_path'], sr=None)
-            audio = audio.astype(np.float32)
-        else:
-            raise ValueError("No audio data found in sample")
+            # Handle AudioDecoder objects (new torchcodec format)
+            if hasattr(audio_data, 'get_all_samples'):
+                audio_samples = audio_data.get_all_samples()
+                # print("audio_samples: ", audio_samples)
+                # audio = audio_data["array"]  # you can get numpy array with this approach.
+                # audio = audio_samples.data.squeeze().numpy().astype(np.float32)  # another way to get numpy array.
+                audio = audio_samples.data # you can get tensor with this approach.
+                # print("audio: ", audio)
+                # print("type(audio): ", type(audio))
+                # print("audio.shape: ", audio.shape)
+                # print(" audio_samples.data: ",  audio_samples.data)
+                original_sr = audio_samples.sample_rate
+                # print("original_sr: ", original_sr)
         
-        # Resample if necessary
-        if original_sr != self.sample_rate:
-            audio = librosa.resample(audio, orig_sr=original_sr, target_sr=self.sample_rate)
-        
-        # Ensure audio is a proper numpy array with float32 dtype
-        if not isinstance(audio, np.ndarray):
-            audio = np.array(audio, dtype=np.float32)
-        else:
-            audio = audio.astype(np.float32)
+        # # Ensure audio is a proper numpy array with float32 dtype
+        # if not isinstance(audio, np.ndarray):
+        #     audio = np.array(audio, dtype=np.float32)
+        # else:
+        #     audio = audio.astype(np.float32)
         
         # Ensure audio is 1D
         if len(audio.shape) > 1:
-            audio = audio.flatten()
+            if audio.shape[0] == 1:
+                audio = audio.squeeze(0)
+            else:
+                error_msg = (
+                    f"Invalid audio shape: {audio.shape}. "
+                    f"Expected mono audio with shape (1, samples), "
+                    f"but received multi-channel audio. "
+                    f"Dataset index: {idx}, "
+                    f"Sample info: {sample.get('item_name', 'unknown')}"
+                )
+                raise ValueError(error_msg)
         
-        # Convert to tensor and resample if necessary
-        audio = torch.tensor(audio, dtype=torch.float32)
-        
-        if original_sr != self.sample_rate:
-            audio = self._resample_audio(audio, original_sr, self.sample_rate)
+        # # Convert to tensor
+        # audio = torch.tensor(audio, dtype=torch.float32)
         
         # Trim or pad audio to fixed length
         audio = self._process_audio_length(audio)
@@ -151,18 +134,6 @@ class LibriTTSDataset(Dataset):
             'speaker_description': speaker_description,
             'metadata': metadata
         }
-    
-    # 민관: 인풋으로는 numpy array 로 받게 될거임.
-    # 민관: 물론, 중간에, torch.Tensor 로 변환했으면, 텐서로 받겠지.
-    def _resample_audio(self, audio: torch.Tensor, orig_sr: int, target_sr: int) -> torch.Tensor:
-        """Resample audio to target sample rate"""
-        if orig_sr == target_sr:
-            return audio
-        
-        # Convert to numpy for librosa resampling
-        audio_np = audio.numpy()
-        resampled = librosa.resample(audio_np, orig_sr=orig_sr, target_sr=target_sr)
-        return torch.tensor(resampled, dtype=torch.float32)
     
     def _process_audio_length(self, audio: torch.Tensor) -> torch.Tensor:
         """Trim or pad audio to max_audio_length"""

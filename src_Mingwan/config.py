@@ -19,12 +19,7 @@ class TrainingConfig:
     lora_r: int = 16
     lora_alpha: int = 32 #민관: W_new = W_original + (alpha/r) * A * B 이렇게 사용됨.
     lora_dropout: float = 0.1
-    # Target selection mode for LoRA modules:
-    # - "auto": auto-discover from the loaded Dia model
-    # - "manual": use user-provided target_modules as-is (validated at runtime)
-    # - "smart" (default): intersect manual list with auto-discovered; if empty, use auto
-    lora_target_mode: str = "smart"
-    # Manual target list (used when lora_target_mode == "manual" or combined in "smart")
+    # Manual target list for LoRA modules
     target_modules: Optional[List[str]] = None
     
     # Hypernetwork configuration
@@ -60,23 +55,21 @@ class TrainingConfig:
     
     # 민관: dataclass 객체가 생성된 후 자동으로 실행되는 메서드
     def __post_init__(self):
-        # Only auto-populate a reasonable manual default list if user chose manual mode and didn't provide one
-        if self.lora_target_mode == "manual" and self.target_modules is None:
-            from transformers import AutoConfig
-            cfg = AutoConfig.from_pretrained(self.tts_model_name)
-            num_decoder_layers = getattr(cfg.decoder_config, 'num_hidden_layers', 18)
-            decoder_self_attn_layers = [
-                f"decoder.layers.{i}.self_attention.{proj}"
-                for i in range(num_decoder_layers)
-                for proj in ["q_proj", "k_proj", "v_proj", "o_proj"]
-            ]
-            decoder_cross_attn_layers = [
-                f"decoder.layers.{i}.cross_attention.{proj}"
-                for i in range(num_decoder_layers)
-                for proj in ["q_proj", "k_proj", "v_proj", "o_proj"]
-            ]
-            # Focus LoRA on attention projections by default
-            self.target_modules = decoder_self_attn_layers + decoder_cross_attn_layers
+        # Set default manual target modules if not provided
+        if self.target_modules is None:
+            # Default to 17 layers as per notebook
+            self.target_modules = []
+            for i in range(17):
+                self.target_modules.extend([
+                    f"decoder.layers.{i}.cross_attention.k_proj",
+                    f"decoder.layers.{i}.cross_attention.o_proj",
+                    f"decoder.layers.{i}.cross_attention.q_proj",
+                    f"decoder.layers.{i}.cross_attention.v_proj",
+                    f"decoder.layers.{i}.self_attention.k_proj",
+                    f"decoder.layers.{i}.self_attention.o_proj",
+                    f"decoder.layers.{i}.self_attention.q_proj",
+                    f"decoder.layers.{i}.self_attention.v_proj"
+                ])
 
 
 @dataclass
