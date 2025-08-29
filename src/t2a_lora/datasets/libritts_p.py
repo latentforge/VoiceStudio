@@ -33,7 +33,7 @@ class LibriTTSDataset(Dataset):
         # Audio sampling rate resampling with Huggingface datasets library (Audio)
         self.dataset.cast_column("audio", Audio(
             sampling_rate=self.sample_rate,
-            ))
+        ))
 
         print(f"Loaded {len(self.dataset)} samples from {dataset_name}")
 
