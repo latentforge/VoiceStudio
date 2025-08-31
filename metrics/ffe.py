@@ -18,13 +18,13 @@ class PitchExtractor:
         self.sr = sr
 
     def compute_yin(
-            self,
-            sig: np.ndarray,
-            w_len: int = 512,
-            w_step: int = 256,
-            f0_min: int = 100,
-            f0_max: int = 500,
-            harmo_thresh: float = 0.1
+        self,
+        sig: np.ndarray,
+        w_len: int = 512,
+        w_step: int = 256,
+        f0_min: int = 100,
+        f0_max: int = 500,
+        harmo_thresh: float = 0.1
     ) -> Tuple[List[float], List[float], List[float], List[float]]:
         """
         Compute the Yin Algorithm for F0 estimation.
@@ -68,7 +68,8 @@ class PitchExtractor:
 
         return pitches, harmonic_rates, argmins, times
 
-    def _difference_function(self, x: np.ndarray, n: int, tau_max: int) -> np.ndarray:
+    @staticmethod
+    def _difference_function(x: np.ndarray, n: int, tau_max: int) -> np.ndarray:
         """Compute difference function using FFT."""
         x = np.array(x, np.float64)
         w = x.size
@@ -82,12 +83,14 @@ class PitchExtractor:
         conv = np.fft.irfft(fc * fc.conjugate())[:tau_max]
         return x_cumsum[w:w - tau_max:-1] + x_cumsum[w] - x_cumsum[:tau_max] - 2 * conv
 
-    def _cumulative_mean_normalized_difference_function(self, df: np.ndarray, n: int) -> np.ndarray:
+    @staticmethod
+    def _cumulative_mean_normalized_difference_function(df: np.ndarray, n: int) -> np.ndarray:
         """Compute cumulative mean normalized difference function (CMND)."""
         cmn_df = df[1:] * range(1, n) / np.cumsum(df[1:]).astype(float)
         return np.insert(cmn_df, 0, 1)
 
-    def _get_pitch(self, cmdf: np.ndarray, tau_min: int, tau_max: int, harmo_th: float = 0.1) -> int:
+    @staticmethod
+    def _get_pitch(cmdf: np.ndarray, tau_min: int, tau_max: int, harmo_th: float = 0.1) -> int:
         """Return fundamental period based on CMND function."""
         tau = tau_min
         while tau < tau_max:
@@ -191,11 +194,14 @@ class FFECalculator(BaseMetricCalculator):
         except Exception as e:
             raise MetricCalculationError(f"FFE calculation failed: {e}")
 
-    def _voicing_decision_error_frames(self, true_f0: np.ndarray, est_f0: np.ndarray) -> np.ndarray:
+    @staticmethod
+    def _voicing_decision_error_frames(true_f0: np.ndarray, est_f0: np.ndarray) -> bool:
         """Calculate voicing decision error frames."""
         return (est_f0 != 0) != (true_f0 != 0)
 
-    def _true_voiced_frames(self, true_f0: np.ndarray, est_f0: np.ndarray) -> np.ndarray:
+
+    @staticmethod
+    def _true_voiced_frames(true_f0: np.ndarray, est_f0: np.ndarray) -> bool:
         """Find frames where both reference and estimate are voiced."""
         return (est_f0 != 0) & (true_f0 != 0)
 

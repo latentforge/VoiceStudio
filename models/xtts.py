@@ -33,11 +33,11 @@ class XTTSSynthesizer(BaseSynthesizer):
             raise RuntimeError(f"Failed to load XTTS model: {e}")
 
     def synthesize(
-            self,
-            text: str,
-            reference_audio: Path,
-            output_path: Path,
-            speaker_id: Optional[str] = None
+        self,
+        text: str,
+        reference_audio: Path,
+        output_path: Path,
+        speaker_id: Optional[str] = None
     ) -> bool:
         """Synthesize speech using XTTS voice cloning.
 

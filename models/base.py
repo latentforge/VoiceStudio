@@ -22,11 +22,11 @@ class BaseSynthesizer(ABC):
 
     @abstractmethod
     def synthesize(
-            self,
-            text: str,
-            reference_audio: Path,
-            output_path: Path,
-            speaker_id: Optional[str] = None
+        self,
+        text: str,
+        reference_audio: Path,
+        output_path: Path,
+        speaker_id: Optional[str] = None
     ) -> bool:
         """Synthesize speech from text using reference audio.
 

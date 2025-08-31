@@ -16,10 +16,10 @@ STRATEGY_REGISTRY = {
 
 
 def create_strategy(
-        method: GenerationMethod,
-        config,
-        dataset,
-        synthesizer
+    method: GenerationMethod,
+    config,
+    dataset,
+    synthesizer
 ) -> BaseGenerationStrategy:
     """Factory function to create generation strategy instances.
 

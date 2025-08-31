@@ -105,9 +105,9 @@ class SIMCalculator(BaseMetricCalculator):
             raise MetricCalculationError(f"Embedding extraction failed: {e}")
 
     def calculate_cosine_similarity(
-            self,
-            embedding1: np.ndarray,
-            embedding2: np.ndarray
+        self,
+        embedding1: np.ndarray,
+        embedding2: np.ndarray
     ) -> float:
         """
         Calculate cosine similarity between two speaker embeddings.

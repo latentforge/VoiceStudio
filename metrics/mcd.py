@@ -96,7 +96,8 @@ class MCDCalculator(BaseMetricCalculator):
             self.logger.error(f"Failed to extract MCEP from {audio_path}: {e}")
             raise MetricCalculationError(f"MCEP extraction failed: {e}")
 
-    def log_spec_dB_dist(self, x: np.ndarray, y: np.ndarray) -> float:
+    @staticmethod
+    def log_spec_dB_dist(x: np.ndarray, y: np.ndarray) -> float:
         """Calculate log spectral dB distance."""
         log_spec_dB_const = 10.0 / math.log(10.0) * math.sqrt(2.0)
         diff = x - y

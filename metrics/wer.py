@@ -18,7 +18,8 @@ class WERCalculator(BaseMetricCalculator):
         self.whisper_model = None
         self.transform = self._setup_transform()
 
-    def _setup_transform(self) -> jiwer.Compose:
+    @staticmethod
+    def _setup_transform() -> jiwer.Compose:
         """Setup text transformation for WER calculation."""
         return jiwer.Compose([
             jiwer.ToLowerCase(),
@@ -94,7 +95,7 @@ class WERCalculator(BaseMetricCalculator):
             wer_score = jiwer.wer(
                 ref_text,
                 syn_text,
-                truth_transform=self.transform,
+                reference_transform=self.transform,
                 hypothesis_transform=self.transform
             )
 

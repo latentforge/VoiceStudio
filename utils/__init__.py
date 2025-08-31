@@ -34,10 +34,10 @@ def validate_audio_file(file_path: Union[str, Path]) -> bool:
 
 
 def create_output_filename(
-        prefix: str,
-        index: int,
-        extension: str = ".wav",
-        zero_pad: int = 3
+    prefix: str,
+    index: int,
+    extension: str = ".wav",
+    zero_pad: int = 3
 ) -> str:
     """Create standardized output filename.
 
