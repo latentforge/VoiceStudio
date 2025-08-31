@@ -44,6 +44,7 @@ class SynthesisConfig:
         # Dataset configurations
         self.datasets = {
             "vctk": DatasetConfig(name="vctk", sample_rate=22050),
+            "ljspeech": DatasetConfig(name="ljspeech", sample_rate=22050),
         }
 
         # Model configurations

@@ -4,13 +4,14 @@ Dataset loaders for synthesis pipeline.
 
 from .base import BaseSynthesisDataset
 from .vctk import VCTKSynthesisDataset
+from .ljspeech import LJSpeechSynthesisDataset
 from config import DatasetType
 
 
 # Dataset registry for factory pattern
 DATASET_REGISTRY = {
     DatasetType.VCTK: VCTKSynthesisDataset,
-    # DatasetType.LJSPEECH: LJSpeechSynthesisDataset,  # Future implementation
+    DatasetType.LJSPEECH: LJSpeechSynthesisDataset,
 }
 
 
