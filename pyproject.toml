@@ -3,5 +3,13 @@ name = "t2a-lora-benchmark"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = []
+requires-python = ">=3.10"
+dependencies = [
+    "jiwer>=4.0.0",
+    "librosa>=0.11.0",
+    "pysptk>=1.0.1",
+    "pyworld>=0.3.5",
+    "torch>=2.8.0",
+    "torchaudio>=2.8.0",
+    "tqdm>=4.67.1",
+]
