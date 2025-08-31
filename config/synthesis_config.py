@@ -34,7 +34,7 @@ class GenerationConfig:
     method1_samples: int = 100
     method2_ref_samples: int = 10
     method2_syn_per_ref: int = 10
-    output_dir: Path = Path("result")
+    output_dir: Path = Path("results")
 
 
 class SynthesisConfig:
