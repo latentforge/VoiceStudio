@@ -29,11 +29,11 @@ class VCTKSynthesisDataset(BaseSynthesisDataset):
         except Exception as e:
             raise RuntimeError(f"Failed to load VCTK dataset: {e}")
 
-    def get_sample(self, index: int) -> Tuple[Path, str, Optional[str]]:
+    def get_sample(self, index: int) -> Tuple[str, Path, Optional[str], str]:
         """Get a sample from VCTK dataset.
 
         Returns:
-            Tuple of (audio_path, transcript, speaker_id)
+            Tuple of (transcript, audio_path, style_prompt, speaker_id)
         """
         try:
             # VCTK_092 returns (waveform, sample_rate, transcript, speaker_id, utterance_id)
@@ -42,7 +42,7 @@ class VCTKSynthesisDataset(BaseSynthesisDataset):
             # Construct audio path (this might need adjustment based on actual VCTK structure)
             audio_path = self.root_dir / "VCTK-Corpus-0.92" / "wav22_trimmed" / speaker_id / f"{utterance_id}.wav"
 
-            return audio_path, transcript, speaker_id
+            return transcript, audio_path, None, speaker_id
 
         except Exception as e:
             raise RuntimeError(f"Failed to get sample {index}: {e}")

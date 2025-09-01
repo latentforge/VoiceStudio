@@ -40,7 +40,7 @@ class Method1Strategy(BaseGenerationStrategy):
         for i, sample_idx in enumerate(tqdm(sample_indices, desc="Generating Method1 pairs")):
             try:
                 # Get sample data
-                audio_path, transcript, speaker_id = self.dataset.get_sample(sample_idx)
+                transcript, audio_path, style_prompt, speaker_id = self.dataset.get_sample(sample_idx)
 
                 # Create file names
                 ref_filename = f"ref_{i:03d}.wav"
@@ -56,10 +56,11 @@ class Method1Strategy(BaseGenerationStrategy):
 
                 # Synthesize audio
                 if self.synthesizer.synthesize(
-                        text=transcript,
-                        reference_audio=audio_path,
-                        output_path=syn_output_path,
-                        speaker_id=speaker_id
+                    text=transcript,
+                    output_path=syn_output_path,
+                    reference_audio=audio_path,
+                    style_prompt=style_prompt,
+                    speaker_id=speaker_id
                 ):
                     success_count += 1
                 else:

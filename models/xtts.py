@@ -35,16 +35,18 @@ class XTTSSynthesizer(BaseSynthesizer):
     def synthesize(
         self,
         text: str,
-        reference_audio: Path,
         output_path: Path,
+        reference_audio: Path = None,
+        style_prompt: Optional[str] = None,
         speaker_id: Optional[str] = None
     ) -> bool:
         """Synthesize speech using XTTS voice cloning.
 
         Args:
             text: Text to synthesize
-            reference_audio: Path to reference audio for voice cloning
             output_path: Path to save synthesized audio
+            reference_audio: Path to reference audio for voice cloning
+            style_prompt: Optional style prompt (unused in XTTS)
             speaker_id: Optional speaker identifier (unused in XTTS)
 
         Returns:

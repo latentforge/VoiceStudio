@@ -43,7 +43,7 @@ class LJSpeechSynthesisDataset(BaseSynthesisDataset):
         except Exception as e:
             raise RuntimeError(f"Failed to load LJSpeech metadata.csv: {e}")
 
-    def get_sample(self, index: int) -> Tuple[Path, str, Optional[str]]:
+    def get_sample(self, index: int) -> Tuple[str, Path, Optional[str], str]:
         """
         Get a sample from the LJSpeech dataset by index.
 
@@ -51,7 +51,7 @@ class LJSpeechSynthesisDataset(BaseSynthesisDataset):
             index (int): The index of the sample to retrieve.
 
         Returns:
-            A tuple of (audio_path, transcript, speaker_id).
+            Tuple of (transcript, audio_path, style_prompt, speaker_id)
         """
         if not 0 <= index < len(self.metadata):
             raise IndexError("Index out of range")
@@ -66,7 +66,7 @@ class LJSpeechSynthesisDataset(BaseSynthesisDataset):
             if not audio_path.exists():
                 raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-            return audio_path, transcript, self._speaker_id
+            return transcript, audio_path, None, self._speaker_id
 
         except Exception as e:
             raise RuntimeError(f"Failed to get sample {index}: {e}")

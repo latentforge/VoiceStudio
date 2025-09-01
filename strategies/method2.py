@@ -42,7 +42,7 @@ class Method2Strategy(BaseGenerationStrategy):
         for ref_idx, sample_idx in enumerate(tqdm(sample_indices, desc="Processing references")):
             try:
                 # Get reference sample
-                audio_path, transcript, speaker_id = self.dataset.get_sample(sample_idx)
+                transcript, audio_path, style_prompt, speaker_id = self.dataset.get_sample(sample_idx)
 
                 # Copy reference audio
                 ref_filename = f"ref_{ref_idx:03d}.wav"
@@ -65,10 +65,11 @@ class Method2Strategy(BaseGenerationStrategy):
 
                     # Synthesize with same reference but potentially different randomness
                     if self.synthesizer.synthesize(
-                            text=transcript,
-                            reference_audio=audio_path,
-                            output_path=syn_output_path,
-                            speaker_id=speaker_id
+                        text=transcript,
+                        output_path=syn_output_path,
+                        reference_audio=audio_path,
+                        style_prompt=style_prompt,
+                        speaker_id=speaker_id
                     ):
                         set_success += 1
                     else:

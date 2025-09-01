@@ -22,11 +22,11 @@ class BaseSynthesisDataset(ABC):
         pass
 
     @abstractmethod
-    def get_sample(self, index: int) -> Tuple[Path, str, Optional[str]]:
+    def get_sample(self, index: int) -> Tuple[str, Path, Optional[str], Optional[str]]:
         """Get a sample by index.
 
         Returns:
-            Tuple of (audio_path, transcript, speaker_id)
+            Tuple of (transcript, audio_path, style_prompt, speaker_id)
         """
         pass
 

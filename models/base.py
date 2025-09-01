@@ -24,16 +24,18 @@ class BaseSynthesizer(ABC):
     def synthesize(
         self,
         text: str,
-        reference_audio: Path,
         output_path: Path,
+        reference_audio: Optional[Path] = None,
+        style_prompt: Optional[str] = None,
         speaker_id: Optional[str] = None
     ) -> bool:
-        """Synthesize speech from text using reference audio.
+        """Synthesize speech from text using reference audio or style prompt.
 
         Args:
             text: Text to synthesize
-            reference_audio: Path to reference audio for voice cloning
             output_path: Path to save synthesized audio
+            reference_audio: Optional Path to reference audio for voice cloning
+            style_prompt: Optional style prompt for synthesis
             speaker_id: Optional speaker identifier
 
         Returns:
