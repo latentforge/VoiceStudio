@@ -322,16 +322,15 @@ def main():
     """Main evaluation function."""
     evaluator = EvaluationPipeline()
 
-    # Evaluate VCTK + XTTS combination
     results = evaluator.evaluate_dataset_model(
-        dataset_type=DatasetType.VCTK,
+        dataset_type=DatasetType.LJSPEECH,
         model_type=ModelType.XTTS_V2,
     )
 
     # Save results
     evaluator.save_results_to_csv(
         results,
-        DatasetType.VCTK,
+        DatasetType.LJSPEECH,
         ModelType.XTTS_V2
     )
 

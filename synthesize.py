@@ -146,28 +146,13 @@ def main():
     config = SynthesisConfig()
     pipeline = SynthesisPipeline(config)
 
-    # Test with VCTK and XTTS
     print("Setting up synthesis pipeline...")
 
-    if pipeline.setup_dataset(DatasetType.VCTK):
-        print("✓ VCTK dataset setup successful")
-    else:
-        print("✗ VCTK dataset setup failed")
-        return
+    pipeline.setup_dataset(DatasetType.LJSPEECH)
 
-    if pipeline.setup_model(ModelType.XTTS_V2):
-        print("✓ XTTS model setup successful")
-    else:
-        print("✗ XTTS model setup failed")
-        return
+    pipeline.setup_model(ModelType.XTTS_V2)
 
-    # Run generation
-    success = pipeline.run_generation(DatasetType.VCTK, ModelType.XTTS_V2, [GenerationMethod.METHOD1, GenerationMethod.METHOD2])
-
-    if success:
-        print("\n✓ Synthesis pipeline completed successfully")
-    else:
-        print("\n✗ Synthesis pipeline failed")
+    pipeline.run_generation(DatasetType.LJSPEECH, ModelType.XTTS_V2, [GenerationMethod.METHOD1, GenerationMethod.METHOD2])
 
 
 if __name__ == "__main__":
