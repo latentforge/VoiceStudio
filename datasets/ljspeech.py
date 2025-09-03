@@ -14,7 +14,6 @@ class LJSpeechSynthesisDataset(BaseSynthesisDataset):
     """LJSpeech dataset loader that reads from local files directly."""
 
     URL = "https://data.keithito.com/data/speech/LJSpeech-1.1.tar.bz2"
-    MD5 = "f2c563b7e28396c0245a00a120027b3b"
     ARCHIVE_FILENAME = "LJSpeech-1.1.tar.bz2"
 
     def __init__(self, config, root_dir: str = "./data", download: bool = True):
@@ -44,7 +43,6 @@ class LJSpeechSynthesisDataset(BaseSynthesisDataset):
                     self.URL,
                     download_root=self.root_dir,
                     filename=self.ARCHIVE_FILENAME,
-                    md5=self.MD5,
                 )
             else:
                 raise FileNotFoundError(f"LJSpeech dataset not found at {self.dataset_path}. Set download=True to download it.")
