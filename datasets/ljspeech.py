@@ -17,7 +17,7 @@ class LJSpeechSynthesisDataset(BaseSynthesisDataset):
     MD5 = "f2c563b7e28396c0245a00a120027b3b"
     ARCHIVE_FILENAME = "LJSpeech-1.1.tar.bz2"
 
-    def __init__(self, config, root_dir: str = "./data", download: bool = False):
+    def __init__(self, config, root_dir: str = "./data", download: bool = True):
         """
         Initializes the dataset loader. The `download` parameter is ignored.
 

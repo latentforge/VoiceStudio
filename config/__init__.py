@@ -18,6 +18,7 @@ class DatasetType(Enum):
 class ModelType(Enum):
     """Supported model types."""
     XTTS_V2 = "xtts_v2"
+    PARLER_TTS_MINI_V1 = "parler_tts_mini_v1"
 
 class GenerationMethod(Enum):
     """Generation method types."""

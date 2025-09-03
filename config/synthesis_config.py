@@ -50,6 +50,7 @@ class SynthesisConfig:
         # Model configurations
         self.models = {
             "xtts_v2": ModelConfig(name="xtts_v2"),
+            "parler_tts_mini_v1": ModelConfig(name="parler_tts_mini_v1"),
         }
 
         # Generation configuration
