@@ -56,21 +56,21 @@ class EvaluationPipeline:
                     print(f"Warning: Missing synthesis file {syn_file}")
 
         elif method == GenerationMethod.METHOD2:
-            # Method2: 1 ref -> multiple syn in sets
-            ref_files = sorted(ref_base.glob("ref_*.wav"))
+            set_dirs = sorted(d for d in syn_base.iterdir() if d.is_dir() and d.name.startswith('set_'))
 
-            for ref_file in ref_files:
-                # Extract ref index: ref_001.wav -> 001
-                ref_index = ref_file.stem.split('_')[1]
-                set_dir = syn_base / f"set_{ref_index}"
+            for set_dir in set_dirs:
+                ref_index = set_dir.stem.split('_')[1]
+                syn_files = sorted(set_dir.glob("syn_*.wav"))
 
-                if set_dir.exists():
-                    syn_files = sorted(set_dir.glob("syn_*.wav"))
-                    for syn_file in syn_files:
-                        pairs.append((ref_file, syn_file, ref_index))
-                else:
-                    print(f"Warning: Missing set directory {set_dir}")
+                if len(syn_files) < 2:
+                    print(f"Warning: Skipping {set_dir} for METHOD2, found {len(syn_files)} files (need >= 2).")
+                    continue
 
+                consistency_ref_file = syn_files[0]
+                other_syn_files = syn_files[1:]
+
+                for syn_file in other_syn_files:
+                    pairs.append((consistency_ref_file, syn_file, ref_index))
         return pairs
 
     @staticmethod
@@ -331,15 +331,15 @@ def main():
     evaluator = EvaluationPipeline()
 
     results = evaluator.evaluate_dataset_model(
-        dataset_type=DatasetType.LJSPEECH,
-        model_type=ModelType.PARLER_TTS_LARGE_V1,
+        dataset_type=DatasetType.LIBRITTS,
+        model_type=ModelType.PARLER_TTS_MINI_V1,
     )
 
     # Save results
     evaluator.save_results_to_csv(
         results,
-        DatasetType.LJSPEECH,
-        ModelType.PARLER_TTS_LARGE_V1
+        DatasetType.LIBRITTS,
+        ModelType.PARLER_TTS_MINI_V1
     )
 
 

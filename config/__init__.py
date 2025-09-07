@@ -14,6 +14,7 @@ class DatasetType(Enum):
     """Supported dataset types."""
     VCTK = "vctk"
     LJSPEECH = "ljspeech"
+    LIBRITTS = "libritts"
 
 class ModelType(Enum):
     """Supported model types."""

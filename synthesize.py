@@ -7,7 +7,7 @@ from typing import Dict, List
 
 from config.synthesis_config import SynthesisConfig
 from config import DatasetType, ModelType, GenerationMethod
-from datasets import create_dataset, BaseSynthesisDataset
+from benchmark_datasets import create_dataset, BaseSynthesisDataset
 from models import create_synthesizer, BaseSynthesizer
 from strategies import create_strategy
 
@@ -148,11 +148,11 @@ def main():
 
     print("Setting up synthesis pipeline...")
 
-    pipeline.setup_dataset(DatasetType.LJSPEECH)
+    pipeline.setup_dataset(DatasetType.LIBRITTS)
 
     pipeline.setup_model(ModelType.PARLER_TTS_MINI_V1)
 
-    pipeline.run_generation(DatasetType.LJSPEECH, ModelType.PARLER_TTS_MINI_V1, [GenerationMethod.METHOD1, GenerationMethod.METHOD2])
+    pipeline.run_generation(DatasetType.LIBRITTS, ModelType.PARLER_TTS_MINI_V1, [GenerationMethod.METHOD1, GenerationMethod.METHOD2])
 
 
 if __name__ == "__main__":

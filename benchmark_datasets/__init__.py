@@ -3,15 +3,17 @@ Dataset loaders for synthesis pipeline.
 """
 
 from .base import BaseSynthesisDataset
-from .vctk import VCTKSynthesisDataset
+from .vctk import VctkSynthesisDataset
 from .ljspeech import LJSpeechSynthesisDataset
+from .libritts import LibriTTSSynthesisDataset
 from config import DatasetType
 
 
 # Dataset registry for factory pattern
 DATASET_REGISTRY = {
-    DatasetType.VCTK: VCTKSynthesisDataset,
+    DatasetType.VCTK: VctkSynthesisDataset,
     DatasetType.LJSPEECH: LJSpeechSynthesisDataset,
+    DatasetType.LIBRITTS: LibriTTSSynthesisDataset,
 }
 
 
@@ -44,7 +46,7 @@ def get_available_datasets():
 
 __all__ = [
     "BaseSynthesisDataset",
-    "VCTKSynthesisDataset",
+    "VctkSynthesisDataset",
     "DATASET_REGISTRY",
     "create_dataset",
     "get_available_datasets"

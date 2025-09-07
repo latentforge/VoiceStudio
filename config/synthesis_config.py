@@ -43,8 +43,9 @@ class SynthesisConfig:
     def __init__(self):
         # Dataset configurations
         self.datasets = {
-            "vctk": DatasetConfig(name="vctk", sample_rate=22050),
+            "vctk": DatasetConfig(name="vctk", sample_rate=48000),
             "ljspeech": DatasetConfig(name="ljspeech", sample_rate=22050),
+            "libritts": DatasetConfig(name="libritts", sample_rate=24000),
         }
 
         # Model configurations
