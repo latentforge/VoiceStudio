@@ -36,6 +36,18 @@ class Method2Strategy(BaseGenerationStrategy):
         if len(sample_indices) < num_refs:
             print(f"Warning: Only {len(sample_indices)} samples available, requested {num_refs}")
 
+        comparison_texts = [
+            "A piece of cake.",
+            "Back me up.",
+            "Call me Sam, please.",
+            "Don't be afraid.",
+            "Enjoy your meal.",
+            "Far from it.",
+            "Get in the line.",
+            "Hang in there.",
+            "I am a little disappointed. ",
+        ]
+
         total_success = 0
 
         # Process each reference

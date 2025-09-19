@@ -332,14 +332,14 @@ def main():
 
     results = evaluator.evaluate_dataset_model(
         dataset_type=DatasetType.LIBRITTS,
-        model_type=ModelType.PARLER_TTS_MINI_V1,
+        model_type=ModelType.HIGGS_V2,
     )
 
     # Save results
     evaluator.save_results_to_csv(
         results,
         DatasetType.LIBRITTS,
-        ModelType.PARLER_TTS_MINI_V1
+        ModelType.HIGGS_V2
     )
 
 
