@@ -332,14 +332,14 @@ def main():
 
     results = evaluator.evaluate_dataset_model(
         dataset_type=DatasetType.LIBRITTS,
-        model_type=ModelType.CHATTERBOX_TTS,
+        model_type=ModelType.PARLER_TTS_MINI_V1,
     )
 
     # Save results
     evaluator.save_results_to_csv(
         results,
         DatasetType.LIBRITTS,
-        ModelType.CHATTERBOX_TTS
+        ModelType.PARLER_TTS_MINI_V1
     )
 
 

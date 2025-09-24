@@ -57,7 +57,7 @@ class Method2Strategy(BaseGenerationStrategy):
             "Far from it.",
             "Get in the line.",
             "Hang in there.",
-            "I am a little disappointed. ",
+            "I am a little disappointed.",
         ]
 
         total_success = 0

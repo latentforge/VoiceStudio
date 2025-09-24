@@ -74,7 +74,19 @@ class ParlerTTSSynthesizer(BaseSynthesizer):
             input_ids = self.tokenizer(description, return_tensors="pt").input_ids.to(self.config.device)
             prompt_input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(self.config.device)
 
-            generation = self.model.generate(input_ids=input_ids, prompt_input_ids=prompt_input_ids)
+            torch.manual_seed(42)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed(42)
+                torch.cuda.manual_seed_all(42)
+
+            generation = self.model.generate(
+                input_ids=input_ids,
+                prompt_input_ids=prompt_input_ids,
+                do_sample=False,
+                num_beams=1,
+                num_return_sequences=1,
+            )
+
             audio_arr = generation.cpu().numpy().squeeze()
 
             sf.write(str(output_path), audio_arr, self.sampling_rate)
