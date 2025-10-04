@@ -82,9 +82,6 @@ class ParlerTTSSynthesizer(BaseSynthesizer):
             generation = self.model.generate(
                 input_ids=input_ids,
                 prompt_input_ids=prompt_input_ids,
-                do_sample=False,
-                num_beams=1,
-                num_return_sequences=1,
             )
 
             audio_arr = generation.cpu().numpy().squeeze()
