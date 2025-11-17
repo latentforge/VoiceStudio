@@ -1,15 +1,16 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["flit_core>=3.4,<4"]
+build-backend = "flit_core.buildapi"
 
 [project]
 name = "t2a-lora"
 version = "0.1.0"
 description = "T2A-LoRA: Text-to-Audio LoRA Generation via Hypernetworks for Real-time Voice Adaptation"
 readme = "README.md"
+requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-    {name = "LatentForge", email = "contact@latentforge.org"}
+    {name = "LatentForge", email = "brew.airesearch@gmail.com"}
 ]
 keywords = ["text-to-speech", "lora", "hypernetworks", "voice-synthesis", "audio-generation"]
 classifiers = [
@@ -27,132 +28,49 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
-requires-python = ">=3.9"
 dependencies = [
-    "torch>=2.0.0",
-    "torchaudio>=2.0.0",
-    "transformers>=4.25.0",
-    "datasets>=2.0.0",
-    "accelerate>=0.20.0",
-    "wandb>=0.15.0",
-    "omegaconf>=2.3.0",
-    "hydra-core>=1.3.0",
-    "librosa>=0.10.0",
-    "soundfile>=0.12.0",
-    "numpy>=1.21.0",
-    "scipy>=1.9.0",
-    "matplotlib>=3.5.0",
-    "seaborn>=0.11.0",
-    "tqdm>=4.64.0",
-    "tensorboard>=2.10.0",
-    "peft>=0.5.0",
-    "einops>=0.6.0",
-    "rich>=13.0.0",
-    "click>=8.0.0",
-    "safetensors>=0.3.0",
+    "torch ; platform_system == 'Windows'",
+    "torch>=2.8.0",
+    "torchaudio ; platform_system == 'Windows'",
+    "torchaudio>=2.8.0",
+    "transformers>=4.55.2",
+    "accelerate>=1.10.0",
+    "peft>=0.17.1",
+
+    "librosa>=0.11.0",
+
+    "datasets>=4.0.0",
+    "hf-xet>=1.1.8",
+
+    "tqdm>=4.67.1",
+    "wandb>=0.21.1",
+    "notebook>=7.4.5",
+    "ipywidgets>=8.1.7",
+    "matplotlib>=3.10.5",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "black>=22.0.0",
-    "isort>=5.10.0",
-    "flake8>=5.0.0",
-    "mypy>=1.0.0",
-    "pre-commit>=2.20.0",
+metrics = [
+    "jiwer>=4.0.0",
+    "pysptk>=1.0.1",
+    "pyworld>=0.3.5",
+    "pandas>=2.3.2",
 ]
-docs = [
-    "sphinx>=5.0.0",
-    "sphinx-rtd-theme>=1.0.0",
-    "myst-parser>=0.18.0",
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-windows", marker = "platform_system == 'Windows'" },
 ]
-audio = [
-    "phonemizer>=3.2.0",
-    "espeak-ng>=1.50",
-    "g2p-en>=2.1.0",
+torchaudio = [
+    { index = "pytorch-windows", marker = "platform_system == 'Windows'" },
 ]
+
+[[tool.uv.index]]
+name = "pytorch-windows"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [project.urls]
 Homepage = "https://github.com/LatentForge/T2A-LoRA"
 Repository = "https://github.com/LatentForge/T2A-LoRA"
 Documentation = "https://latentforge.github.io/T2A-LoRA"
-"Bug Tracker" = "https://github.com/LatentForge/T2A-LoRA/issues"
-
-[project.scripts]
-t2a-lora = "t2a_lora.cli:main"
-t2a-train = "t2a_lora.training.train:main"
-t2a-generate = "t2a_lora.generation.generate:main"
-t2a-evaluate = "t2a_lora.evaluation.evaluate:main"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-dir]
-"" = "src"
-
-# Code formatting with black
-[tool.black]
-line-length = 88
-target-version = ['py39', 'py310', 'py311', 'py312', 'py313']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | build
-  | dist
-)/
-'''
-
-# Import sorting with isort
-[tool.isort]
-profile = "black"
-multi_line_output = 3
-line_length = 88
-known_first_party = ["t2a_lora"]
-
-# Type checking with mypy
-[tool.mypy]
-python_version = "3.9"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-ignore_missing_imports = true
-
-# Testing with pytest
-[tool.pytest.ini_options]
-minversion = "7.0"
-addopts = "-ra -q --strict-markers --strict-config"
-testpaths = ["tests"]
-python_files = ["test_*.py", "*_test.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-
-# Coverage reporting
-[tool.coverage.run]
-source = ["src/t2a_lora"]
-omit = [
-    "*/tests/*",
-    "*/test_*",
-    "*/__pycache__/*",
-]
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "def __repr__",
-    "if self.debug:",
-    "if settings.DEBUG",
-    "raise AssertionError",
-    "raise NotImplementedError",
-    "if 0:",
-    "if __name__ == .__main__.:",
-    "class .*\\bProtocol\\):",
-    "@(abc\\.)?abstractmethod",
-]
