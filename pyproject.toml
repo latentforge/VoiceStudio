@@ -33,28 +33,20 @@ dependencies = [
     "torch>=2.8.0",
     "torchaudio ; platform_system == 'Windows'",
     "torchaudio>=2.8.0",
-    "transformers>=4.55.2",
+    "torchcodec>=0.9.1",
+    "transformers>=5.0.0rc1",
     "accelerate>=1.10.0",
-    "peft>=0.17.1",
-
+    "peft>=0.18.0",
     "librosa>=0.11.0",
-
     "datasets>=4.0.0",
     "hf-xet>=1.1.8",
-
     "tqdm>=4.67.1",
     "wandb>=0.21.1",
     "notebook>=7.4.5",
     "ipywidgets>=8.1.7",
     "matplotlib>=3.10.5",
-]
 
-[project.optional-dependencies]
-metrics = [
-    "jiwer>=4.0.0",
-    "pysptk>=1.0.1",
-    "pyworld>=0.3.5",
-    "pandas>=2.3.2",
+    "parler-tts @ git+https://github.com/latentforge/parler-tts ; sys_platform != 'win32'",
 ]
 
 [tool.uv.sources]
