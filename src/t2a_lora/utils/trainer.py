@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from models.tts_lora import TTSWithLoRA
 from data_loading.dataset import create_dataloader
-from training.losses import CombinedLoss
+from utils.losses import CombinedLoss
 from config import TrainingConfig
 
 
