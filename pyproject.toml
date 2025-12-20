@@ -45,7 +45,7 @@ dependencies = [
     "ipywidgets>=8.1.7",
     "matplotlib>=3.10.5",
 
-    "parler-tts @ git+https://github.com/latentforge/parler-tts ; sys_platform != 'win32'",
+    "t2a-lora-parler-tts @ git+https://github.com/latentforge/parler-tts@namespace",
 ]
 
 [tool.uv.sources]
