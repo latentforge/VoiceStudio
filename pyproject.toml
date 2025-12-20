@@ -1,6 +1,6 @@
 [build-system]
-requires = ["flit_core>=3.4,<4"]
-build-backend = "flit_core.buildapi"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "t2a-lora"
@@ -28,6 +28,9 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
 dependencies = [
+    # -----------------------------------------
+    # General dependencies
+    # -----------------------------------------
     "torch ; platform_system == 'Windows'",
     "torch>=2.8.0",
     "torchaudio ; platform_system == 'Windows'",
@@ -44,8 +47,10 @@ dependencies = [
     "notebook>=7.4.5",
     "ipywidgets>=8.1.7",
     "matplotlib>=3.10.5",
-
-    "t2a-lora-parler-tts @ git+https://github.com/latentforge/parler-tts@namespace",
+    # -----------------------------------------
+    # Model Namespace Packages
+    # -----------------------------------------
+    "t2a-lora-parler-tts",
 ]
 
 [tool.uv.sources]
@@ -55,14 +60,15 @@ torch = [
 torchaudio = [
     { index = "pytorch-windows", marker = "platform_system == 'Windows'" },
 ]
+t2a-lora-parler-tts = { git = "https://github.com/latentforge/parler-tts", rev = "namespace" }
 
 [[tool.uv.index]]
 name = "pytorch-windows"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
-[tool.flit.module]
-name = "t2a_lora"
+[tool.hatch.build.targets.wheel]
+packages = ["t2a_lora"]
 
 [project.urls]
 Homepage = "https://github.com/LatentForge/T2A-LoRA"
