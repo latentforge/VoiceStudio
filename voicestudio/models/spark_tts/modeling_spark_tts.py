@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """PyTorch SparkTTS model."""
 
 import math
@@ -212,7 +213,7 @@ class Snake1d(nn.Module):
     Args:
         channels (`int`): Number of channels.
     """
-    
+
     def __init__(self, channels: int):
         super().__init__()
         self.alpha = nn.Parameter(torch.ones(1, channels, 1))
@@ -229,7 +230,7 @@ class ResidualUnit(nn.Module):
         dim (`int`, *optional*, defaults to 16): Number of channels.
         dilation (`int`, *optional*, defaults to 1): Dilation factor.
     """
-    
+
     def __init__(self, dim: int = 16, dilation: int = 1):
         super().__init__()
         pad = ((7 - 1) * dilation) // 2
@@ -391,10 +392,10 @@ class FSQ(Module):
     def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass.
-        
+
         Args:
             z (`torch.Tensor`): Input tensor.
-            
+
         Returns:
             `Tuple[torch.Tensor, torch.Tensor]`: Quantized output and indices.
         """
@@ -450,7 +451,7 @@ class ResidualFSQ(Module):
     """
     Residual Finite Scalar Quantization.
     Follows Algorithm 1 in https://arxiv.org/pdf/2107.03312.pdf
-    
+
     Args:
         levels (`List[int]`): Number of levels for each dimension.
         num_quantizers (`int`): Number of quantizers.
@@ -460,7 +461,7 @@ class ResidualFSQ(Module):
         quantize_dropout_cutoff_index (`int`, *optional*, defaults to 0): Cutoff index for dropout.
         quantize_dropout_multiple_of (`int`, *optional*, defaults to 1): Multiple for dropout.
     """
-    
+
     def __init__(
         self,
         *,
@@ -623,7 +624,7 @@ class ResidualFSQ(Module):
 class FactorizedVectorQuantize(nn.Module):
     """
     Factorized Vector Quantization module.
-    
+
     Args:
         input_dim (`int`): Input dimension.
         codebook_size (`int`): Size of the codebook.
@@ -633,7 +634,7 @@ class FactorizedVectorQuantize(nn.Module):
         decay (`float`, *optional*, defaults to 0.99): EMA decay rate.
         threshold_ema_dead_code (`float`, *optional*, defaults to 2): Threshold for dead code expiry.
     """
-    
+
     def __init__(
         self,
         input_dim: int,
@@ -755,13 +756,13 @@ class FactorizedVectorQuantize(nn.Module):
 class AdaLayerNorm(nn.Module):
     """
     Adaptive Layer Normalization with learnable embeddings.
-    
+
     Args:
         condition_dim (`int`): Dimension of the condition.
         embedding_dim (`int`): Dimension of the embeddings.
         eps (`float`, *optional*, defaults to 1e-6): Epsilon for numerical stability.
     """
-    
+
     def __init__(self, condition_dim: int, embedding_dim: int, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
@@ -783,7 +784,7 @@ class ConvNeXtBlock(nn.Module):
     """
     ConvNeXt Block adapted for 1D audio signal.
     Based on: https://github.com/facebookresearch/ConvNeXt
-    
+
     Args:
         dim (`int`): Number of input channels.
         intermediate_dim (`int`): Dimensionality of the intermediate layer.
@@ -846,7 +847,7 @@ class ResBlock1(nn.Module):
         lrelu_slope (`float`, *optional*, defaults to 0.1): Negative slope of LeakyReLU.
         layer_scale_init_value (`float`, *optional*): Initial value for layer scale.
     """
-    
+
     def __init__(
         self,
         dim: int,
@@ -909,7 +910,7 @@ class ResBlock1(nn.Module):
 class VocosBackbone(nn.Module):
     """
     Vocos backbone module built with ConvNeXt blocks.
-    
+
     Args:
         input_channels (`int`): Number of input features channels.
         dim (`int`): Hidden dimension of the model.
@@ -918,7 +919,7 @@ class VocosBackbone(nn.Module):
         layer_scale_init_value (`float`, *optional*): Initial value for layer scaling.
         condition_dim (`int`, *optional*): Dimension for conditioning.
     """
-    
+
     def __init__(
         self,
         input_channels: int,
@@ -975,14 +976,14 @@ class VocosBackbone(nn.Module):
 class SamplingBlock(nn.Module):
     """
     Sampling block for upsampling or downsampling.
-    
+
     Args:
         dim (`int`): Input dimension.
         groups (`int`, *optional*, defaults to 1): Number of groups.
         upsample_scale (`int`, *optional*, defaults to 1): Upsampling scale.
         downsample_scale (`int`, *optional*, defaults to 1): Downsampling scale.
     """
-    
+
     def __init__(
         self,
         dim: int,
@@ -1057,7 +1058,7 @@ class SamplingBlock(nn.Module):
 class Encoder(nn.Module):
     """
     Encoder module with VocosBackbone and downsampling blocks.
-    
+
     Args:
         input_channels (`int`): Number of input channels.
         vocos_dim (`int`): Vocos hidden dimension.
@@ -1066,7 +1067,7 @@ class Encoder(nn.Module):
         out_channels (`int`): Output channels.
         sample_ratios (`List[int]`, *optional*, defaults to [1, 1]): Downsampling ratios.
     """
-    
+
     def __init__(
         self,
         input_channels: int,
@@ -1119,7 +1120,7 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     """
     Decoder module with VocosBackbone and upsampling blocks (for prenet/postnet).
-    
+
     Args:
         input_channels (`int`): Number of input channels.
         vocos_dim (`int`): Vocos hidden dimension.
@@ -1130,7 +1131,7 @@ class Decoder(nn.Module):
         sample_ratios (`List[int]`, *optional*, defaults to [1, 1]): Upsampling ratios.
         use_tanh_at_final (`bool`, *optional*, defaults to False): Use tanh at final layer.
     """
-    
+
     def __init__(
         self,
         input_channels: int,
@@ -1176,7 +1177,7 @@ class Decoder(nn.Module):
         # Output linear layer
         self.linear = nn.Linear(vocos_dim, out_channels)
         self.use_tanh_at_final = use_tanh_at_final
-    
+
     def forward(self, x: torch.Tensor, c: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Forward pass through decoder.
@@ -1203,14 +1204,14 @@ class Decoder(nn.Module):
 class DecoderBlock(nn.Module):
     """
     Decoder block with transposed convolution and residual units.
-    
+
     Args:
         input_dim (`int`, *optional*, defaults to 16): Input dimension.
         output_dim (`int`, *optional*, defaults to 8): Output dimension.
         kernel_size (`int`, *optional*, defaults to 2): Kernel size.
         stride (`int`, *optional*, defaults to 1): Stride.
     """
-    
+
     def __init__(
         self,
         input_dim: int = 16,
@@ -1239,7 +1240,7 @@ class DecoderBlock(nn.Module):
 class WaveGenerator(nn.Module):
     """
     Wave generator (decoder) module.
-    
+
     Args:
         input_channel (`int`): Input channels.
         channels (`int`): Base number of channels.
@@ -1247,7 +1248,7 @@ class WaveGenerator(nn.Module):
         kernel_sizes (`List[int]`): Kernel sizes for each upsampling layer.
         d_out (`int`, *optional*, defaults to 1): Output dimension (waveform channels).
     """
-    
+
     def __init__(
         self,
         input_channel: int,
@@ -1287,13 +1288,13 @@ class WaveGenerator(nn.Module):
 class AttentiveStatisticsPooling(nn.Module):
     """
     Attentive Statistics Pooling.
-    
+
     Args:
         in_dim (`int`): Input dimension.
         bottleneck_dim (`int`, *optional*, defaults to 128): Bottleneck dimension.
         global_context_att (`bool`, *optional*, defaults to False): Whether to use global context attention.
     """
-    
+
     def __init__(self, in_dim: int, bottleneck_dim: int = 128, global_context_att: bool = False):
         super().__init__()
         self.global_context_att = global_context_att
@@ -1328,10 +1329,9 @@ ASTP = AttentiveStatisticsPooling
 
 
 # ECAPA-TDNN components
-
 class Res2Conv1dReluBn(nn.Module):
     """Res2Conv1d with ReLU and BatchNorm."""
-    
+
     def __init__(
         self,
         channels: int,
@@ -1372,7 +1372,7 @@ class Res2Conv1dReluBn(nn.Module):
 
 class Conv1dReluBn(nn.Module):
     """Conv1d + ReLU + BatchNorm."""
-    
+
     def __init__(
         self,
         in_channels: int,
@@ -1393,7 +1393,7 @@ class Conv1dReluBn(nn.Module):
 
 class SE_Connect(nn.Module):
     """Squeeze-and-Excitation connection."""
-    
+
     def __init__(self, channels: int, se_bottleneck_dim: int = 128):
         super().__init__()
         self.linear1 = nn.Linear(channels, se_bottleneck_dim)
@@ -1409,7 +1409,7 @@ class SE_Connect(nn.Module):
 
 class SE_Res2Block(nn.Module):
     """SE-Res2Block of the ECAPA-TDNN architecture."""
-    
+
     def __init__(
         self,
         channels: int,
@@ -1434,12 +1434,12 @@ class SE_Res2Block(nn.Module):
 class ECAPA_TDNN_GLOB_c512(nn.Module):
     """
     ECAPA-TDNN with global context attention for speaker embedding.
-    
+
     Args:
         feat_dim (`int`): Input feature dimension.
         embed_dim (`int`): Output embedding dimension.
     """
-    
+
     def __init__(self, feat_dim: int, embed_dim: int):
         super().__init__()
         channels = 512
@@ -1462,7 +1462,7 @@ class ECAPA_TDNN_GLOB_c512(nn.Module):
         Args:
             x (`torch.Tensor` of shape `(batch_size, time, feat_dim)`): Input features.
             return_latent (`bool`, *optional*, defaults to False): Whether to return latent features.
-            
+
         Returns:
             `torch.Tensor` or `Tuple[torch.Tensor, torch.Tensor]`: Speaker embedding (and latent if requested).
         """
@@ -1484,10 +1484,9 @@ class ECAPA_TDNN_GLOB_c512(nn.Module):
 
 
 # Perceiver Resampler components
-
 class RMSNorm(nn.Module):
     """Root Mean Square Layer Normalization."""
-    
+
     def __init__(self, dim: int, scale: bool = True):
         super().__init__()
         self.scale = dim**0.5
@@ -1500,7 +1499,7 @@ class RMSNorm(nn.Module):
 
 class GEGLU(nn.Module):
     """Gated GLU activation."""
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x, gate = x.chunk(2, dim=-1)
         return F.gelu(gate) * x
@@ -1508,7 +1507,7 @@ class GEGLU(nn.Module):
 
 class Attention(nn.Module):
     """Multi-head attention module."""
-    
+
     def __init__(
         self,
         dim: int,
@@ -1575,7 +1574,7 @@ def FeedForward(dim: int, mult: int = 4):
 class PerceiverResampler(nn.Module):
     """
     Perceiver Resampler for speaker embedding.
-    
+
     Args:
         dim (`int`): Latent dimension.
         depth (`int`, *optional*, defaults to 2): Number of layers.
@@ -1585,7 +1584,7 @@ class PerceiverResampler(nn.Module):
         heads (`int`, *optional*, defaults to 8): Number of attention heads.
         ff_mult (`int`, *optional*, defaults to 4): Feed-forward multiplier.
     """
-    
+
     def __init__(
         self,
         *,
@@ -1635,7 +1634,7 @@ class PerceiverResampler(nn.Module):
 class SpeakerEncoder(nn.Module):
     """
     Speaker encoder that extracts x-vector and d-vector from mel spectrograms.
-    
+
     Args:
         input_dim (`int`, *optional*, defaults to 100): Acoustic feature dimension.
         out_dim (`int`, *optional*, defaults to 512): Output dimension of x-vector and d-vector.
@@ -1644,7 +1643,7 @@ class SpeakerEncoder(nn.Module):
         fsq_levels (`List[int]`, *optional*, defaults to [4, 4, 4, 4, 4, 4]): FSQ levels.
         fsq_num_quantizers (`int`, *optional*, defaults to 1): Number of FSQ quantizers.
     """
-    
+
     def __init__(
         self,
         input_dim: int = 100,
@@ -1683,7 +1682,7 @@ class SpeakerEncoder(nn.Module):
         Args:
             mels (`torch.Tensor` of shape `(batch_size, mel_dim, time)` or `(batch_size, time, mel_dim)`): 
                 Mel spectrograms.
-            
+
         Returns:
             `Tuple[torch.Tensor, torch.Tensor]`: x-vector and d-vector.
         """
@@ -1737,21 +1736,21 @@ class BiCodecPreTrainedModel(PreTrainedModel):
 class BiCodecModel(BiCodecPreTrainedModel):
     """
     BiCodec model for audio tokenization and detokenization.
-    
+
     This model integrates an encoder, decoder, quantizer, speaker encoder, prenet, and postnet
     for high-quality speech synthesis.
-    
+
     Args:
         config (`SparkTTSConfig`): Model configuration class.
     """
-    
+
     def __init__(self, config: SparkTTSConfig):
         super().__init__(config)
         self.config = config
-        
+
         # Get audio tokenizer config
         atc = config.audio_tokenizer_config
-        
+
         # Initialize mel spectrogram transform
         mel_params = atc["mel_params"]
         self.mel_spec = nn.Sequential(
@@ -1770,59 +1769,59 @@ class BiCodecModel(BiCodecPreTrainedModel):
             norm="slaney",
             mel_scale="slaney",
         )
-        
+
         # Initialize encoder
         self.encoder = Encoder(**atc["encoder"])
-        
+
         # Initialize quantizer
         self.quantizer = FactorizedVectorQuantize(**atc["quantizer"])
-        
+
         # Initialize speaker encoder
         self.speaker_encoder = SpeakerEncoder(**atc["speaker_encoder"])
-        
+
         # Initialize prenet and postnet (using Decoder for upsampling)
         self.prenet = Decoder(**atc["prenet"])
         self.postnet = Decoder(**atc["postnet"])
-        
+
         # Initialize decoder (wave generator)
         self.decoder = WaveGenerator(**atc["decoder"])
-        
+
         # Post-initialization
         self.post_init()
-    
+
     def get_mel_spectrogram(self, wav: torch.Tensor) -> torch.Tensor:
         """Compute mel spectrogram from waveform."""
         mel = self.mel_transform(wav)
         return mel
-    
+
     def remove_weight_norm(self):
         """Remove weight normalization from decoder."""
         for module in self.decoder.modules():
             if hasattr(module, 'remove_weight_norm'):
                 module.remove_weight_norm()
-    
+
     def tokenize(self, feat: torch.Tensor, ref_wav: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Tokenize audio features into semantic and global tokens.
-        
+
         Args:
             feat (`torch.Tensor` of shape `(batch_size, feat_dim, time)`): Input features.
             ref_wav (`torch.Tensor` of shape `(batch_size, time)`): Reference waveform for speaker embedding.
-            
+
         Returns:
             `Tuple[torch.Tensor, torch.Tensor]`: Semantic tokens and global speaker tokens.
         """
         mel = self.get_mel_spectrogram(ref_wav.unsqueeze(1)).squeeze(1)
-        
+
         z = self.encoder(feat)
         # z is (B, C, T) from Encoder.forward
         vq_outputs = self.quantizer(z)
-        
+
         # SpeakerEncoder expects (B, C, T)
         global_tokens = self.speaker_encoder.tokenize(mel)
-        
+
         return vq_outputs["indices"], global_tokens
-    
+
     def detokenize(
         self, 
         semantic_tokens: torch.Tensor, 
@@ -1830,11 +1829,11 @@ class BiCodecModel(BiCodecPreTrainedModel):
     ) -> torch.Tensor:
         """
         Detokenize semantic and global tokens into waveform.
-        
+
         Args:
             semantic_tokens (`torch.Tensor` of shape `(batch_size, time)`): Semantic tokens.
             global_tokens (`torch.Tensor` of shape `(batch_size, num_tokens)`): Global speaker tokens.
-            
+
         Returns:
             `torch.Tensor` of shape `(batch_size, time)`: Reconstructed waveform.
         """
@@ -1842,15 +1841,15 @@ class BiCodecModel(BiCodecPreTrainedModel):
         z_q = self.quantizer.detokenize(semantic_tokens)
         # SpeakerEncoder returns (B, D)
         d_vector = self.speaker_encoder.detokenize(global_tokens)
-        
+
         # Decoder expects (B, C, T), d_vector is (B, D)
         x = self.prenet(z_q, d_vector)
         pred_feat = self.postnet(x)
         x = x + d_vector.unsqueeze(-1)
         wav_recon = self.decoder(x).squeeze(1)
-        
+
         return wav_recon
-    
+
     def forward(
         self,
         input_features: torch.Tensor,
@@ -1860,44 +1859,44 @@ class BiCodecModel(BiCodecPreTrainedModel):
     ) -> Union[Tuple, BiCodecOutput]:
         """
         Forward pass through BiCodec model.
-        
+
         Args:
             input_features (`torch.Tensor` of shape `(batch_size, feat_dim, time)`): Input features.
             reference_waveform (`torch.Tensor` of shape `(batch_size, time)`): Reference waveform.
             target_waveform (`torch.Tensor` of shape `(batch_size, time)`, *optional*): Target waveform for training.
             return_dict (`bool`, *optional*): Whether to return a `BiCodecOutput` instead of tuple.
-            
+
         Returns:
             `BiCodecOutput` or `Tuple`: Model outputs.
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        
+
         # Get mel spectrogram
         mel = self.get_mel_spectrogram(reference_waveform.unsqueeze(1)).squeeze(1)
-        
+
         # Encode
         z = self.encoder(input_features)
         # z is (B, C, T)
         vq_outputs = self.quantizer(z)
-        
+
         # Speaker encoding
         x_vector, d_vector = self.speaker_encoder(mel)
-        
+
         # Decode
         x = self.prenet(vq_outputs["z_q"], d_vector)
         pred_feat = self.postnet(x)
         x = x + d_vector.unsqueeze(-1)
         wav_recon = self.decoder(x).squeeze(1)
-        
+
         # Compute loss if target is provided
         loss = None
         if target_waveform is not None and self.training:
             loss = vq_outputs["vq_loss"]
-        
+
         if not return_dict:
             output = (wav_recon, vq_outputs["indices"], self.speaker_encoder.get_indices(mel))
             return ((loss,) + output) if loss is not None else output
-        
+
         return BiCodecOutput(
             wav_recon=wav_recon,
             semantic_tokens=vq_outputs["indices"],
@@ -1938,64 +1937,64 @@ class SparkTTSPreTrainedModel(PreTrainedModel):
 class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
     """
     SparkTTS model for text-to-speech generation.
-    
+
     This model combines a language model (LLM), BiCodec audio tokenizer, and Wav2Vec2 feature extractor
     for high-quality zero-shot voice cloning and controllable speech generation.
-    
+
     Args:
         config (`SparkTTSConfig`): Model configuration class.
     """
-    
+
     def __init__(self, config: SparkTTSConfig):
         super().__init__(config)
         self.config = config
-        
+
         # Initialize BiCodec
         self.bicodec = BiCodecModel(config)
-        
+
         # LLM and Wav2Vec2 will be loaded separately via from_pretrained
         self.llm = None
         self.wav2vec2 = None
         self.wav2vec2_feature_extractor = None
-        
+
         # Post-initialization
         self.post_init()
-    
+
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
         """
         Load pretrained SparkTTS model from HuggingFace Hub or local path.
-        
+
         This method handles loading the composite model structure with BiCodec, LLM, and Wav2Vec2.
         """
         # Load config
         config = kwargs.pop("config", None)
         if config is None:
             config = SparkTTSConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
-        
+
         # Initialize model
         model = cls(config)
-        
+
         # Load LLM from subdirectory
         from transformers import AutoModelForCausalLM, AutoTokenizer
         llm_path = Path(pretrained_model_name_or_path) / config.llm_path
         model.llm = AutoModelForCausalLM.from_pretrained(llm_path, **kwargs)
         model.tokenizer = AutoTokenizer.from_pretrained(llm_path, **kwargs)
-        
+
         # Load Wav2Vec2 from subdirectory
         from transformers import Wav2Vec2Model, Wav2Vec2FeatureExtractor
         wav2vec2_path = Path(pretrained_model_name_or_path) / config.wav2vec2_path
         model.wav2vec2 = Wav2Vec2Model.from_pretrained(wav2vec2_path, **kwargs)
         model.wav2vec2_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(wav2vec2_path, **kwargs)
-        
+
         # Load BiCodec weights from subdirectory
         from safetensors.torch import load_file
         bicodec_path = Path(pretrained_model_name_or_path) / config.bicodec_path
         bicodec_weights = load_file(bicodec_path / "model.safetensors")
         model.bicodec.load_state_dict(bicodec_weights, strict=False)
-        
+
         return model
-    
+
     def generate(
         self,
         input_ids: Optional[torch.Tensor] = None,
@@ -2015,11 +2014,11 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
     ) -> torch.Tensor:
         """
         Generate speech from text input with optional voice cloning or controllable generation.
-        
+
         This method supports two modes:
         1. **Voice Cloning**: Provide `reference_waveform` or `reference_audio_path` to clone a voice
         2. **Controllable Generation**: Provide `gender`, `pitch`, `speed` for controlled synthesis
-        
+
         Args:
             input_ids (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*): 
                 Input token IDs. Either this or `text` must be provided.
@@ -2047,10 +2046,10 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
                 Top-p (nucleus) sampling parameter. Defaults to config value.
             do_sample (`bool`, *optional*, defaults to `True`):
                 Whether to use sampling for generation
-                
+
         Returns:
             `torch.Tensor`: Generated waveform of shape `(1, num_samples)`
-            
+
         Examples:
         ```python
         # Voice cloning (zero-shot)
@@ -2058,14 +2057,14 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
             text="Hello, how are you?",
             reference_audio_path="path/to/reference.wav"
         )
-        
+
         # Voice cloning (few-shot with prompt_text)
         waveform = model.generate(
             text="Hello, how are you?",
             reference_audio_path="path/to/reference.wav",
             prompt_text="This is the reference audio transcript."
         )
-        
+
         # Controllable generation
         waveform = model.generate(
             text="Hello, how are you?",
@@ -2079,22 +2078,22 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
             raise RuntimeError(
                 "Model components not loaded. Use `from_pretrained` to load the complete model."
             )
-        
+
         # Use config defaults if not specified
         max_new_tokens = max_new_tokens or self.config.max_new_tokens
         temperature = temperature or self.config.temperature
         top_k = top_k or self.config.top_k
         top_p = top_p or self.config.top_p
-        
+
         # Prepare input_ids from text if needed
         if input_ids is None:
             if text is None:
                 raise ValueError("Either `input_ids` or `text` must be provided")
-            
+
             # Tokenize text
             if not hasattr(self, 'tokenizer'):
                 raise RuntimeError("Tokenizer not loaded. Use `from_pretrained` to load the model.")
-            
+
             # Prepare prompt based on mode
             if reference_waveform is not None or reference_audio_path is not None:
                 # Voice cloning mode
@@ -2112,14 +2111,14 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
                     "Must provide either reference audio (for voice cloning) or "
                     "control parameters (gender/pitch/speed) for controllable generation"
                 )
-            
+
             # Tokenize the prompt
             inputs = self.tokenizer(prompt, return_tensors="pt", padding=True)
             input_ids = inputs.input_ids.to(self.llm.device)
             attention_mask = inputs.attention_mask.to(self.llm.device)
         else:
             attention_mask = kwargs.get('attention_mask', None)
-        
+
         # Generate semantic tokens using LLM
         with torch.no_grad():
             generated_ids = self.llm.generate(
@@ -2133,10 +2132,10 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
             )
-        
+
         # Extract semantic tokens from generated sequence
         semantic_tokens, global_tokens_from_llm = self._extract_semantic_tokens(generated_ids, input_ids)
-        
+
         # Extract global speaker tokens from reference audio or use LLM-generated ones
         if reference_waveform is not None or reference_audio_path is not None:
             global_tokens = self._extract_global_tokens(reference_waveform, reference_audio_path)
@@ -2145,16 +2144,16 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
             global_tokens = global_tokens_from_llm
         else:
             raise ValueError("No global tokens available")
-        
+
         # Detokenize to waveform using BiCodec
         with torch.no_grad():
             waveform = self.bicodec.detokenize(
                 semantic_tokens=semantic_tokens.to(self.bicodec.device),
                 global_tokens=global_tokens.to(self.bicodec.device)
             )
-        
+
         return waveform
-    
+
     def _prepare_voice_cloning_prompt(
         self, 
         text: str, 
@@ -2163,7 +2162,7 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
         prompt_text: Optional[str] = None
     ) -> str:
         """Prepare prompt for voice cloning mode.
-        
+
         Supports two modes:
         - Zero-shot: Only global tokens (speaker timbre)
         - Few-shot: Global tokens + semantic tokens (timbre + prosody/rhythm)
@@ -2180,13 +2179,13 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
                 import torchaudio.transforms as T
                 resampler = T.Resample(sr, self.config.sample_rate)
                 reference_waveform = resampler(reference_waveform)
-        
+
         # Extract global tokens from reference audio (use 3-second segment)
         with torch.no_grad():
             # Truncate to ref_segment_duration (default 3 seconds) as per original
             ref_segment_length = int(self.config.sample_rate * self.config.ref_segment_duration)
             ref_segment_length = (ref_segment_length // 320) * 320  # Align to latent_hop_length
-            
+
             # Get reference segment for global tokens
             wav_for_global = reference_waveform.squeeze()
             if len(wav_for_global) > ref_segment_length:
@@ -2195,21 +2194,21 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
                 # Repeat if too short
                 repeats = ref_segment_length // len(wav_for_global) + 1
                 wav_for_global = wav_for_global.repeat(repeats)[:ref_segment_length]
-            
+
             wav_for_global = wav_for_global.unsqueeze(0)  # Add batch dimension
-            
+
             mel = self.bicodec.get_mel_spectrogram(wav_for_global.unsqueeze(1)).squeeze(1)
             global_token_ids = self.bicodec.speaker_encoder.tokenize(mel.transpose(1, 2))
-        
+
         # Convert global tokens to special token strings
         global_tokens_str = "".join(
             [f"<|bicodec_global_{i}|>" for i in global_token_ids.squeeze().cpu().tolist()]
         )
-        
+
         # Cache reference waveform AND global tokens for later use
         self._cached_reference_waveform = reference_waveform
         self._cached_global_tokens = global_token_ids
-        
+
         # Build prompt based on whether prompt_text is provided
         if prompt_text is not None:
             # Few-shot mode: Include prompt text and semantic tokens
@@ -2217,7 +2216,7 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
             with torch.no_grad():
                 # Use FULL reference audio for semantic tokens (prosody/rhythm)
                 # Only global tokens use truncated segment
-                
+
                 # Extract Wav2Vec2 features (encoder expects these, not raw waveform)
                 # Wav2Vec2 expects 16kHz audio
                 wav_16k = reference_waveform
@@ -2225,24 +2224,24 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
                     import torchaudio.transforms as T
                     resampler = T.Resample(self.config.sample_rate, 16000)
                     wav_16k = resampler(reference_waveform)
-                
+
                 wav_16k = wav_16k.to(self.wav2vec2.device)
-                
+
                 # Extract Wav2Vec2 features
                 outputs = self.wav2vec2(wav_16k, output_hidden_states=True)
                 # Mix layers 11, 14, 16 as per original Spark-TTS
                 feat = (outputs.hidden_states[11] + outputs.hidden_states[14] + outputs.hidden_states[16]) / 3
-                
+
                 # Encoder expects [B, C, T]
                 z = self.bicodec.encoder(feat.transpose(1, 2))
                 # Quantize to get semantic tokens
                 vq_outputs = self.bicodec.quantizer(z)
                 semantic_token_ids = vq_outputs["indices"]
-            
+
             semantic_tokens_str = "".join(
                 [f"<|bicodec_semantic_{i}|>" for i in semantic_token_ids.squeeze().cpu().tolist()]
             )
-            
+
             prompt = (
                 "<|task_tts|>"
                 "<|start_content|>"
@@ -2266,9 +2265,9 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
                 f"{global_tokens_str}"
                 "<|end_global_token|>"
             )
-        
+
         return prompt
-    
+
     def _prepare_controllable_prompt(
         self,
         text: str,
@@ -2281,15 +2280,15 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
         gender = gender or "female"
         pitch = pitch or "moderate"
         speed = speed or "moderate"
-        
+
         # Map to token IDs (based on original Spark-TTS)
         gender_map = {"female": 0, "male": 1}
         levels_map = {"very_low": 0, "low": 1, "moderate": 2, "high": 3, "very_high": 4}
-        
+
         gender_id = gender_map.get(gender, 0)
         pitch_id = levels_map.get(pitch, 2)
         speed_id = levels_map.get(speed, 2)
-        
+
         # Build prompt with control tokens
         prompt = (
             "<|task_controllable_tts|>"
@@ -2303,7 +2302,7 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
             "<|end_style_label|>"
         )
         return prompt
-    
+
     def _extract_semantic_tokens(
         self, 
         generated_ids: torch.Tensor,
@@ -2311,46 +2310,46 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Extract semantic and global tokens from LLM generated sequence.
-        
+
         Returns:
             Tuple of (semantic_tokens, global_tokens). global_tokens is None for voice cloning mode.
         """
         import re
-        
+
         # Trim input tokens from generated sequence
         trimmed_ids = [
             output_ids[len(input_ids[i]):] 
             for i, output_ids in enumerate(generated_ids)
         ]
-        
+
         # Decode generated tokens to text
         predicts = self.tokenizer.batch_decode(trimmed_ids, skip_special_tokens=True)[0]
-        
+
         # Extract semantic token IDs using regex (matching original Spark-TTS)
         semantic_token_ids = [
             int(token) for token in re.findall(r"bicodec_semantic_(\d+)", predicts)
         ]
-        
+
         if not semantic_token_ids:
             raise ValueError(
                 "No semantic tokens found in generated sequence. "
                 "Make sure the LLM is properly trained to generate bicodec_semantic_* tokens."
             )
-        
+
         # Convert to tensor
         semantic_tokens = torch.tensor(semantic_token_ids, dtype=torch.long).unsqueeze(0)
-        
+
         # Extract global tokens if present (for controllable generation)
         global_token_ids = [
             int(token) for token in re.findall(r"bicodec_global_(\d+)", predicts)
         ]
-        
+
         global_tokens = None
         if global_token_ids:
             global_tokens = torch.tensor(global_token_ids, dtype=torch.long).unsqueeze(0).unsqueeze(0)
-        
+
         return semantic_tokens, global_tokens
-    
+
     def _extract_global_tokens(
         self,
         reference_waveform: Optional[torch.Tensor],
@@ -2360,7 +2359,7 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
         # Use cached global tokens if available (from _prepare_voice_cloning_prompt)
         if hasattr(self, '_cached_global_tokens') and self._cached_global_tokens is not None:
             return self._cached_global_tokens
-        
+
         # Load audio if path provided
         if reference_audio_path is not None:
             import soundfile as sf
@@ -2375,20 +2374,20 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
                 reference_waveform = resampler(reference_waveform)
         elif hasattr(self, '_cached_reference_waveform'):
             reference_waveform = self._cached_reference_waveform
-        
+
         if reference_waveform is None:
             raise ValueError("No reference audio provided")
-        
+
         # Extract global tokens using BiCodec speaker encoder (use 3-second segment)
         with torch.no_grad():
             # Ensure correct shape
             if reference_waveform.dim() == 1:
                 reference_waveform = reference_waveform.unsqueeze(0)
-            
+
             # Truncate to ref_segment_duration (default 3 seconds) as per original
             ref_segment_length = int(self.config.sample_rate * self.config.ref_segment_duration)
             ref_segment_length = (ref_segment_length // 320) * 320  # Align to latent_hop_length
-            
+
             # Get reference segment for global tokens
             wav_for_global = reference_waveform.squeeze()
             if len(wav_for_global) > ref_segment_length:
@@ -2397,16 +2396,16 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
                 # Repeat if too short
                 repeats = ref_segment_length // len(wav_for_global) + 1
                 wav_for_global = wav_for_global.repeat(repeats)[:ref_segment_length]
-            
+
             wav_for_global = wav_for_global.unsqueeze(0)  # Add batch dimension
-            
+
             # Extract mel spectrogram and tokenize
             mel = self.bicodec.get_mel_spectrogram(wav_for_global.unsqueeze(1)).squeeze(1)
             global_tokens = self.bicodec.speaker_encoder.tokenize(mel.transpose(1, 2))
-        
+
         return global_tokens
-    
-    
+
+
     def forward(
         self,
         input_ids: Optional[torch.Tensor] = None,
@@ -2417,18 +2416,18 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
     ) -> Union[Tuple, SparkTTSOutput]:
         """
         Forward pass for training.
-        
+
         Args:
             input_ids (`torch.Tensor` of shape `(batch_size, sequence_length)`): Input token IDs.
             attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*): Attention mask.
             labels (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*): Labels for language modeling.
             return_dict (`bool`, *optional*): Whether to return a `SparkTTSOutput`.
-            
+
         Returns:
             `SparkTTSOutput` or `Tuple`: Model outputs.
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        
+
         # Forward through LLM
         if self.llm is not None:
             llm_outputs = self.llm(
@@ -2437,17 +2436,17 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
                 labels=labels,
                 return_dict=True,
             )
-            
+
             loss = llm_outputs.loss if labels is not None else None
             logits = llm_outputs.logits
         else:
             loss = None
             logits = None
-        
+
         if not return_dict:
             output = (None, None, None, loss, logits)
             return output
-        
+
         return SparkTTSOutput(
             waveform=None,
             semantic_tokens=None,

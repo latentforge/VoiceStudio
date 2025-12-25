@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """SparkTTS model configuration"""
 
 from typing import Dict, List, Optional
@@ -102,12 +103,12 @@ class SparkTTSConfig(PretrainedConfig):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        
+
         # Sub-model paths
         self.bicodec_path = bicodec_path
         self.llm_path = llm_path
         self.wav2vec2_path = wav2vec2_path
-        
+
         # Audio processing parameters
         self.sample_rate = sample_rate
         self.highpass_cutoff_freq = highpass_cutoff_freq
@@ -116,18 +117,18 @@ class SparkTTSConfig(PretrainedConfig):
         self.latent_hop_length = latent_hop_length
         self.ref_segment_duration = ref_segment_duration
         self.volume_normalize = volume_normalize
-        
+
         # BiCodec audio tokenizer configuration
         if audio_tokenizer_config is None:
             audio_tokenizer_config = self._get_default_audio_tokenizer_config()
         self.audio_tokenizer_config = audio_tokenizer_config
-        
+
         # Generation parameters
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.top_k = top_k
         self.top_p = top_p
-    
+
     def _get_default_audio_tokenizer_config(self) -> Dict:
         """Get default BiCodec audio tokenizer configuration from original config.yaml"""
         return {
