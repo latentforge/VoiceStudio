@@ -36,7 +36,7 @@ dependencies = [
     "torchaudio ; platform_system == 'Windows'",
     "torchaudio>=2.8.0",
     "torchcodec>=0.9.1",
-    "transformers>=4.57.3",
+    "transformers==4.47.1",
     "accelerate>=1.10.0",
     "peft>=0.18.0",
     "librosa>=0.11.0",
