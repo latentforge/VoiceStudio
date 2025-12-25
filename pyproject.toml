@@ -27,16 +27,16 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
-# -----------------------------------------
-# General dependencies
-# -----------------------------------------
 dependencies = [
+    # -----------------------------------------
+    # General dependencies
+    # -----------------------------------------
     "torch ; platform_system == 'Windows'",
     "torch>=2.8.0",
     "torchaudio ; platform_system == 'Windows'",
     "torchaudio>=2.8.0",
     "torchcodec>=0.9.1",
-    "transformers==4.47.1",
+    "transformers>=4.57.3",
     "accelerate>=1.10.0",
     "peft>=0.18.0",
     "librosa>=0.11.0",
@@ -47,22 +47,18 @@ dependencies = [
     "notebook>=7.4.5",
     "ipywidgets>=8.1.7",
     "matplotlib>=3.10.5",
+    # -----------------------------------------
+    # Model Namespace Packages
+    # -----------------------------------------
+    "voicestudio-parler-tts",  # Apache 2.0 License
+    "voicestudio-higgs-audio",  # Apache 2.0 License
 ]
 [project.optional-dependencies]
 all = [
-    "voicestudio[models]",
+    "voicestudio[flash]",
     "voicestudio[web]",
-    "flash-attn",
 ]
-# -----------------------------------------
-# Model Namespace Packages
-# -----------------------------------------
-models = [
-    "voicestudio[parler]",
-    "voicestudio[higgs]",
-]
-parler = [ "voicestudio-parler-tts" ]  # Apache 2.0 License
-higgs = [ "voicestudio-higgs-audio" ]  # Apache 2.0 License
+flash = [ "flash-attn" ]
 # -----------------------------------------
 # Voice Studio Web
 # -----------------------------------------
