@@ -6,9 +6,11 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import jiwer
+import librosa
 import numpy as np
-import whisper
+import torch
 from tqdm import tqdm
+from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
 from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig
 
@@ -19,6 +21,7 @@ class WERCalculator(BaseMetricCalculator):
     def __init__(self, config: ModelConfig):
         super().__init__(config)
         self.whisper_model = None
+        self.processor = None
         self.transform = self._setup_transform()
 
     @staticmethod
@@ -38,14 +41,26 @@ class WERCalculator(BaseMetricCalculator):
         try:
             model_name = self.config.additional_params.get("model_name", "large-v3")
 
-            self.whisper_model = whisper.load_model(
-                model_name, device=self.get_device()
+            # Convert short model names to HuggingFace model IDs
+            model_id = (
+                model_name if "/" in model_name else f"openai/whisper-{model_name}"
             )
 
-            self.logger.info(f"Loaded Whisper model: {model_name}")
+            # Get dtype configuration
+            dtype_str = self.config.additional_params.get("dtype", "float16")
+            dtype = getattr(torch, dtype_str, torch.float16)
+
+            # Load processor and model
+            self.processor = WhisperProcessor.from_pretrained(model_id)
+            self.whisper_model = WhisperForConditionalGeneration.from_pretrained(
+                model_id, dtype=dtype
+            ).to(self.get_device())
+            self.whisper_model.eval()
+
+            self.logger.info(f"Loaded Whisper model: {model_id} (dtype: {dtype})")
 
         except ImportError as e:
-            raise MetricCalculationError(f"Whisper not installed: {e}")
+            raise MetricCalculationError(f"Transformers not installed: {e}")
         except Exception as e:
             raise MetricCalculationError(f"Failed to load Whisper model: {e}")
 
@@ -60,16 +75,37 @@ class WERCalculator(BaseMetricCalculator):
             Transcribed text
         """
         try:
-            # Whisper transcription options
-            options = {
-                "language": self.config.additional_params.get("language", "en"),
+            sampling_rate = self.processor.feature_extractor.sampling_rate
+
+            audio, _ = librosa.load(str(audio_path), sr=sampling_rate, mono=True)
+
+            input_features = self.processor(
+                audio, sampling_rate=sampling_rate, return_tensors="pt"
+            ).input_features
+
+            input_features = input_features.to(
+                device=self.get_device(), dtype=self.whisper_model.dtype
+            )
+
+            language = self.config.additional_params.get("language", "en")
+
+            generate_kwargs = {
+                "language": language,
                 "task": "transcribe",
-                "fp16": torch.cuda.is_available(),
             }
 
-            result = self.whisper_model.transcribe(str(audio_path), **options)
+            # Generate transcription
+            with torch.no_grad():
+                predicted_ids = self.whisper_model.generate(
+                    input_features, **generate_kwargs
+                )
 
-            return result["text"].strip()
+            # Decode transcription
+            transcription = self.processor.batch_decode(
+                predicted_ids, skip_special_tokens=True
+            )[0]
+
+            return transcription.strip()
 
         except Exception as e:
             self.logger.error(f"Failed to transcribe {audio_path}: {e}")
@@ -181,13 +217,21 @@ class WERCalculator(BaseMetricCalculator):
     def get_name(self) -> str:
         return "WER"
 
+    def cleanup(self) -> None:
+        """Clean up resources."""
+        if self.whisper_model is not None:
+            del self.whisper_model
+            self.whisper_model = None
+        if self.processor is not None:
+            del self.processor
+            self.processor = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
 
 if __name__ == "__main__":
-    import torch
-    from pathlib import Path
-
-    ref_path = Path("data/test/ref.wav")
-    syn_path = Path("data/test/syn.wav")
+    ref_text = "Your daughter will be married to morrow, if not to day-in a week, if not to morrow; and I do not think you can regret the intended husband of your daughter."
+    syn_audio_path = Path("audio.wav")
 
     config = ModelConfig(
         name="wer",
@@ -199,7 +243,14 @@ if __name__ == "__main__":
     try:
         with WERCalculator(config) as calculator:
             print(f"Testing {calculator.get_name()} calculator...")
-            score = calculator.calculate_pair(ref_path, syn_path)
+            print(f"Reference text: {ref_text}")
+
+            # Transcribe audio
+            syn_text = calculator.transcribe_audio(syn_audio_path)
+            print(f"Transcribed text: {syn_text}")
+
+            # Calculate WER
+            score = calculator.calculate_wer(ref_text, syn_text)
             print(f"WER Score: {score:.4f}")
     except Exception as e:
         print(f"Test failed: {e}")
