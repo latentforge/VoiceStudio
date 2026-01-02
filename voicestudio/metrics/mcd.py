@@ -243,8 +243,6 @@ class MCDCalculator(BaseMetricCalculator):
 
 
 if __name__ == "__main__":
-    from pathlib import Path
-
     ref_path = Path("data/test/ref.wav")
     syn_path = Path("data/test/syn.wav")
 

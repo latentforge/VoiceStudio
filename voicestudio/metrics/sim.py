@@ -8,6 +8,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import torch
 import torchaudio
+from speechbrain.inference.speaker import EncoderClassifier
 from tqdm import tqdm
 
 from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig
@@ -25,8 +26,6 @@ class SIMCalculator(BaseMetricCalculator):
     def _load_model_impl(self) -> None:
         """Load ECAPA-TDNN model from speechbrain."""
         try:
-            from speechbrain.inference.speaker import EncoderClassifier
-
             model_name = self.config.additional_params.get(
                 "model_name", "speechbrain/spkrec-ecapa-voxceleb"
             )
@@ -227,9 +226,6 @@ class SIMCalculator(BaseMetricCalculator):
 
 
 if __name__ == "__main__":
-    import torch
-    from pathlib import Path
-
     ref_path = Path("data/test/ref.wav")
     syn_path = Path("data/test/syn.wav")
 

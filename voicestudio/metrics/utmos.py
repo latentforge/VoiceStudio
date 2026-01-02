@@ -5,6 +5,8 @@ UTMOS calculator using UTMOSv2.
 from pathlib import Path
 from typing import List, Tuple
 
+from utmosv2 import create_model
+
 from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig
 
 
@@ -18,8 +20,6 @@ class UTMOSCalculator(BaseMetricCalculator):
     def _load_model_impl(self) -> None:
         """Load UTMOSv2 model."""
         try:
-            from utmosv2 import create_model
-
             model_name = self.config.additional_params.get(
                 "model_name", "fusion_stage3"
             )
@@ -82,7 +82,6 @@ class UTMOSCalculator(BaseMetricCalculator):
 
 if __name__ == "__main__":
     import torch
-    from pathlib import Path
 
     ref_path = Path("data/test/ref.wav")
     syn_path = Path("data/test/syn.wav")
