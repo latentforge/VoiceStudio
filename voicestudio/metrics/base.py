@@ -6,11 +6,13 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
 from tqdm import tqdm
+
+from ..utils.loader import AudioLoader
 
 
 @dataclass
@@ -44,12 +46,18 @@ class BaseMetricCalculator(ABC):
     """
     Abstract base class for metric calculators with improved error handling,
     resource management, and progress tracking.
+
+    Note:
+        This class is not thread-safe. Use separate instances for concurrent processing.
     """
+
+    DEFAULT_SAMPLE_RATE = 16000
 
     def __init__(self, config: ModelConfig):
         self.config = config
         self.logger = logging.getLogger(self.__class__.__name__)
         self._is_initialized = False
+        self._audio_loaders: Dict[int, AudioLoader] = {}  # Cache by sample rate
 
     def __enter__(self):
         """Context manager entry."""
@@ -94,6 +102,122 @@ class BaseMetricCalculator(ABC):
     def _calculate_pair_impl(self, ref_path: Path, syn_path: Path) -> float:
         """Actual pair calculation implementation."""
         pass
+
+    @abstractmethod
+    def _forward_impl(
+        self,
+        syn: Union[torch.Tensor, str],
+        ref: Optional[Union[torch.Tensor, str]] = None,
+        **kwargs,
+    ) -> Union[float, torch.Tensor]:
+        """
+        Args:
+            syn: Synthesis input
+                - torch.Tensor: Audio waveform for audio-based metrics
+                - str: Transcription text for WER metric
+            ref: Reference input (metric-dependent)
+                - torch.Tensor: Reference audio for similarity metrics (SIM, MCD, FFE)
+                - str: Ground truth transcription for WER metric
+                - None: Not used for no-reference metrics (UTMOS)
+            **kwargs: Metric-specific parameters
+
+        Returns:
+            Metric score (float or tensor)
+        """
+        pass
+
+    def _prepare_audio_input(
+        self, audio: Union[torch.Tensor, str, Path], sample_rate: Optional[int] = None
+    ) -> torch.Tensor:
+        """
+        Prepare audio input for processing.
+
+        Args:
+            audio: Audio tensor or file path
+            sample_rate: Target sample rate for file inputs
+
+        Returns:
+            Audio tensor
+        """
+        if isinstance(audio, torch.Tensor):
+            return audio
+
+        if isinstance(audio, (str, Path)):
+            if sample_rate is None:
+                sample_rate = self.config.additional_params.get(
+                    "sample_rate", self.DEFAULT_SAMPLE_RATE
+                )
+
+            # Cache loaders by sample rate to preserve resampler caches.
+            # AudioLoader uses cache=False because:
+            # 1. We cache the loader instances (not audio files) to reuse resamplers
+            # 2. Double-caching (loader cache + audio cache) wastes memory
+            # 3. Audio files are typically loaded once per forward pass anyway
+            if sample_rate not in self._audio_loaders:
+                self._audio_loaders[sample_rate] = AudioLoader(
+                    sr=sample_rate, cache=False
+                )
+
+            return self._audio_loaders[sample_rate].load(audio)
+
+        raise TypeError(
+            f"Unsupported audio type: {type(audio).__name__}. "
+            f"Expected torch.Tensor, pathlib.Path, or str (for file paths)."
+        )
+
+    def forward(
+        self,
+        syn: Union[torch.Tensor, str, Path],
+        ref: Optional[Union[torch.Tensor, str, Path]] = None,
+        **kwargs,
+    ) -> Union[float, torch.Tensor]:
+        """
+        Args:
+            syn: Synthesis input
+                - torch.Tensor: Audio waveform
+                - Path: Path to audio file (will be loaded)
+                - str: Text transcription (for WER metric only)
+            ref: Reference input (metric-dependent)
+                - torch.Tensor: Reference audio waveform
+                - Path: Path to reference audio file
+                - str: Ground truth transcription (for WER metric only)
+                - None: Not used (for UTMOS)
+            **kwargs: Metric-specific parameters (e.g., sample_rate)
+
+        Returns:
+            Metric score
+        """
+        if not self._is_initialized:
+            raise MetricCalculationError("Model not initialized")
+
+        try:
+            sample_rate = kwargs.get("sample_rate")
+
+            # Prepare inputs based on type:
+            # - Path/Tensor → audio (load/process via AudioLoader)
+            # - str → text (passthrough for WER metric)
+            if ref is not None and isinstance(ref, (Path, torch.Tensor)):
+                ref = self._prepare_audio_input(ref, sample_rate)
+
+            if isinstance(syn, (Path, torch.Tensor)):
+                syn = self._prepare_audio_input(syn, sample_rate)
+            # str inputs are preserved as-is for text-based metrics (e.g., WER)
+
+            return self._forward_impl(syn, ref, **kwargs)
+        except Exception as e:
+            self.logger.error(f"Error in {self.get_name()} forward pass: {e}")
+            raise MetricCalculationError(
+                f"Error in {self.get_name()} forward pass: {e}"
+            )
+
+    def __call__(
+        self,
+        syn: Union[torch.Tensor, str, Path],
+        ref: Optional[Union[torch.Tensor, str, Path]] = None,
+        **kwargs,
+    ) -> Union[float, torch.Tensor]:
+        """Callable interface."""
+        return self.forward(syn, ref, **kwargs)
 
     def calculate_batch(
         self,
@@ -186,4 +310,5 @@ class BaseMetricCalculator(ABC):
 
     def cleanup(self) -> None:
         """Clean up resources if needed."""
-        pass
+        # Clear loader dictionary (loaders use cache=False, so no audio cache to clear)
+        self._audio_loaders.clear()
