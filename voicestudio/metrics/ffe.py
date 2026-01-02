@@ -6,9 +6,8 @@ from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
-import torch
-import torchaudio
 
+from ..utils.loader import AudioLoader
 from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig
 
 
@@ -131,22 +130,11 @@ class FFECalculator(BaseMetricCalculator):
     def _load_and_preprocess_audio(self, audio_path: Path) -> np.ndarray:
         """Load and preprocess audio for F0 extraction."""
         try:
-            # Load audio
-            waveform, sample_rate = torchaudio.load(str(audio_path))
-
-            # Convert to mono if stereo
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-
-            # Resample if necessary
-            if sample_rate != self.target_sr:
-                resampler = torchaudio.transforms.Resample(
-                    orig_freq=sample_rate, new_freq=self.target_sr
-                )
-                waveform = resampler(waveform)
+            loader = AudioLoader(sr=self.target_sr, mono=True, cache=False)
+            waveform = loader.load(audio_path)
 
             # Convert to numpy and normalize
-            audio_np = waveform.squeeze().numpy().astype(np.double)
+            audio_np = waveform.numpy().astype(np.double)
 
             return audio_np
 

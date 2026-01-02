@@ -7,10 +7,10 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
-import torchaudio
 from speechbrain.inference.speaker import EncoderClassifier
 from tqdm import tqdm
 
+from ..utils.loader import AudioLoader
 from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig
 
 
@@ -52,19 +52,8 @@ class SIMCalculator(BaseMetricCalculator):
             Preprocessed audio tensor
         """
         try:
-            # Load audio
-            waveform, sample_rate = torchaudio.load(str(audio_path))
-
-            # Convert to mono if stereo
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-
-            # Resample if necessary
-            if sample_rate != self.target_sr:
-                resampler = torchaudio.transforms.Resample(
-                    orig_freq=sample_rate, new_freq=self.target_sr
-                )
-                waveform = resampler(waveform)
+            loader = AudioLoader(sr=self.target_sr, mono=True, cache=False)
+            waveform = loader.load(audio_path)
 
             # Ensure minimum length (e.g., 1 second)
             min_length = self.target_sr * 1  # 1 second

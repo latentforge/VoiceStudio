@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import jiwer
-import librosa
 import numpy as np
 import torch
 from tqdm import tqdm
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
+from ..utils.loader import AudioLoader
 from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig
 
 
@@ -77,7 +77,9 @@ class WERCalculator(BaseMetricCalculator):
         try:
             sampling_rate = self.processor.feature_extractor.sampling_rate
 
-            audio, _ = librosa.load(str(audio_path), sr=sampling_rate, mono=True)
+            loader = AudioLoader(sr=sampling_rate, mono=True, cache=False)
+            waveform = loader.load(audio_path)
+            audio = waveform.numpy()
 
             input_features = self.processor(
                 audio, sampling_rate=sampling_rate, return_tensors="pt"

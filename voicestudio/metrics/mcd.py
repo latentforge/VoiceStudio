@@ -6,13 +6,13 @@ import math
 from pathlib import Path
 from typing import List, Tuple
 
-import librosa
 import numpy as np
 import pysptk
 import pyworld
 from librosa.sequence import dtw
 from tqdm import tqdm
 
+from ..utils.loader import AudioLoader
 from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig
 
 
@@ -45,9 +45,9 @@ class MCDCalculator(BaseMetricCalculator):
     def _load_and_preprocess_audio(self, audio_path: Path) -> np.ndarray:
         """Load and preprocess audio for MCEP extraction."""
         try:
-            # Load audio using librosa (consistent with original code)
-            wav, _ = librosa.load(str(audio_path), sr=self.target_sr, mono=True)
-            return wav.astype(np.double)
+            loader = AudioLoader(sr=self.target_sr, mono=True, cache=False)
+            waveform = loader.load(audio_path)
+            return waveform.numpy().astype(np.double)
 
         except Exception as e:
             raise MetricCalculationError(f"Failed to load audio {audio_path}: {e}")
