@@ -3,7 +3,7 @@ FFE (F0 Frame Error) calculator for fundamental frequency evaluation.
 """
 
 from pathlib import Path
-from typing import List, Tuple
+
 
 import numpy as np
 
@@ -25,7 +25,7 @@ class PitchExtractor:
         f0_min: int = 100,
         f0_max: int = 500,
         harmo_thresh: float = 0.1,
-    ) -> Tuple[List[float], List[float], List[float], List[float]]:
+    ) -> tuple[list[float], list[float], list[float], list[float]]:
         """
         Compute the Yin Algorithm for F0 estimation.
 
@@ -143,7 +143,7 @@ class FFECalculator(BaseMetricCalculator):
 
     def extract_f0(
         self, audio_path: Path
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Extract F0 from audio using YIN algorithm."""
         try:
             audio = self._load_and_preprocess_audio(audio_path)

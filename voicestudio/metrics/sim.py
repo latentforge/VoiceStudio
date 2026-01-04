@@ -3,7 +3,7 @@ SIM (Speaker Similarity) calculator using ECAPA-TDNN for speaker embeddings.
 """
 
 from pathlib import Path
-from typing import Dict, List, Tuple
+
 
 import numpy as np
 import torch
@@ -142,7 +142,7 @@ class SIMCalculator(BaseMetricCalculator):
         except Exception as e:
             raise MetricCalculationError(f"Failed to calculate speaker similarity: {e}")
 
-    def calculate_batch_optimized(self, pairs: List[Tuple[Path, Path]]) -> List[float]:
+    def calculate_batch_optimized(self, pairs: list[tuple[Path, Path]]) -> list[float]:
         """
         Optimized batch calculation for speaker similarity.
         Extracts all embeddings first, then calculates similarities.
@@ -206,7 +206,7 @@ class SIMCalculator(BaseMetricCalculator):
             )
             return super().calculate_batch_optimized(pairs)
 
-    def get_embedding_cache(self) -> Dict[Path, np.ndarray]:
+    def get_embedding_cache(self) -> dict[Path, np.ndarray]:
         """Get cached embeddings (for debugging/analysis purposes)."""
         return getattr(self, "_embedding_cache", {})
 

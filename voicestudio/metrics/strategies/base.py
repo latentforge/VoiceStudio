@@ -5,7 +5,7 @@ Base generation strategy for synthesis.
 import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Tuple
+
 
 
 class BaseGenerationStrategy(ABC):
@@ -43,7 +43,7 @@ class BaseGenerationStrategy(ABC):
 
     def create_output_paths(
         self, dataset_name: str, model_name: str, method_name: str
-    ) -> Tuple[Path, Path]:
+    ) -> tuple[Path, Path]:
         """Create output directory paths for reference and synthesis."""
         ref_dir = self.output_dir / "ref" / dataset_name / method_name
         syn_dir = self.output_dir / "syn" / dataset_name / model_name / method_name

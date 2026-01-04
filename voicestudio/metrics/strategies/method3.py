@@ -3,7 +3,7 @@ Method 3: 10 references × 3 synthesis each for speaker consistency.
 """
 
 import re
-from typing import List, Tuple
+
 
 from tqdm import tqdm
 
@@ -13,7 +13,7 @@ from .base import BaseGenerationStrategy
 class Method3Strategy(BaseGenerationStrategy):
     """Generate 10 reference audios with 3 synthesis each."""
 
-    def _generate_text_variations(self, original_text: str) -> List[Tuple[str, str]]:
+    def _generate_text_variations(self, original_text: str) -> list[tuple[str, str]]:
         texts = []
         # 1. Original Text (T1)
         texts.append((original_text, "original"))

@@ -6,7 +6,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -20,10 +20,10 @@ class ModelConfig:
     """Model configuration for metric calculators."""
 
     name: str
-    model_path: Optional[Path] = None
+    model_path: Path | None = None
     batch_size: int = 8
     device: str = "cuda"
-    additional_params: Optional[Dict[str, Any]] = None
+    additional_params: dict[str, Any] | None = None
 
     def __post_init__(self):
         if self.additional_params is None:
@@ -57,7 +57,7 @@ class BaseMetricCalculator(ABC):
         self.config = config
         self.logger = logging.getLogger(self.__class__.__name__)
         self._is_initialized = False
-        self._audio_loaders: Dict[int, AudioLoader] = {}  # Cache by sample rate
+        self._audio_loaders: dict[int, AudioLoader] = {}  # Cache by sample rate
 
     def __enter__(self):
         """Context manager entry."""
@@ -106,10 +106,10 @@ class BaseMetricCalculator(ABC):
     @abstractmethod
     def _forward_impl(
         self,
-        syn: Union[torch.Tensor, str],
-        ref: Optional[Union[torch.Tensor, str]] = None,
+        syn: torch.Tensor | str,
+        ref: torch.Tensor | str | None = None,
         **kwargs,
-    ) -> Union[float, torch.Tensor]:
+    ) -> float | torch.Tensor:
         """
         Args:
             syn: Synthesis input
@@ -127,7 +127,7 @@ class BaseMetricCalculator(ABC):
         pass
 
     def _prepare_audio_input(
-        self, audio: Union[torch.Tensor, str, Path], sample_rate: Optional[int] = None
+        self, audio: torch.Tensor | str | Path, sample_rate: int | None = None
     ) -> torch.Tensor:
         """
         Prepare audio input for processing.
@@ -167,10 +167,10 @@ class BaseMetricCalculator(ABC):
 
     def forward(
         self,
-        syn: Union[torch.Tensor, str, Path],
-        ref: Optional[Union[torch.Tensor, str, Path]] = None,
+        syn: torch.Tensor | str | Path,
+        ref: torch.Tensor | str | Path | None = None,
         **kwargs,
-    ) -> Union[float, torch.Tensor]:
+    ) -> float | torch.Tensor:
         """
         Args:
             syn: Synthesis input
@@ -212,18 +212,18 @@ class BaseMetricCalculator(ABC):
 
     def __call__(
         self,
-        syn: Union[torch.Tensor, str, Path],
-        ref: Optional[Union[torch.Tensor, str, Path]] = None,
+        syn: torch.Tensor | str | Path,
+        ref: torch.Tensor | str | Path | None = None,
         **kwargs,
-    ) -> Union[float, torch.Tensor]:
+    ) -> float | torch.Tensor:
         """Callable interface."""
         return self.forward(syn, ref, **kwargs)
 
     def calculate_batch(
         self,
-        pairs: List[Tuple[Path, Path]],
-        progress_callback: Optional[Callable[[int, int], None]] = None,
-    ) -> List[float]:
+        pairs: list[tuple[Path, Path]],
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> list[float]:
         """
         Calculate metric for multiple pairs with progress tracking.
 
@@ -261,7 +261,7 @@ class BaseMetricCalculator(ABC):
 
         return results
 
-    def calculate_batch_optimized(self, pairs: List[Tuple[Path, Path]]) -> List[float]:
+    def calculate_batch_optimized(self, pairs: list[tuple[Path, Path]]) -> list[float]:
         """
         Optimized batch calculation (can be overridden by subclasses for true batch processing).
         Default implementation falls back to individual calculations.
@@ -274,8 +274,8 @@ class BaseMetricCalculator(ABC):
         pass
 
     def validate_audio_files(
-        self, pairs: List[Tuple[Path, Path]]
-    ) -> List[Tuple[Path, Path]]:
+        self, pairs: list[tuple[Path, Path]]
+    ) -> list[tuple[Path, Path]]:
         """
         Validate that all audio files exist and are readable.
 

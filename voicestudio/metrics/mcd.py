@@ -4,7 +4,7 @@ MCD (Mel Cepstral Distortion) calculator for spectral quality evaluation.
 
 import math
 from pathlib import Path
-from typing import List, Tuple
+
 
 import numpy as np
 import pysptk
@@ -183,7 +183,7 @@ class MCDCalculator(BaseMetricCalculator):
         except Exception as e:
             raise MetricCalculationError(f"Failed to calculate MCD for pair: {e}")
 
-    def calculate_batch_optimized(self, pairs: List[Tuple[Path, Path]]) -> List[float]:
+    def calculate_batch_optimized(self, pairs: list[tuple[Path, Path]]) -> list[float]:
         """
         Optimized batch calculation for MCD.
         Extracts all MCEP features first, then calculates MCD scores.

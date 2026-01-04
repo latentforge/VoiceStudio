@@ -3,7 +3,7 @@ WER (Word Error Rate) calculator using Whisper for transcription.
 """
 
 from pathlib import Path
-from typing import Dict, List, Tuple
+
 
 import jiwer
 import numpy as np
@@ -161,7 +161,7 @@ class WERCalculator(BaseMetricCalculator):
         except Exception as e:
             raise MetricCalculationError(f"Failed to calculate WER for pair: {e}")
 
-    def calculate_batch_optimized(self, pairs: List[Tuple[Path, Path]]) -> List[float]:
+    def calculate_batch_optimized(self, pairs: list[tuple[Path, Path]]) -> list[float]:
         """
         Optimized batch calculation for WER.
         Transcribes all audio files first, then calculates WER scores.
@@ -212,7 +212,7 @@ class WERCalculator(BaseMetricCalculator):
             )
             return super().calculate_batch_optimized(pairs)
 
-    def get_transcription_cache(self) -> Dict[Path, str]:
+    def get_transcription_cache(self) -> dict[Path, str]:
         """Get cached transcriptions (for debugging/analysis purposes)."""
         return getattr(self, "_transcription_cache", {})
 

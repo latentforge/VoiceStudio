@@ -4,7 +4,7 @@ Synthesis configuration classes.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+
 
 
 @dataclass
@@ -13,8 +13,8 @@ class DatasetConfig:
 
     name: str
     sample_rate: int = 22050
-    max_duration: Optional[float] = None  # seconds
-    min_duration: Optional[float] = 1.0  # seconds
+    max_duration: float | None = None  # seconds
+    min_duration: float | None = 1.0  # seconds
 
 
 @dataclass
@@ -23,7 +23,7 @@ class ModelConfig:
 
     name: str
     device: str = "cuda"
-    model_path: Optional[str] = None
+    model_path: str | None = None
     language: str = "en"
     temperature: float = 0.1
     top_k: int = 10
