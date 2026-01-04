@@ -27,6 +27,17 @@ class SelectiveTunerForConditionalGeneration(PreTrainedModel):
         embedding_class = DirectStyleAnchorEmbedding if config.use_direct_anchor else EncoderStyleAnchorEmbedding
         anchor_token_id = config.anchor_token_id
 
+        # Get target embedding dimensions from config
+        vocab_size = getattr(config, 'vocab_size', None)
+        embedding_dim = getattr(config, 'hidden_size', None) or getattr(config, 'd_model', None)
+
+        if vocab_size is None or embedding_dim is None:
+            logger.warning(
+                f"Cannot determine target embedding size from config. "
+                f"Skipping embedding replacement."
+            )
+            return
+
         # Recursively replace embeddings in all modules
         for parent_name, parent_module in instance.named_modules():
             for child_name, child_module in list(parent_module.named_children()):
@@ -34,20 +45,23 @@ class SelectiveTunerForConditionalGeneration(PreTrainedModel):
                 if isinstance(child_module, nn.Embedding) and not isinstance(
                     child_module, (DirectStyleAnchorEmbedding, EncoderStyleAnchorEmbedding)
                 ):
-                    # Create new anchor embedding with same parameters as original
-                    new_embedding = embedding_class(
-                        num_embeddings=child_module.num_embeddings,
-                        embedding_dim=child_module.embedding_dim,
-                        anchor_token_id=anchor_token_id,
-                        pretrained_weight=child_module.weight.data.clone(),
-                        padding_idx=child_module.padding_idx,
-                    )
+                    # Only replace if size matches target
+                    if child_module.num_embeddings == vocab_size and child_module.embedding_dim == embedding_dim:
 
-                    # Replace the module
-                    setattr(parent_module, child_name, new_embedding)
+                        # Create new anchor embedding with same parameters as original
+                        new_embedding = embedding_class(
+                            num_embeddings=child_module.num_embeddings,
+                            embedding_dim=child_module.embedding_dim,
+                            anchor_token_id=anchor_token_id,
+                            pretrained_weight=child_module.weight.data.clone(),
+                            padding_idx=child_module.padding_idx,
+                        )
 
-                    full_name = f"{parent_name}.{child_name}" if parent_name else child_name
-                    logger.info(f"Replaced {full_name} with {embedding_class.__name__}")
+                        # Replace the module
+                        setattr(parent_module, child_name, new_embedding)
+
+                        full_name = f"{parent_name}.{child_name}" if parent_name else child_name
+                        logger.info(f"Replaced {full_name} with {embedding_class.__name__}")
 
     @classmethod
     def from_pretrained(
