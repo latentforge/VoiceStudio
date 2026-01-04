@@ -8,8 +8,8 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 
-from config import DatasetType, ModelType, GenerationMethod
-from metrics import MetricType, create_calculator, ModelConfig
+from ..metrics.presets import DatasetType, ModelType, GenerationMethod
+from ..metrics import MetricType, create_calculator, ModelConfig
 
 
 class EvaluationPipeline:

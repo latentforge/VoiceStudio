@@ -6,7 +6,7 @@ from .base import BaseGenerationStrategy
 from .method1 import Method1Strategy
 from .method2 import Method2Strategy
 from .method3 import Method3Strategy
-from config import GenerationMethod
+from ..presets import GenerationMethod
 
 
 # Strategy registry for factory pattern

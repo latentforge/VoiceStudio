@@ -5,11 +5,10 @@ Main synthesis pipeline for voice cloning evaluation.
 from pathlib import Path
 from typing import Dict, List
 
-from config.synthesis_config import SynthesisConfig
-from config import DatasetType, ModelType, GenerationMethod
-from benchmark_datasets import create_dataset, BaseSynthesisDataset
-from models import create_synthesizer, BaseSynthesizer
-from strategies import create_strategy
+from ..metrics.presets import SynthesisConfig, DatasetType, ModelType, GenerationMethod
+from ..datasets import create_dataset, BaseSynthesisDataset
+from ..models.integrations import create_synthesizer, BaseSynthesizer
+from ..metrics.strategies import create_strategy
 
 
 class SynthesisPipeline:

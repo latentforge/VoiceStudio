@@ -6,7 +6,7 @@ from .base import BaseSynthesisDataset
 from .vctk import VctkSynthesisDataset
 from .ljspeech import LJSpeechSynthesisDataset
 from .libritts import LibriTTSSynthesisDataset
-from config import DatasetType
+from ..metrics.presets import DatasetType
 
 
 # Dataset registry for factory pattern
