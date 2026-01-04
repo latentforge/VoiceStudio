@@ -40,6 +40,11 @@ dependencies = [
     #"transformers>=5.0.0rc1",
     "transformers>=4.57.3",
     "utmosv2",
+    
+    # Temporal
+    "loguru>=0.7.3",
+    "dacite>=1.9.2",
+
     "accelerate>=1.10.0",
     "peft>=0.18.0",
     "librosa>=0.11.0",
@@ -57,7 +62,7 @@ dependencies = [
     # Model Namespace Packages
     # -----------------------------------------
     "voicestudio-parler-tts",  # Apache 2.0 License
-    # "voicestudio-higgs-audio",  # Apache 2.0 License
+    "voicestudio-higgs-audio",  # Apache 2.0 License
 ]
 [project.optional-dependencies]
 all = [
@@ -80,7 +85,7 @@ torchaudio = [
     { index = "pytorch-windows", marker = "platform_system == 'Windows'" },
 ]
 voicestudio-parler-tts = { git = "https://github.com/latentforge/parler-tts", rev = "namespace" }
-# voicestudio-higgs-audio = { git = "https://github.com/latentforge/higgs-audio", rev = "namespace" }
+voicestudio-higgs-audio = { git = "https://github.com/latentforge/higgs-audio", rev = "namespace" }
 utmosv2 = { git = "https://github.com/sarulab-speech/UTMOSv2.git" }
 
 [tool.uv.extra-build-dependencies]

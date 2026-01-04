@@ -2,13 +2,13 @@
 TTS models for synthesis pipeline.
 """
 
+from ...metrics.presets import ModelType
 from .base import BaseSynthesizer
-from .xtts import XTTSSynthesizer
-from .parler_tts import ParlerTTSSynthesizer
-from .higgs_v2 import HiggsV2Synthesizer
-from .dia_tts import DiaSynthesizer
 from .chatterbox_tts import ChatterboxSynthesizer
-from config import ModelType
+from .dia_tts import DiaSynthesizer
+from .higgs_v2 import HiggsV2Synthesizer
+from .parler_tts import ParlerTTSSynthesizer
+from .xtts import XTTSSynthesizer
 
 
 # Model registry for factory pattern
