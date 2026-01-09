@@ -53,6 +53,8 @@ dependencies = [
     # -----------------------------------------
     "voicestudio-parler-tts",  # Apache 2.0 License
     "voicestudio-higgs-audio",  # Apache 2.0 License
+
+    "voicestudio-f5-tts"  # MIT License
 ]
 [project.optional-dependencies]
 all = [
@@ -76,6 +78,8 @@ torchaudio = [
 ]
 voicestudio-parler-tts = { git = "https://github.com/latentforge/parler-tts", rev = "namespace" }
 voicestudio-higgs-audio = { git = "https://github.com/latentforge/higgs-audio", rev = "namespace" }
+
+voicestudio-f5-tts = { git = "https://github.com/latentforge/f5-tts", rev = "namespace" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = ["torch"]
