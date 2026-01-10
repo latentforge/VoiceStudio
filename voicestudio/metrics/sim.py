@@ -54,6 +54,10 @@ class SIMCalculator(BaseMetricCalculator):
             loader = AudioLoader(sr=self.target_sr, mono=True, cache=False)
             waveform = loader.load(audio_path)
 
+            # Ensure waveform is 2D [channels, samples]
+            if waveform.dim() == 1:
+                waveform = waveform.unsqueeze(0)
+            
             # Ensure minimum length (e.g., 1 second)
             min_length = self.target_sr * 1  # 1 second
             if waveform.shape[1] < min_length:
