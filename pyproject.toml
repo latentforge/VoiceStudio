@@ -51,14 +51,14 @@ dependencies = [
     "notebook>=7.4.5",
     "ipywidgets>=8.1.7",
     "matplotlib>=3.10.5",
+    "utmosv2",
     # -----------------------------------------
     # Model Namespace Packages
     # -----------------------------------------
     "voicestudio-parler-tts",  # Apache 2.0 License
     "voicestudio-higgs-audio",  # Apache 2.0 License
-    "voicestudio-f5-tts"  # MIT License
-    "speechbrain",
-    "utmosv2",
+    "voicestudio-f5-tts",  # MIT License
+    "speechbrain",  # Apache 2.0 License
 ]
 [project.optional-dependencies]
 all = [
