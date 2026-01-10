@@ -3,10 +3,12 @@ Custom LibriTTS dataset loader for synthesis.
 """
 
 from pathlib import Path
-from typing import Tuple, Optional
+
 import torch
 import torchaudio
+
 from datasets import load_dataset
+
 from .base import BaseSynthesisDataset
 
 
@@ -35,7 +37,7 @@ class LibriTTSSynthesisDataset(BaseSynthesisDataset):
         except Exception as e:
             raise RuntimeError(f"Failed to load LibriTTS dataset: {e}")
 
-    def get_sample(self, index: int) -> Tuple[str, Path, Optional[str], Optional[str]]:
+    def get_sample(self, index: int) -> tuple[str, Path, str | None, str | None]:
         if self.dataset is None or not 0 <= index < len(self.dataset):
             raise IndexError("Index out of range or dataset not loaded")
 

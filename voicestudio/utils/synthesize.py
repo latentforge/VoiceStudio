@@ -2,14 +2,10 @@
 Main synthesis pipeline for voice cloning evaluation.
 """
 
-from pathlib import Path
-from typing import Dict, List
-
-from config.synthesis_config import SynthesisConfig
-from config import DatasetType, ModelType, GenerationMethod
-from benchmark_datasets import create_dataset, BaseSynthesisDataset
-from models import create_synthesizer, BaseSynthesizer
-from strategies import create_strategy
+from ..datasets import BaseSynthesisDataset, create_dataset
+from ..metrics.presets import DatasetType, GenerationMethod, ModelType, SynthesisConfig
+from ..metrics.strategies import create_strategy
+from ..models.integrations import BaseSynthesizer, create_synthesizer
 
 
 class SynthesisPipeline:
@@ -17,8 +13,8 @@ class SynthesisPipeline:
 
     def __init__(self, config: SynthesisConfig = None):
         self.config = config or SynthesisConfig()
-        self.datasets: Dict[DatasetType, BaseSynthesisDataset] = {}
-        self.models: Dict[ModelType, BaseSynthesizer] = {}
+        self.datasets: dict[DatasetType, BaseSynthesisDataset] = {}
+        self.models: dict[ModelType, BaseSynthesizer] = {}
 
     def setup_dataset(self, dataset_type: DatasetType, root_dir: str = "./data") -> bool:
         """Setup dataset loader.
@@ -63,7 +59,7 @@ class SynthesisPipeline:
             self,
             dataset_type: DatasetType,
             model_type: ModelType,
-            methods: List[GenerationMethod] = None
+            methods: list[GenerationMethod] = None
     ) -> bool:
         """Run synthesis generation.
 

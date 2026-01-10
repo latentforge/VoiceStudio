@@ -1,14 +1,16 @@
 """
 SIM (Speaker Similarity) calculator using ECAPA-TDNN for speaker embeddings.
 """
+
 from pathlib import Path
-from typing import List, Tuple, Dict
+
 import numpy as np
 import torch
-import torchaudio
+from speechbrain.inference.speaker import EncoderClassifier
 from tqdm import tqdm
 
-from .base import BaseMetricCalculator, ModelConfig, MetricCalculationError
+from ..utils.loader import AudioLoader
+from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig
 
 
 class SIMCalculator(BaseMetricCalculator):
@@ -23,16 +25,12 @@ class SIMCalculator(BaseMetricCalculator):
     def _load_model_impl(self) -> None:
         """Load ECAPA-TDNN model from speechbrain."""
         try:
-            from speechbrain.inference.speaker import EncoderClassifier
-
             model_name = self.config.additional_params.get(
-                'model_name',
-                'speechbrain/spkrec-ecapa-voxceleb'
+                "model_name", "speechbrain/spkrec-ecapa-voxceleb"
             )
 
             self.classifier = EncoderClassifier.from_hparams(
-                source=model_name,
-                run_opts={"device": str(self.get_device())}
+                source=model_name, run_opts={"device": str(self.get_device())}
             )
 
             self.logger.info(f"Loaded ECAPA-TDNN model: {model_name}")
@@ -53,21 +51,13 @@ class SIMCalculator(BaseMetricCalculator):
             Preprocessed audio tensor
         """
         try:
-            # Load audio
-            waveform, sample_rate = torchaudio.load(str(audio_path))
+            loader = AudioLoader(sr=self.target_sr, mono=True, cache=False)
+            waveform = loader.load(audio_path)
 
-            # Convert to mono if stereo
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-
-            # Resample if necessary
-            if sample_rate != self.target_sr:
-                resampler = torchaudio.transforms.Resample(
-                    orig_freq=sample_rate,
-                    new_freq=self.target_sr
-                )
-                waveform = resampler(waveform)
-
+            # Ensure waveform is 2D [channels, samples]
+            if waveform.dim() == 1:
+                waveform = waveform.unsqueeze(0)
+            
             # Ensure minimum length (e.g., 1 second)
             min_length = self.target_sr * 1  # 1 second
             if waveform.shape[1] < min_length:
@@ -106,9 +96,7 @@ class SIMCalculator(BaseMetricCalculator):
             raise MetricCalculationError(f"Embedding extraction failed: {e}")
 
     def calculate_cosine_similarity(
-        self,
-        embedding1: np.ndarray,
-        embedding2: np.ndarray
+        self, embedding1: np.ndarray, embedding2: np.ndarray
     ) -> float:
         """
         Calculate cosine similarity between two speaker embeddings.
@@ -157,7 +145,7 @@ class SIMCalculator(BaseMetricCalculator):
         except Exception as e:
             raise MetricCalculationError(f"Failed to calculate speaker similarity: {e}")
 
-    def calculate_batch_optimized(self, pairs: List[Tuple[Path, Path]]) -> List[float]:
+    def calculate_batch_optimized(self, pairs: list[tuple[Path, Path]]) -> list[float]:
         """
         Optimized batch calculation for speaker similarity.
         Extracts all embeddings first, then calculates similarities.
@@ -172,20 +160,26 @@ class SIMCalculator(BaseMetricCalculator):
             # Batch extract embeddings
             embeddings = {}
 
-            self.logger.info(f"Extracting embeddings for {len(all_paths)} unique audio files")
+            self.logger.info(
+                f"Extracting embeddings for {len(all_paths)} unique audio files"
+            )
 
             # Process in batches to manage memory
             batch_size = self.config.batch_size
             all_paths_list = list(all_paths)
 
-            for i in tqdm(range(0, len(all_paths_list), batch_size), desc="Extracting embeddings"):
-                batch_paths = all_paths_list[i:i + batch_size]
+            for i in tqdm(
+                range(0, len(all_paths_list), batch_size), desc="Extracting embeddings"
+            ):
+                batch_paths = all_paths_list[i : i + batch_size]
 
                 for audio_path in batch_paths:
                     try:
                         embeddings[audio_path] = self.extract_embedding(audio_path)
                     except Exception as e:
-                        self.logger.warning(f"Failed to extract embedding for {audio_path}: {e}")
+                        self.logger.warning(
+                            f"Failed to extract embedding for {audio_path}: {e}"
+                        )
                         embeddings[audio_path] = None
 
             # Calculate similarities for all pairs
@@ -196,7 +190,9 @@ class SIMCalculator(BaseMetricCalculator):
                     syn_embedding = embeddings.get(syn_path)
 
                     if ref_embedding is not None and syn_embedding is not None:
-                        similarity = self.calculate_cosine_similarity(ref_embedding, syn_embedding)
+                        similarity = self.calculate_cosine_similarity(
+                            ref_embedding, syn_embedding
+                        )
                         results.append(similarity)
                     else:
                         results.append(np.nan)
@@ -208,21 +204,20 @@ class SIMCalculator(BaseMetricCalculator):
             return results
 
         except Exception as e:
-            self.logger.warning(f"Batch processing failed, falling back to individual: {e}")
+            self.logger.warning(
+                f"Batch processing failed, falling back to individual: {e}"
+            )
             return super().calculate_batch_optimized(pairs)
 
-    def get_embedding_cache(self) -> Dict[Path, np.ndarray]:
+    def get_embedding_cache(self) -> dict[Path, np.ndarray]:
         """Get cached embeddings (for debugging/analysis purposes)."""
-        return getattr(self, '_embedding_cache', {})
+        return getattr(self, "_embedding_cache", {})
 
     def get_name(self) -> str:
         return "SIM"
 
 
-if __name__ == '__main__':
-    from pathlib import Path
-    import torch
-
+if __name__ == "__main__":
     ref_path = Path("data/test/ref.wav")
     syn_path = Path("data/test/syn.wav")
 
@@ -230,7 +225,7 @@ if __name__ == '__main__':
         name="sim",
         batch_size=16,
         device="cuda" if torch.cuda.is_available() else "cpu",
-        additional_params={'model_name': 'speechbrain/spkrec-ecapa-voxceleb'}
+        additional_params={"model_name": "speechbrain/spkrec-ecapa-voxceleb"},
     )
 
     try:

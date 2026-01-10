@@ -3,13 +3,12 @@ Evaluation pipeline for synthesized audio quality assessment.
 """
 
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
-import pandas as pd
-import numpy as np
-from tqdm import tqdm
 
-from config import DatasetType, ModelType, GenerationMethod
-from metrics import MetricType, create_calculator, ModelConfig
+import numpy as np
+import pandas as pd
+
+from ..metrics import MetricType, ModelConfig, create_calculator
+from ..metrics.presets import DatasetType, GenerationMethod, ModelType
 
 
 class EvaluationPipeline:
@@ -25,7 +24,7 @@ class EvaluationPipeline:
         dataset_type: DatasetType,
         model_type: ModelType,
         method: GenerationMethod
-    ) -> List[Tuple[Path, Path, Optional[str]]]:
+    ) -> list[tuple[Path, Path, str | None]]:
         """Get reference-synthesis audio pairs with metadata for proper grouping.
 
         Args:
@@ -92,10 +91,10 @@ class EvaluationPipeline:
 
     @staticmethod
     def evaluate_pairs_with_grouping(
-        pairs: List[Tuple[Path, Path, Optional[str]]],
-        metric_types: List[MetricType],
+        pairs: list[tuple[Path, Path, str | None]],
+        metric_types: list[MetricType],
         batch_size: int = 16
-    ) -> Dict[MetricType, Dict[str, List[float]]]:
+    ) -> dict[MetricType, dict[str, list[float]]]:
         """Evaluate pairs and group results by reference ID.
 
         Args:
@@ -157,8 +156,8 @@ class EvaluationPipeline:
 
     @staticmethod
     def calculate_method1_statistics(
-        grouped_results: Dict[MetricType, Dict[str, List[float]]]
-    ) -> Dict[str, float]:
+        grouped_results: dict[MetricType, dict[str, list[float]]]
+    ) -> dict[str, float]:
         """Calculate statistics for Method1 results (simple averages)."""
         stats = {}
 
@@ -184,8 +183,8 @@ class EvaluationPipeline:
 
     @staticmethod
     def calculate_method2_statistics(
-        grouped_results: Dict[MetricType, Dict[str, List[float]]]
-    ) -> Dict[str, float]:
+        grouped_results: dict[MetricType, dict[str, list[float]]]
+    ) -> dict[str, float]:
         """Calculate statistics for Method2 results with proper grouping."""
         stats = {}
 
@@ -239,9 +238,9 @@ class EvaluationPipeline:
         self,
         dataset_type: DatasetType,
         model_type: ModelType,
-        metric_types: List[MetricType] = None,
-        methods: List[GenerationMethod] = None
-    ) -> Dict[GenerationMethod, Dict[str, float]]:
+        metric_types: list[MetricType] = None,
+        methods: list[GenerationMethod] = None
+    ) -> dict[GenerationMethod, dict[str, float]]:
         """Evaluate a specific dataset-model combination.
 
         Args:
@@ -310,7 +309,7 @@ class EvaluationPipeline:
 
     @staticmethod
     def save_results_to_csv(
-        results: Dict[GenerationMethod, Dict[str, float]],
+        results: dict[GenerationMethod, dict[str, float]],
         dataset_type: DatasetType,
         model_type: ModelType,
         output_dir: Path = Path("results")

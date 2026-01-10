@@ -4,7 +4,6 @@ Base synthesizer for TTS models.
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional, List
 
 
 class BaseSynthesizer(ABC):
@@ -25,9 +24,9 @@ class BaseSynthesizer(ABC):
         self,
         text: str,
         output_path: Path,
-        reference_audio: Optional[Path] = None,
-        style_prompt: Optional[str] = None,
-        speaker_id: Optional[str] = None
+        reference_audio: Path | None = None,
+        style_prompt: str | None = None,
+        speaker_id: str | None = None
     ) -> bool:
         """Synthesize speech from text using reference audio or style prompt.
 

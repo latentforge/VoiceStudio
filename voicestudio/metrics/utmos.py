@@ -1,11 +1,15 @@
 """
 UTMOS calculator using UTMOSv2.
 """
-from pathlib import Path
-from typing import List, Tuple
-import numpy as np
 
-from .base import BaseMetricCalculator, ModelConfig, MetricCalculationError
+import random
+from pathlib import Path
+
+import numpy as np
+import torch
+from utmosv2 import create_model
+
+from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig
 
 
 class UTMOSCalculator(BaseMetricCalculator):
@@ -18,19 +22,27 @@ class UTMOSCalculator(BaseMetricCalculator):
     def _load_model_impl(self) -> None:
         """Load UTMOSv2 model."""
         try:
-            from utmosv2 import create_model
+            seed = self.config.additional_params.get("seed", 42)
+            random.seed(seed)
+            np.random.seed(seed)
+            torch.manual_seed(seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
 
-            model_name = self.config.additional_params.get('model_name', 'fusion_stage3')
-            fold = self.config.additional_params.get('fold', 0)
-            seed = self.config.additional_params.get('seed', 42)
+            model_name = self.config.additional_params.get(
+                "model_name", "fusion_stage3"
+            )
+            fold = self.config.additional_params.get("fold", 0)
 
             self.utmos_model = create_model(
                 pretrained=True,
                 config=model_name,
                 fold=fold,
                 seed=seed,
-                device=self.get_device()
+                device=self.get_device(),
             )
+            
+            self.utmos_model.eval()
 
             self.logger.info(f"Loaded UTMOSv2 model: {model_name}")
 
@@ -49,7 +61,7 @@ class UTMOSCalculator(BaseMetricCalculator):
         except Exception as e:
             raise MetricCalculationError(f"Failed to calculate UTMOS: {e}")
 
-    def calculate_batch_optimized(self, pairs: List[Tuple[Path, Path]]) -> List[float]:
+    def calculate_batch_optimized(self, pairs: list[tuple[Path, Path]]) -> list[float]:
         """Optimized batch calculation for UTMOS."""
         try:
             # Extract synthesis paths only (UTMOS doesn't use reference)
@@ -59,7 +71,7 @@ class UTMOSCalculator(BaseMetricCalculator):
             results = self.utmos_model.predict(
                 input_dir=None,  # Will be handled by individual paths
                 batch_size=self.config.batch_size,
-                num_workers=4
+                num_workers=4,
             )
 
             # If batch prediction is not available, fall back to individual predictions
@@ -69,15 +81,16 @@ class UTMOSCalculator(BaseMetricCalculator):
             return [float(score) for score in results]
 
         except Exception as e:
-            self.logger.warning(f"Batch processing failed, falling back to individual: {e}")
+            self.logger.warning(
+                f"Batch processing failed, falling back to individual: {e}"
+            )
             return super().calculate_batch_optimized(pairs)
 
     def get_name(self) -> str:
         return "UTMOS"
 
 
-if __name__ == '__main__':
-    from pathlib import Path
+if __name__ == "__main__":
     import torch
 
     ref_path = Path("data/test/ref.wav")
@@ -86,7 +99,7 @@ if __name__ == '__main__':
     config = ModelConfig(
         name="utmos",
         batch_size=8,
-        device="cuda" if torch.cuda.is_available() else "cpu"
+        device="cuda" if torch.cuda.is_available() else "cpu",
     )
 
     try:

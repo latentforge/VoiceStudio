@@ -3,11 +3,13 @@ Dia-TTS synthesizer implementation.
 """
 
 from pathlib import Path
-from typing import Optional
+
 import torch
-import torchaudio
-import numpy as np
+from transformers import AutoProcessor, DiaForConditionalGeneration
+
+from ...utils.loader import AudioLoader
 from .base import BaseSynthesizer
+
 
 class DiaSynthesizer(BaseSynthesizer):
     """Dia-TTS synthesizer using nari-labs/Dia-1.6B-0626."""
@@ -22,11 +24,6 @@ class DiaSynthesizer(BaseSynthesizer):
     def load_model(self) -> None:
         """Load Dia-TTS model and processor."""
         try:
-            from transformers import AutoProcessor, DiaForConditionalGeneration
-        except ImportError:
-            raise RuntimeError("transformers not installed. Install with: pip install transformers")
-
-        try:
             model_name = "nari-labs/Dia-1.6B-0626"
             self.processor = AutoProcessor.from_pretrained(model_name)
             self.model = DiaForConditionalGeneration.from_pretrained(model_name).to(self.config.device)
@@ -40,9 +37,9 @@ class DiaSynthesizer(BaseSynthesizer):
             self,
             text: str,
             output_path: Path,
-            reference_audio: Optional[Path] = None,
-            style_prompt: Optional[str] = None,
-            speaker_id: Optional[str] = None
+            reference_audio: Path | None = None,
+            style_prompt: str | None = None,
+            speaker_id: str | None = None
     ) -> bool:
         """Synthesize speech using Dia-TTS.
 
@@ -67,17 +64,13 @@ class DiaSynthesizer(BaseSynthesizer):
             # Ensure output directory exists
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Load and process reference audio
-            waveform, sample_rate = torchaudio.load(str(reference_audio))
-            original_duration = waveform.shape[1] / sample_rate
-
-            # Resample if needed
-            if sample_rate != self.sampling_rate:
-                waveform = torchaudio.transforms.Resample(sample_rate, self.sampling_rate)(waveform)
-
-            # Convert to mono
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
+            # Load and process reference audio using AudioLoader
+            loader = AudioLoader(sr=self.sampling_rate, mono=True, cache=False)
+            waveform = loader.load(reference_audio)
+            
+            # AudioLoader returns mono audio as [samples], need [1, samples] for processing
+            waveform = waveform.unsqueeze(0)
+            original_duration = waveform.shape[1] / self.sampling_rate
 
             current_duration = waveform.shape[1] / self.sampling_rate
             repeat_count = 1

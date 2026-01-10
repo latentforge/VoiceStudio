@@ -2,7 +2,6 @@
 Method 2: 10 references × 10 synthesis each for speaker consistency.
 """
 
-from pathlib import Path
 from tqdm import tqdm
 
 from .base import BaseGenerationStrategy
@@ -63,10 +62,14 @@ class Method2Strategy(BaseGenerationStrategy):
         total_success = 0
 
         # Process each reference
-        for ref_idx, sample_idx in enumerate(tqdm(sample_indices, desc="Processing references")):
+        for ref_idx, sample_idx in enumerate(
+            tqdm(sample_indices, desc="Processing references")
+        ):
             try:
                 # Get reference sample
-                transcript, audio_path, style_prompt, speaker_id = self.dataset.get_sample(sample_idx)
+                transcript, audio_path, style_prompt, speaker_id = (
+                    self.dataset.get_sample(sample_idx)
+                )
 
                 # Copy reference audio
                 ref_filename = f"ref_{ref_idx:03d}.wav"
@@ -83,7 +86,9 @@ class Method2Strategy(BaseGenerationStrategy):
                 set_success = 0
 
                 # Generate multiple synthesis for this reference
-                for syn_idx in tqdm(range(syn_per_ref), desc=f"Set {ref_idx}", leave=False):
+                for syn_idx in tqdm(
+                    range(syn_per_ref), desc=f"Set {ref_idx}", leave=False
+                ):
                     syn_filename = f"syn_{ref_idx:03d}_{syn_idx:02d}.wav"
                     syn_output_path = set_dir / syn_filename
 
@@ -97,7 +102,7 @@ class Method2Strategy(BaseGenerationStrategy):
                         output_path=syn_output_path,
                         reference_audio=audio_path,
                         style_prompt=style_prompt,
-                        speaker_id=speaker_id
+                        speaker_id=speaker_id,
                     ):
                         set_success += 1
                     else:

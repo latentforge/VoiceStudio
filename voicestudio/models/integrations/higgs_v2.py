@@ -4,11 +4,14 @@ Higgs-v2 synthesizer implementation.
 
 from pathlib import Path
 from typing import Optional
+
 import torch
 import torchaudio
+
+from voicestudio.boson_multimodal.data_types import ChatMLSample, Message
+from voicestudio.boson_multimodal.serve.serve_engine import HiggsAudioResponse, HiggsAudioServeEngine
+
 from .base import BaseSynthesizer
-from boson_multimodal.serve.serve_engine import HiggsAudioServeEngine, HiggsAudioResponse
-from boson_multimodal.data_types import ChatMLSample, Message
 
 class HiggsV2Synthesizer(BaseSynthesizer):
     """Higgs-v2 synthesizer using bosonai."""

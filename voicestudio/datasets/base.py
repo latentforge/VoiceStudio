@@ -2,10 +2,9 @@
 Base dataset loader for synthesis.
 """
 
+import random
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Tuple, Optional
-import random
 
 
 class BaseSynthesisDataset(ABC):
@@ -22,7 +21,7 @@ class BaseSynthesisDataset(ABC):
         pass
 
     @abstractmethod
-    def get_sample(self, index: int) -> Tuple[str, Path, Optional[str], Optional[str]]:
+    def get_sample(self, index: int) -> tuple[str, Path, str | None, str | None]:
         """Get a sample by index.
 
         Returns:
@@ -35,7 +34,7 @@ class BaseSynthesisDataset(ABC):
         """Get total number of samples."""
         pass
 
-    def select_samples(self, num_samples: int, seed: int = 42) -> List[int]:
+    def select_samples(self, num_samples: int, seed: int = 42) -> list[int]:
         """Select random samples for synthesis."""
         random.seed(seed)
         total = self.get_total_samples()
@@ -44,7 +43,7 @@ class BaseSynthesisDataset(ABC):
 
         return random.sample(range(total), num_samples)
 
-    def filter_by_duration(self, indices: List[int]) -> List[int]:
+    def filter_by_duration(self, indices: list[int]) -> list[int]:
         """Filter samples by duration constraints."""
         if not self.config.max_duration and not self.config.min_duration:
             return indices

@@ -2,12 +2,11 @@
 Generation strategies for synthesis pipeline.
 """
 
+from ..presets import GenerationMethod
 from .base import BaseGenerationStrategy
 from .method1 import Method1Strategy
 from .method2 import Method2Strategy
 from .method3 import Method3Strategy
-from config import GenerationMethod
-
 
 # Strategy registry for factory pattern
 STRATEGY_REGISTRY = {
@@ -18,10 +17,7 @@ STRATEGY_REGISTRY = {
 
 
 def create_strategy(
-    method: GenerationMethod,
-    config,
-    dataset,
-    synthesizer
+    method: GenerationMethod, config, dataset, synthesizer
 ) -> BaseGenerationStrategy:
     """Factory function to create generation strategy instances.
 
@@ -39,7 +35,9 @@ def create_strategy(
     """
     if method not in STRATEGY_REGISTRY:
         available_methods = list(STRATEGY_REGISTRY.keys())
-        raise ValueError(f"Unsupported generation method: {method}. Available: {available_methods}")
+        raise ValueError(
+            f"Unsupported generation method: {method}. Available: {available_methods}"
+        )
 
     strategy_class = STRATEGY_REGISTRY[method]
     return strategy_class(config, dataset, synthesizer)
@@ -57,5 +55,5 @@ __all__ = [
     "Method3Strategy",
     "STRATEGY_REGISTRY",
     "create_strategy",
-    "get_available_strategies"
+    "get_available_strategies",
 ]

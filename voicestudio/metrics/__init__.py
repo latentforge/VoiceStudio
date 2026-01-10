@@ -3,21 +3,23 @@ Audio quality evaluation metrics module.
 """
 
 from enum import Enum
+
 from .base import (
     BaseMetricCalculator,
-    ModelConfig,
     MetricCalculationError,
-    ModelLoadError
+    ModelConfig,
+    ModelLoadError,
 )
-from .utmos import UTMOSCalculator
-from .wer import WERCalculator
-from .sim import SIMCalculator
 from .ffe import FFECalculator
 from .mcd import MCDCalculator
+from .sim import SIMCalculator
+from .utmos import UTMOSCalculator
+from .wer import WERCalculator
 
 
 class MetricType(Enum):
     """Supported metric types."""
+
     UTMOS = "utmos"
     WER = "wer"
     SIM = "sim"
@@ -31,11 +33,13 @@ METRIC_CALCULATORS = {
     MetricType.WER: WERCalculator,
     MetricType.SIM: SIMCalculator,
     MetricType.FFE: FFECalculator,
-    MetricType.MCD: MCDCalculator
+    MetricType.MCD: MCDCalculator,
 }
 
 
-def create_calculator(metric_type: MetricType, config: ModelConfig) -> BaseMetricCalculator:
+def create_calculator(
+    metric_type: MetricType, config: ModelConfig
+) -> BaseMetricCalculator:
     """
     Factory function to create metric calculators.
 
@@ -51,7 +55,9 @@ def create_calculator(metric_type: MetricType, config: ModelConfig) -> BaseMetri
     """
     if metric_type not in METRIC_CALCULATORS:
         available_metrics = list(METRIC_CALCULATORS.keys())
-        raise ValueError(f"Unsupported metric: {metric_type}. Available metrics: {available_metrics}")
+        raise ValueError(
+            f"Unsupported metric: {metric_type}. Available metrics: {available_metrics}"
+        )
 
     calculator_class = METRIC_CALCULATORS[metric_type]
     return calculator_class(config)
@@ -64,21 +70,19 @@ def get_available_metrics() -> list[MetricType]:
 
 __all__ = [
     # Base classes and exceptions
-    'BaseMetricCalculator',
-    'ModelConfig',
-    'MetricCalculationError',
-    'ModelLoadError',
-
+    "BaseMetricCalculator",
+    "ModelConfig",
+    "MetricCalculationError",
+    "ModelLoadError",
     # Metric calculators
-    'UTMOSCalculator',
-    'WERCalculator',
-    'SIMCalculator',
-    'FFECalculator',
-    'MCDCalculator',
-
+    "UTMOSCalculator",
+    "WERCalculator",
+    "SIMCalculator",
+    "FFECalculator",
+    "MCDCalculator",
     # Enums and registry
-    'MetricType',
-    'METRIC_CALCULATORS',
-    'create_calculator',
-    'get_available_metrics'
+    "MetricType",
+    "METRIC_CALCULATORS",
+    "create_calculator",
+    "get_available_metrics",
 ]

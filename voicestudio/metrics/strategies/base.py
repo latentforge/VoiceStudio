@@ -2,10 +2,9 @@
 Base generation strategy for synthesis.
 """
 
+import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Tuple
-import shutil
 
 
 class BaseGenerationStrategy(ABC):
@@ -41,7 +40,9 @@ class BaseGenerationStrategy(ABC):
             print(f"Failed to copy {src_path} to {dst_path}: {e}")
             return False
 
-    def create_output_paths(self, dataset_name: str, model_name: str, method_name: str) -> Tuple[Path, Path]:
+    def create_output_paths(
+        self, dataset_name: str, model_name: str, method_name: str
+    ) -> tuple[Path, Path]:
         """Create output directory paths for reference and synthesis."""
         ref_dir = self.output_dir / "ref" / dataset_name / method_name
         syn_dir = self.output_dir / "syn" / dataset_name / model_name / method_name

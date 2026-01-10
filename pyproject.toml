@@ -41,6 +41,9 @@ dependencies = [
     "accelerate>=1.10.0",
     "peft>=0.18.0",
     "librosa>=0.11.0",
+    "pyworld>=0.3.5",
+    "pysptk>=1.0.1",
+    "jiwer>=4.0.0",
     "datasets>=4.0.0",
     "hf-xet>=1.1.8",
     "tqdm>=4.67.1",
@@ -53,8 +56,9 @@ dependencies = [
     # -----------------------------------------
     "voicestudio-parler-tts",  # Apache 2.0 License
     "voicestudio-higgs-audio",  # Apache 2.0 License
-
     "voicestudio-f5-tts"  # MIT License
+    "speechbrain",
+    "utmosv2",
 ]
 [project.optional-dependencies]
 all = [
@@ -78,6 +82,8 @@ torchaudio = [
 ]
 voicestudio-parler-tts = { git = "https://github.com/latentforge/parler-tts", rev = "namespace" }
 voicestudio-higgs-audio = { git = "https://github.com/latentforge/higgs-audio", rev = "namespace" }
+speechbrain = { git = "https://github.com/latentforge/speechbrain", rev = "namespace" }
+utmosv2 = { git = "https://github.com/sarulab-speech/UTMOSv2" }
 
 voicestudio-f5-tts = { git = "https://github.com/latentforge/f5-tts", rev = "namespace" }
 
