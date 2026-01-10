@@ -3,6 +3,7 @@ Base metric calculator with error handling and resource management.
 """
 
 import logging
+import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,6 +72,13 @@ class BaseMetricCalculator(ABC):
     def load_model(self) -> None:
         """Load the required model for metric calculation."""
         try:
+            seed = 42
+            random.seed(seed)
+            np.random.seed(seed)
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+            
             self._load_model_impl()
             self._is_initialized = True
             self.logger.info(f"Successfully loaded {self.get_name()} model")
