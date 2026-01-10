@@ -138,6 +138,10 @@ class ParlerTTSSynthesizer(BaseSynthesizer):
 
     def load_model(self) -> None:
         """Load model with automatic checkpoint detection."""
+        torch.manual_seed(42)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(42)
+        
         self.tokenizer = AutoTokenizer.from_pretrained(self.pretrained_model_name_or_path)
         
         # Detect anchor mode from checkpoint
@@ -210,6 +214,7 @@ class ParlerTTSSynthesizer(BaseSynthesizer):
                 audio = self.model.generate(
                     input_ids=description_ids.to(self.config.device),
                     prompt_input_ids=text_ids.to(self.config.device),
+                    do_sample=False,
                 )
 
             # Save and verify
