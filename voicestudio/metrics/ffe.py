@@ -5,8 +5,9 @@ FFE (F0 Frame Error) calculator for fundamental frequency evaluation.
 from pathlib import Path
 
 import numpy as np
+import torch
+from tqdm import tqdm
 
-from ..utils.loader import AudioLoader
 from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig
 
 
@@ -126,42 +127,25 @@ class FFECalculator(BaseMetricCalculator):
         except Exception as e:
             raise MetricCalculationError(f"Failed to initialize FFE calculator: {e}")
 
-    def _load_and_preprocess_audio(self, audio_path: Path) -> np.ndarray:
-        """Load and preprocess audio for F0 extraction."""
-        try:
-            loader = AudioLoader(sr=self.target_sr, mono=True, cache=False)
-            waveform = loader.load(audio_path)
-
-            # Convert to numpy and normalize
-            audio_np = waveform.numpy().astype(np.double)
-
-            return audio_np
-
-        except Exception as e:
-            raise MetricCalculationError(f"Failed to load audio {audio_path}: {e}")
-
     def extract_f0(
         self, audio_path: Path
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Extract F0 from audio using YIN algorithm."""
-        try:
-            audio = self._load_and_preprocess_audio(audio_path)
+        waveform = self._prepare_audio_input(audio_path)
+        audio = waveform.numpy().astype(np.double)
+        return self._extract_f0_from_wav(audio)
 
-            # Extract F0 using YIN
-            pitches, harmonic_rates, argmins, times = self.pitch_extractor.compute_yin(
-                audio, self.target_sr
-            )
-
-            return (
-                np.array(pitches),
-                np.array(harmonic_rates),
-                np.array(argmins),
-                np.array(times),
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to extract F0 from {audio_path}: {e}")
-            raise MetricCalculationError(f"F0 extraction failed: {e}")
+    def _extract_f0_from_wav(
+        self, wav: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Internal helper for YIN-based F0 extraction. Returns (times, pitches, argmins, harmonic_rates)."""
+        pitches, harmonic_rates, argmins, times = self.pitch_extractor.compute_yin(wav)
+        return (
+            np.array(times),
+            np.array(pitches),
+            np.array(argmins),
+            np.array(harmonic_rates),
+        )
 
     def calculate_ffe(self, ref_f0_data: tuple, syn_f0_data: tuple) -> float:
         """Calculate F0 Frame Error between reference and synthesis F0."""
@@ -215,26 +199,76 @@ class FFECalculator(BaseMetricCalculator):
     ) -> np.ndarray:
         """Calculate gross pitch error frames."""
         voiced_frames = self._true_voiced_frames(true_f0, est_f0)
-        true_f0_eps = true_f0 + eps  # Avoid division by zero
+        true_f0_eps = true_f0 + eps
         pitch_error_frames = np.abs(est_f0 / true_f0_eps - 1) > 0.2
         return voiced_frames & pitch_error_frames
 
-    def _calculate_pair_impl(self, ref_path: Path, syn_path: Path) -> float:
-        """Calculate FFE for a reference-synthesis pair."""
+    def _forward_impl(
+        self,
+        synthesis: torch.Tensor,
+        reference: torch.Tensor | None = None,
+        **kwargs,
+    ) -> float:
+        """Calculate FFE between synthesis and reference tensors."""
+        if reference is None:
+            raise MetricCalculationError("FFE requires a reference audio tensor")
+
         try:
-            # Extract F0 from both audio files
-            ref_f0_data = self.extract_f0(ref_path)
-            syn_f0_data = self.extract_f0(syn_path)
+            # WORLD/SPTK work with numpy doubles
+            syn_audio = synthesis.cpu().numpy().astype(np.double)
+            ref_audio = reference.cpu().numpy().astype(np.double)
 
-            # Calculate FFE
-            ffe_score = self.calculate_ffe(ref_f0_data, syn_f0_data)
+            # Extract F0 using YIN helper
+            syn_f0_data = self._extract_f0_from_wav(syn_audio)
+            ref_f0_data = self._extract_f0_from_wav(ref_audio)
 
-            self.logger.debug(f"FFE score: {ffe_score:.4f}")
-
-            return ffe_score
+            return self.calculate_ffe(ref_f0_data, syn_f0_data)
 
         except Exception as e:
-            raise MetricCalculationError(f"Failed to calculate FFE for pair: {e}")
+            raise MetricCalculationError(f"FFE forward pass failed: {e}")
+
+    def calculate_batch_optimized(self, pairs: list[tuple[Path, Path]]) -> list[float]:
+        """
+        Optimized batch calculation for FFE.
+        Extracts all F0 features first, then calculates FFE scores.
+        """
+        if not pairs:
+            return []
+
+        try:
+            # 1. Extract unique paths
+            all_paths = list(set([p for pair in pairs for p in pair]))
+            f0_features = {}
+
+            self.logger.info(f"Extracting F0 features for {len(all_paths)} unique files")
+            for audio_path in tqdm(all_paths, desc="Extracting F0 features"):
+                try:
+                    f0_features[audio_path] = self.extract_f0(audio_path)
+                except Exception as e:
+                    self.logger.warning(f"Failed F0 extraction for {audio_path}: {e}")
+                    f0_features[audio_path] = None
+
+            # 2. Calculate FFE scores
+            self.logger.info(f"Calculating FFE scores for {len(pairs)} pairs")
+            results = []
+            for ref_path, syn_path in tqdm(pairs, desc="Calculating FFE scores"):
+                try:
+                    ref_data = f0_features.get(ref_path)
+                    syn_data = f0_features.get(syn_path)
+
+                    if ref_data is not None and syn_data is not None:
+                        results.append(self.calculate_ffe(ref_data, syn_data))
+                    else:
+                        results.append(np.nan)
+                except Exception as e:
+                    self.logger.warning(f"Failed calculation for pair: {e}")
+                    results.append(np.nan)
+
+            return results
+
+        except Exception as e:
+            self.logger.error(f"FFE batch optimization failed: {e}. Falling back to individual.")
+            return super().calculate_batch_optimized(pairs)
 
     def get_name(self) -> str:
         return "FFE"
@@ -253,7 +287,7 @@ if __name__ == "__main__":
     try:
         with FFECalculator(config) as calculator:
             print(f"Testing {calculator.get_name()} calculator...")
-            score = calculator.calculate_pair(ref_path, syn_path)
+            score = calculator(reference=ref_path, synthesis=syn_path)
             print(f"FFE Score: {score:.4f}")
     except Exception as e:
         print(f"Test failed: {e}")

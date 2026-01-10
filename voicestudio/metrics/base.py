@@ -3,7 +3,6 @@ Base metric calculator with error handling and resource management.
 """
 
 import logging
-import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -84,39 +83,70 @@ class BaseMetricCalculator(ABC):
         """Actual model loading implementation."""
         pass
 
-    def calculate_pair(self, ref_path: Path, syn_path: Path) -> float:
-        """Calculate metric for a single reference-synthesis pair."""
+    def forward(
+        self,
+        synthesis: torch.Tensor | str | Path,
+        reference: torch.Tensor | str | Path | None = None,
+        **kwargs,
+    ) -> float | torch.Tensor:
+        """
+        Main entry point for calculating the metric.
+
+        Args:
+            synthesis: Synthesis input
+                - torch.Tensor: Audio waveform
+                - Path: Path to audio file (will be loaded as tensor)
+                - str: Transcription text (for WER)
+            reference: Reference input
+                - torch.Tensor: Reference audio waveform
+                - Path: Path to reference audio file
+                - str: Ground truth transcription (for WER)
+                - None: Not used (for UTMOS)
+            **kwargs: Metric-specific parameters (e.g., sample_rate)
+
+        Returns:
+            Metric score
+        """
         if not self._is_initialized:
-            raise MetricCalculationError(
-                "Model not initialized. Call load_model() first."
-            )
+            raise MetricCalculationError("Model not initialized")
 
         try:
-            return self._calculate_pair_impl(ref_path, syn_path)
-        except Exception as e:
-            self.logger.error(
-                f"Error calculating {self.get_name()} for pair ({ref_path}, {syn_path}): {e}"
-            )
-            raise MetricCalculationError(f"Error calculating {self.get_name()}: {e}")
+            sample_rate = kwargs.get("sample_rate")
 
-    @abstractmethod
-    def _calculate_pair_impl(self, ref_path: Path, syn_path: Path) -> float:
-        """Actual pair calculation implementation."""
-        pass
+            # Prepare reference input: Path or Tensor as audio, str as text
+            if reference is not None and isinstance(reference, (Path, torch.Tensor)):
+                if isinstance(reference, Path):
+                    kwargs["orig_reference"] = reference
+                reference = self._prepare_audio_input(reference, sample_rate)
+
+            # Prepare synthesis input: Path or Tensor as audio, str as text
+            if isinstance(synthesis, (Path, torch.Tensor)):
+                if isinstance(synthesis, Path):
+                    kwargs["orig_synthesis"] = synthesis
+                synthesis = self._prepare_audio_input(synthesis, sample_rate)
+
+            return self._forward_impl(synthesis, reference, **kwargs)
+        except Exception as e:
+            self.logger.error(f"Error in {self.get_name()} forward pass: {e}")
+            raise MetricCalculationError(
+                f"Error in {self.get_name()} forward pass: {e}"
+            )
 
     @abstractmethod
     def _forward_impl(
         self,
-        syn: torch.Tensor | str,
-        ref: torch.Tensor | str | None = None,
+        synthesis: torch.Tensor | str,
+        reference: torch.Tensor | str | None = None,
         **kwargs,
     ) -> float | torch.Tensor:
         """
+        Actual metric calculation implementation to be overridden by subclasses.
+
         Args:
-            syn: Synthesis input
+            synthesis: Synthesis input
                 - torch.Tensor: Audio waveform for audio-based metrics
                 - str: Transcription text for WER metric
-            ref: Reference input (metric-dependent)
+            reference: Reference input (metric-dependent)
                 - torch.Tensor: Reference audio for similarity metrics (SIM, MCD, FFE)
                 - str: Ground truth transcription for WER metric
                 - None: Not used for no-reference metrics (UTMOS)
@@ -138,87 +168,43 @@ class BaseMetricCalculator(ABC):
             sample_rate: Target sample rate for file inputs
 
         Returns:
-            Audio tensor
+            Processed audio tensor
         """
+        if sample_rate is None:
+            sample_rate = self.config.additional_params.get(
+                "sample_rate", self.DEFAULT_SAMPLE_RATE
+            )
+
+        # 1. Load waveform
         if isinstance(audio, torch.Tensor):
-            return audio
-
-        if isinstance(audio, (str, Path)):
-            if sample_rate is None:
-                sample_rate = self.config.additional_params.get(
-                    "sample_rate", self.DEFAULT_SAMPLE_RATE
-                )
-
-            # Cache loaders by sample rate to preserve resampler caches.
-            # AudioLoader uses cache=False because:
-            # 1. We cache the loader instances (not audio files) to reuse resamplers
-            # 2. Double-caching (loader cache + audio cache) wastes memory
-            # 3. Audio files are typically loaded once per forward pass anyway
+            waveform = audio
+        elif isinstance(audio, (str, Path)):
+            # Cache loaders by sample rate to preserve resampler caches
             if sample_rate not in self._audio_loaders:
                 self._audio_loaders[sample_rate] = AudioLoader(
                     sr=sample_rate, cache=False
                 )
-
-            return self._audio_loaders[sample_rate].load(audio)
-
-        raise TypeError(
-            f"Unsupported audio type: {type(audio).__name__}. "
-            f"Expected torch.Tensor, pathlib.Path, or str (for file paths)."
-        )
-
-    def forward(
-        self,
-        syn: torch.Tensor | str | Path,
-        ref: torch.Tensor | str | Path | None = None,
-        **kwargs,
-    ) -> float | torch.Tensor:
-        """
-        Args:
-            syn: Synthesis input
-                - torch.Tensor: Audio waveform
-                - Path: Path to audio file (will be loaded)
-                - str: Text transcription (for WER metric only)
-            ref: Reference input (metric-dependent)
-                - torch.Tensor: Reference audio waveform
-                - Path: Path to reference audio file
-                - str: Ground truth transcription (for WER metric only)
-                - None: Not used (for UTMOS)
-            **kwargs: Metric-specific parameters (e.g., sample_rate)
-
-        Returns:
-            Metric score
-        """
-        if not self._is_initialized:
-            raise MetricCalculationError("Model not initialized")
-
-        try:
-            sample_rate = kwargs.get("sample_rate")
-
-            # Prepare inputs based on type:
-            # - Path/Tensor → audio (load/process via AudioLoader)
-            # - str → text (passthrough for WER metric)
-            if ref is not None and isinstance(ref, (Path, torch.Tensor)):
-                ref = self._prepare_audio_input(ref, sample_rate)
-
-            if isinstance(syn, (Path, torch.Tensor)):
-                syn = self._prepare_audio_input(syn, sample_rate)
-            # str inputs are preserved as-is for text-based metrics (e.g., WER)
-
-            return self._forward_impl(syn, ref, **kwargs)
-        except Exception as e:
-            self.logger.error(f"Error in {self.get_name()} forward pass: {e}")
-            raise MetricCalculationError(
-                f"Error in {self.get_name()} forward pass: {e}"
+            waveform = self._audio_loaders[sample_rate].load(audio)
+        else:
+            raise TypeError(
+                f"Unsupported audio type: {type(audio).__name__}. "
+                f"Expected torch.Tensor, pathlib.Path, or str."
             )
+
+        # 2. Basic normalization / dimensionality check
+        if waveform.dim() > 1:
+            waveform = waveform.mean(0)
+
+        return waveform
 
     def __call__(
         self,
-        syn: torch.Tensor | str | Path,
-        ref: torch.Tensor | str | Path | None = None,
+        synthesis: torch.Tensor | str | Path,
+        reference: torch.Tensor | str | Path | None = None,
         **kwargs,
     ) -> float | torch.Tensor:
         """Callable interface."""
-        return self.forward(syn, ref, **kwargs)
+        return self.forward(synthesis, reference, **kwargs)
 
     def calculate_batch(
         self,
@@ -242,14 +228,13 @@ class BaseMetricCalculator(ABC):
 
         results = []
         total_pairs = len(pairs)
-
-        # Use tqdm for progress bar by default
         iterator = tqdm(pairs, desc=f"Calculating {self.get_name()}", disable=False)
 
         for i, (ref_path, syn_path) in enumerate(iterator):
             try:
-                score = self._calculate_pair_impl(ref_path, syn_path)
-                results.append(score)
+                # Use callable interface (forward internally) for uniform processing
+                score = self(synthesis=syn_path, reference=ref_path)
+                results.append(float(score))
 
                 if progress_callback:
                     progress_callback(i + 1, total_pairs)
@@ -258,14 +243,14 @@ class BaseMetricCalculator(ABC):
                 self.logger.warning(
                     f"Skipping pair ({ref_path}, {syn_path}) due to error: {e}"
                 )
-                results.append(np.nan)  # Use NaN for failed calculations
+                results.append(np.nan)
 
         return results
 
     def calculate_batch_optimized(self, pairs: list[tuple[Path, Path]]) -> list[float]:
         """
-        Optimized batch calculation (can be overridden by subclasses for true batch processing).
-        Default implementation falls back to individual calculations.
+        Optimized batch calculation (can be overridden by subclasses).
+        Default implementation falls back to individual calculations via forward.
         """
         return self.calculate_batch(pairs)
 
@@ -287,19 +272,15 @@ class BaseMetricCalculator(ABC):
             List of valid pairs
         """
         valid_pairs = []
-
         for ref_path, syn_path in pairs:
             if not ref_path.exists():
                 self.logger.warning(f"Reference file not found: {ref_path}")
                 continue
-
             if not syn_path.exists():
                 self.logger.warning(f"Synthesis file not found: {syn_path}")
                 continue
-
-            # Additional validation can be added here (file format, duration, etc.)
             valid_pairs.append((ref_path, syn_path))
-
+        
         self.logger.info(f"Validated {len(valid_pairs)}/{len(pairs)} audio pairs")
         return valid_pairs
 
@@ -310,6 +291,5 @@ class BaseMetricCalculator(ABC):
         return torch.device(self.config.device)
 
     def cleanup(self) -> None:
-        """Clean up resources if needed."""
-        # Clear loader dictionary (loaders use cache=False, so no audio cache to clear)
+        """Clean up resources."""
         self._audio_loaders.clear()

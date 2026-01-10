@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from tqdm import tqdm
 from utmosv2 import create_model
 
 from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig
@@ -51,34 +52,36 @@ class UTMOSCalculator(BaseMetricCalculator):
         except Exception as e:
             raise MetricCalculationError(f"Failed to load UTMOSv2 model: {e}")
 
-    def _calculate_pair_impl(self, ref_path: Path, syn_path: Path) -> float:
-        """Calculate UTMOS score for synthesis audio (reference not used)."""
-        try:
-            # UTMOS evaluates synthesis audio only
-            score = self.utmos_model.predict(input_path=syn_path)
+    def _forward_impl(
+        self,
+        synthesis: torch.Tensor,
+        reference: torch.Tensor | None = None,
+        **kwargs,
+    ) -> float:
+        """Calculate UTMOS score for synthesis audio."""
+        try:         
+            orig_synthesis = kwargs.get("orig_synthesis")
+            if orig_synthesis and isinstance(orig_synthesis, (Path, str)):
+                score = self.utmos_model.predict(input_path=orig_synthesis)
+            else:
+                raise MetricCalculationError("UTMOSv2 requires a file path for prediction. Use forward(synthesis=Path).")
+
             return float(score)
 
         except Exception as e:
-            raise MetricCalculationError(f"Failed to calculate UTMOS: {e}")
+            raise MetricCalculationError(f"UTMOS forward pass failed: {e}")
 
     def calculate_batch_optimized(self, pairs: list[tuple[Path, Path]]) -> list[float]:
         """Optimized batch calculation for UTMOS."""
         try:
             # Extract synthesis paths only (UTMOS doesn't use reference)
-            syn_paths = [syn_path for _, syn_path in pairs]
-
-            # Use UTMOSv2's batch prediction
-            results = self.utmos_model.predict(
-                input_dir=None,  # Will be handled by individual paths
-                batch_size=self.config.batch_size,
-                num_workers=4,
-            )
-
-            # If batch prediction is not available, fall back to individual predictions
-            if results is None:
-                return super().calculate_batch_optimized(pairs)
-
-            return [float(score) for score in results]
+            results = []
+            self.logger.info(f"Calculating UTMOS scores for {len(pairs)} pairs")
+            for _, syn_path in tqdm(pairs, desc="Calculating UTMOS scores"):
+                # Path input is now automatically tracked as orig_synthesis in base.py
+                results.append(self(synthesis=syn_path))
+            
+            return results
 
         except Exception as e:
             self.logger.warning(
@@ -105,7 +108,7 @@ if __name__ == "__main__":
     try:
         with UTMOSCalculator(config) as calculator:
             print(f"Testing {calculator.get_name()} calculator...")
-            score = calculator.calculate_pair(ref_path, syn_path)
+            score = calculator(synthesis=syn_path, orig_synthesis=syn_path)
             print(f"UTMOS Score: {score:.4f}")
     except Exception as e:
         print(f"Test failed: {e}")

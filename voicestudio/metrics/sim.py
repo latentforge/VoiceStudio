@@ -7,9 +7,9 @@ from pathlib import Path
 import numpy as np
 import torch
 from speechbrain.inference.speaker import EncoderClassifier
+from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
 
-from ..utils.loader import AudioLoader
 from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig
 
 
@@ -40,178 +40,90 @@ class SIMCalculator(BaseMetricCalculator):
         except Exception as e:
             raise MetricCalculationError(f"Failed to load ECAPA-TDNN model: {e}")
 
-    def _load_and_preprocess_audio(self, audio_path: Path) -> torch.Tensor:
-        """
-        Load and preprocess audio for speaker embedding extraction.
-
-        Args:
-            audio_path: Path to audio file
-
-        Returns:
-            Preprocessed audio tensor
-        """
-        try:
-            loader = AudioLoader(sr=self.target_sr, mono=True, cache=False)
-            waveform = loader.load(audio_path)
-
-            # Ensure waveform is 2D [channels, samples]
-            if waveform.dim() == 1:
-                waveform = waveform.unsqueeze(0)
-            
-            # Ensure minimum length (e.g., 1 second)
-            min_length = self.target_sr * 1  # 1 second
-            if waveform.shape[1] < min_length:
-                # Repeat waveform to meet minimum length
-                repeat_times = (min_length // waveform.shape[1]) + 1
-                waveform = waveform.repeat(1, repeat_times)[:, :min_length]
-
-            return waveform.squeeze(0)  # Remove channel dimension
-
-        except Exception as e:
-            raise MetricCalculationError(f"Failed to load audio {audio_path}: {e}")
-
-    def extract_embedding(self, audio_path: Path) -> np.ndarray:
-        """
-        Extract speaker embedding from audio.
-
-        Args:
-            audio_path: Path to audio file
-
-        Returns:
-            Speaker embedding vector
-        """
-        try:
-            # Load and preprocess audio
-            waveform = self._load_and_preprocess_audio(audio_path)
-
-            # Extract embedding using SpeechBrain
-            with torch.no_grad():
-                embedding = self.classifier.encode_batch(waveform.unsqueeze(0))
-                embedding = embedding.squeeze().cpu().numpy()
-
-            return embedding
-
-        except Exception as e:
-            self.logger.error(f"Failed to extract embedding from {audio_path}: {e}")
-            raise MetricCalculationError(f"Embedding extraction failed: {e}")
-
-    def calculate_cosine_similarity(
-        self, embedding1: np.ndarray, embedding2: np.ndarray
+    def _forward_impl(
+        self,
+        synthesis: torch.Tensor,
+        reference: torch.Tensor | None = None,
+        **kwargs,
     ) -> float:
-        """
-        Calculate cosine similarity between two speaker embeddings.
+        """Calculate speaker similarity between synthesis and reference tensors."""
+        if reference is None:
+            raise MetricCalculationError("SIM requires a reference audio tensor")
 
-        Args:
-            embedding1: First speaker embedding
-            embedding2: Second speaker embedding
-
-        Returns:
-            Cosine similarity score [-1, 1]
-        """
         try:
-            # Normalize embeddings
-            norm1 = np.linalg.norm(embedding1)
-            norm2 = np.linalg.norm(embedding2)
+            with torch.no_grad():
+                syn_embed = self.classifier.encode_batch(synthesis.unsqueeze(0)).squeeze()
+                ref_embed = self.classifier.encode_batch(reference.unsqueeze(0)).squeeze()
 
-            if norm1 == 0 or norm2 == 0:
-                self.logger.warning("Zero norm embedding detected")
-                return 0.0
-
-            embedding1_norm = embedding1 / norm1
-            embedding2_norm = embedding2 / norm2
-
-            # Calculate cosine similarity
-            similarity = np.dot(embedding1_norm, embedding2_norm)
-
-            return float(similarity)
-
-        except Exception as e:
-            raise MetricCalculationError(f"Cosine similarity calculation failed: {e}")
-
-    def _calculate_pair_impl(self, ref_path: Path, syn_path: Path) -> float:
-        """Calculate speaker similarity for a reference-synthesis pair."""
-        try:
-            # Extract embeddings
-            ref_embedding = self.extract_embedding(ref_path)
-            syn_embedding = self.extract_embedding(syn_path)
-
-            # Calculate similarity
-            similarity = self.calculate_cosine_similarity(ref_embedding, syn_embedding)
-
-            self.logger.debug(f"Speaker similarity: {similarity:.4f}")
-
+            syn_norm = torch.nn.functional.normalize(syn_embed, dim=0)
+            ref_norm = torch.nn.functional.normalize(ref_embed, dim=0)
+            
+            similarity = torch.dot(syn_norm, ref_norm).item()
+            similarity = max(0.0, float(similarity))
+            
             return similarity
 
         except Exception as e:
-            raise MetricCalculationError(f"Failed to calculate speaker similarity: {e}")
+            raise MetricCalculationError(f"SIM forward pass failed: {e}")
 
     def calculate_batch_optimized(self, pairs: list[tuple[Path, Path]]) -> list[float]:
         """
-        Optimized batch calculation for speaker similarity.
-        Extracts all embeddings first, then calculates similarities.
+        Optimized batch implementation for speaker similarity.
+        Processes unique audio files in batches to extract embeddings.
         """
-        try:
-            # Extract all unique audio files
-            all_paths = set()
-            for ref_path, syn_path in pairs:
-                all_paths.add(ref_path)
-                all_paths.add(syn_path)
+        if not pairs:
+            return []
 
-            # Batch extract embeddings
+        results = [np.nan] * len(pairs)
+        batch_size = self.config.batch_size
+        
+        try:
+            all_paths = list(set([p for pair in pairs for p in pair]))
             embeddings = {}
 
-            self.logger.info(
-                f"Extracting embeddings for {len(all_paths)} unique audio files"
-            )
+            self.logger.info(f"Extracting embeddings for {len(all_paths)} files in batches of {batch_size}")
 
-            # Process in batches to manage memory
-            batch_size = self.config.batch_size
-            all_paths_list = list(all_paths)
-
-            for i in tqdm(
-                range(0, len(all_paths_list), batch_size), desc="Extracting embeddings"
-            ):
-                batch_paths = all_paths_list[i : i + batch_size]
-
-                for audio_path in batch_paths:
+            for i in tqdm(range(0, len(all_paths), batch_size), desc="Extracting embeddings"):
+                batch_paths = all_paths[i : i + batch_size]
+                
+                batch_audios = []
+                for p in batch_paths:
                     try:
-                        embeddings[audio_path] = self.extract_embedding(audio_path)
+                        audio = self._prepare_audio_input(p)
+                        batch_audios.append(audio)
                     except Exception as e:
-                        self.logger.warning(
-                            f"Failed to extract embedding for {audio_path}: {e}"
-                        )
-                        embeddings[audio_path] = None
+                        self.logger.warning(f"Failed to load {p}: {e}")
+                        batch_audios.append(None)
 
-            # Calculate similarities for all pairs
-            results = []
-            for ref_path, syn_path in tqdm(pairs, desc="Calculating similarities"):
-                try:
-                    ref_embedding = embeddings.get(ref_path)
-                    syn_embedding = embeddings.get(syn_path)
+                valid_batch_data = [(idx, a) for idx, a in enumerate(batch_audios) if a is not None]
+                if not valid_batch_data:
+                    continue
 
-                    if ref_embedding is not None and syn_embedding is not None:
-                        similarity = self.calculate_cosine_similarity(
-                            ref_embedding, syn_embedding
-                        )
-                        results.append(similarity)
-                    else:
-                        results.append(np.nan)
+                valid_indices, valid_audios = zip(*valid_batch_data)
+                
+                padded_batch = pad_sequence(valid_audios, batch_first=True).to(self.get_device())
 
-                except Exception as e:
-                    self.logger.warning(f"Failed similarity calculation for pair: {e}")
-                    results.append(np.nan)
+                with torch.no_grad():
+                    batch_embeds = self.classifier.encode_batch(padded_batch).squeeze(1)
+                    batch_embeds = torch.nn.functional.normalize(batch_embeds, dim=1)
+                    
+                    for idx, orig_batch_idx in enumerate(valid_indices):
+                        embeddings[batch_paths[orig_batch_idx]] = batch_embeds[idx]
 
+            self.logger.info(f"Calculating similarities for {len(pairs)} pairs")
+            for idx, (ref_path, syn_path) in tqdm(enumerate(pairs), total=len(pairs), desc="Calculating similarities"):
+                if ref_path in embeddings and syn_path in embeddings:
+                    ref_embed = embeddings[ref_path]
+                    syn_embed = embeddings[syn_path]
+                    
+                    if ref_embed is not None and syn_embed is not None:
+                        similarity = torch.dot(ref_embed, syn_embed).item()
+                        results[idx] = max(0.0, float(similarity))
+                
             return results
-
         except Exception as e:
-            self.logger.warning(
-                f"Batch processing failed, falling back to individual: {e}"
-            )
+            self.logger.error(f"SIM batch optimization failed: {e}. Falling back to individual processing.")
             return super().calculate_batch_optimized(pairs)
-
-    def get_embedding_cache(self) -> dict[Path, np.ndarray]:
-        """Get cached embeddings (for debugging/analysis purposes)."""
-        return getattr(self, "_embedding_cache", {})
 
     def get_name(self) -> str:
         return "SIM"
@@ -231,7 +143,7 @@ if __name__ == "__main__":
     try:
         with SIMCalculator(config) as calculator:
             print(f"Testing {calculator.get_name()} calculator...")
-            score = calculator.calculate_pair(ref_path, syn_path)
+            score = calculator(reference=ref_path, synthesis=syn_path)
             print(f"SIM Score: {score:.4f}")
     except Exception as e:
         print(f"Test failed: {e}")
