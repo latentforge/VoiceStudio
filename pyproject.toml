@@ -1,18 +1,18 @@
 [build-system]
-requires = ["hatchling"]
+requires = [ "hatchling" ]
 build-backend = "hatchling.build"
 
 [project]
 name = "voicestudio"
-version = "1.0.0"
+version = "1.0.1"
 description = "VoiceStudio: A unified toolkit for text-style prompted speech synthesis, voice adaptation, and editing"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = { text = "MIT" }
 authors = [
-    {name = "LatentForge", email = "brew.airesearch@gmail.com"}
+    { name = "LatentForge", email = "brew.airesearch@gmail.com" }
 ]
-keywords = ["text-to-speech", "voice-synthesis", "audio-generation", "lora", "hypernetworks"]
+keywords = [ "text-to-speech", "voice-synthesis", "audio-generation", "lora", "hypernetworks" ]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -37,39 +37,43 @@ dependencies = [
     "torchaudio>=2.8.0",
     "torchcodec>=0.9.1",
     "librosa>=0.11.0",
-    #"transformers>=5.0.0rc1",
+    #"transformers>=5.0.0rc2",
     "transformers>=4.57.3",
-    "accelerate>=1.10.0",
-    "peft>=0.18.1",
     "hf-xet>=1.1.8",
     "tqdm>=4.67.1",
-    "matplotlib>=3.10.5",
-    # -----------------------------------------
-    # Evaluation Metrics
-    # -----------------------------------------
-    "pyworld>=0.3.5",
-    "pysptk>=1.0.1",
-    "jiwer>=4.0.0",
-    "utmosv2",
     # -----------------------------------------
     # Model Namespace Packages
     # -----------------------------------------
     "voicestudio-parler-tts",  # Apache 2.0 License
     "voicestudio-higgs-audio",  # Apache 2.0 License
-
-    "voicestudio-f5-tts"  # MIT License
+    #"voicestudio-spark-tts",  # Apache 2.0 License
+    #"voicestudio-cosyvoice",  # Apache 2.0 License
+    "voicestudio-f5-tts",  # MIT License
+    # -----------------------------------------
+    # Audio Processing Dependencies
+    # -----------------------------------------
+    "descript-audiotools",  # for Parler TTS, Higgs Audio
+    "vocos",  # for F5 TTS
 ]
 [project.optional-dependencies]
 all = [
     "voicestudio[train]",
+    "voicestudio[eval]",
     "voicestudio[flash]",
     "voicestudio[web]",
 ]
 train = [
+    "accelerate>=1.10.0",
+    "matplotlib>=3.10.5",
     "wandb>=0.21.1",
     "notebook>=7.4.5",
     "ipywidgets>=8.1.7",
-    "datasets>=4.0.0",
+]
+eval = [
+    "pyworld>=0.3.5",
+    "pysptk>=1.0.1",
+    "jiwer>=4.0.0",
+    "utmosv2",
 ]
 flash = [ "flash-attn" ]
 # -----------------------------------------
@@ -88,13 +92,16 @@ torchaudio = [
 ]
 voicestudio-parler-tts = { git = "https://github.com/latentforge/parler-tts", rev = "namespace" }
 voicestudio-higgs-audio = { git = "https://github.com/latentforge/higgs-audio", rev = "namespace" }
-
+voicestudio-spark-tts = { git = "https://github.com/latentforge/Spark-TTS", rev = "namespace" }
+voicestudio-cosyvoice = { git = "https://github.com/latentforge/CosyVoice", rev = "namespace" }
 voicestudio-f5-tts = { git = "https://github.com/latentforge/f5-tts", rev = "namespace" }
+descript-audiotools = { git = "https://github.com/latentforge/audiotools" }
+vocos = { git = "https://github.com/latentforge/vocos" }
 speechbrain = { git = "https://github.com/latentforge/speechbrain", rev = "fix/support_torch2.9" }
 utmosv2 = { git = "https://github.com/sarulab-speech/UTMOSv2" }
 
 [tool.uv.extra-build-dependencies]
-flash-attn = ["torch"]
+flash-attn = [ "torch" ]
 
 [[tool.uv.index]]
 name = "pytorch-windows"
@@ -102,8 +109,8 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["voicestudio"]
+packages = [ "voicestudio" ]
 
 [project.urls]
-Homepage = "https://github.com/LatentForge/VoiceStudio"
+Homepage = "https://latentforge.github.io/"
 Repository = "https://github.com/LatentForge/VoiceStudio"
