@@ -1,12 +1,15 @@
 import torch
 import torchaudio
 
-import matplotlib.pyplot as plt
-from IPython.display import Audio
-from librosa import display as rosa_display
-
 
 def show_waveform(audio_path: str | None, waveform: torch.Tensor | None = None, sr: int = 48000):
+    try:
+        import matplotlib.pyplot as plt
+        from IPython.display import Audio
+        from librosa import display as rosa_display
+    except ImportError:  # Not in Jupyter notebook
+        return None
+
     if audio_path:
         waveform, sr = torchaudio.load(audio_path)
     elif waveform is not None:
