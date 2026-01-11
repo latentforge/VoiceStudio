@@ -80,11 +80,7 @@ class DirectStyleAnchorEmbedding(nn.Embedding):
             mask = (input == anchor_id)
             if mask.any():
                 # Add delta to those positions (preserves pretrained knowledge)
-                embeddings = embeddings + torch.where(
-                    mask.unsqueeze(-1),  # Broadcast mask to match embedding dimension
-                    delta.expand_as(embeddings),
-                    torch.zeros_like(embeddings)
-                )
+                embeddings = embeddings + mask.unsqueeze(-1) * delta
 
         return embeddings
 
@@ -120,6 +116,32 @@ class DirectStyleAnchorEmbedding(nn.Embedding):
                 # Reset specific delta
                 idx = self.anchor_token_ids.index(token_id)
                 self.anchor_deltas[idx].zero_()
+
+    def get_tunable_parameters(self) -> int:
+        """Get total number of tunable parameters."""
+        return sum(p.numel() for p in self.anchor_deltas)
+
+    def get_embedding_stats(self) -> dict:
+        """
+        Get statistics about anchor embeddings for debugging.
+
+        Returns:
+            Dictionary with stats for each anchor token including delta norms,
+            mean/std values, and effective embedding norms
+        """
+        stats = {}
+        for i, (anchor_id, delta) in enumerate(
+            zip(self.anchor_token_ids, self.anchor_deltas)
+        ):
+            effective = self.weight[anchor_id] + delta
+            stats[f'anchor_{i}'] = {
+                'token_id': anchor_id,
+                'delta_norm': delta.norm().item(),
+                'delta_mean': delta.mean().item(),
+                'delta_std': delta.std().item(),
+                'effective_norm': effective.norm().item(),
+            }
+        return stats
 
 
 
@@ -219,11 +241,7 @@ class EncoderStyleAnchorEmbedding(nn.Embedding):
             mask = (input == anchor_id)
             if mask.any():
                 # Add delta to those positions
-                embeddings = embeddings + torch.where(
-                    mask.unsqueeze(-1),
-                    delta.expand_as(embeddings),
-                    torch.zeros_like(embeddings)
-                )
+                embeddings = embeddings + mask.unsqueeze(-1) * delta
 
         return embeddings
 
@@ -247,3 +265,32 @@ class EncoderStyleAnchorEmbedding(nn.Embedding):
             encoder(base).clone()
             for base, encoder in zip(self.anchor_bases, self.anchor_encoders)
         ]
+
+    def get_tunable_parameters(self) -> int:
+        """Get total number of tunable parameters."""
+        return sum(p.numel() for p in self.anchor_bases) + \
+               sum(p.numel() for p in self.anchor_encoders.parameters())
+
+    def get_embedding_stats(self) -> dict:
+        """
+        Get statistics about anchor embeddings for debugging.
+
+        Returns:
+            Dictionary with stats for each anchor token including base stats,
+            delta norms, and effective embedding norms
+        """
+        stats = {}
+        for i, (anchor_id, base, encoder) in enumerate(
+            zip(self.anchor_token_ids, self.anchor_bases, self.anchor_encoders)
+        ):
+            delta = encoder(base)
+            effective = self.weight[anchor_id] + delta
+            stats[f'anchor_{i}'] = {
+                'token_id': anchor_id,
+                'base_norm': base.norm().item(),
+                'delta_norm': delta.norm().item(),
+                'delta_mean': delta.mean().item(),
+                'delta_std': delta.std().item(),
+                'effective_norm': effective.norm().item(),
+            }
+        return stats
