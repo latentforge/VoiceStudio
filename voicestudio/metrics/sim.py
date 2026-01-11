@@ -78,7 +78,7 @@ class SIMCalculator(BaseMetricCalculator):
         batch_size = self.config.batch_size
         
         try:
-            all_paths = list(set([p for pair in pairs for p in pair]))
+            all_paths = sorted(set([p for pair in pairs for p in pair]))
             embeddings = {}
 
             self.logger.info(f"Extracting embeddings for {len(all_paths)} files in batches of {batch_size}")

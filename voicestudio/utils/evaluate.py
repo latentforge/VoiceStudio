@@ -175,7 +175,7 @@ class EvaluationPipeline:
                     
                     if is_no_reference:
                         # For no-reference metrics, we only care about unique synthesis files
-                        unique_syn_paths = list(set([p["syn_path"] for p in pairs]))
+                        unique_syn_paths = sorted(set([p["syn_path"] for p in pairs]))
                         # Create dummy pairs for calculate_batch_optimized
                         calc_pairs = [(p, p) for p in unique_syn_paths]
                         valid_pairs = calculator.validate_audio_files(calc_pairs)
@@ -183,14 +183,23 @@ class EvaluationPipeline:
                         scores_output = calculator.calculate_batch_optimized(valid_pairs)
                         path_to_score = {valid_pairs[i][1]: scores_output[i] for i in range(len(valid_pairs))}
                         
-                        grouped_scores = {}
+                        # Build mapping of syn_path to ref_id (each file belongs to one ref_id)
+                        syn_to_ref = {}
                         for pair_info in pairs:
-                            score = path_to_score.get(pair_info["syn_path"])
+                            syn_path = pair_info["syn_path"]
+                            ref_id = pair_info["ref_id"]
+                            if syn_path not in syn_to_ref:
+                                syn_to_ref[syn_path] = ref_id
+                        
+                        # Group scores by ref_id (each unique file added once)
+                        grouped_scores = {}
+                        for syn_path, score in path_to_score.items():
                             if score is not None and not np.isnan(score):
-                                ref_id = pair_info["ref_id"]
-                                if ref_id not in grouped_scores:
-                                    grouped_scores[ref_id] = []
-                                grouped_scores[ref_id].append(score)
+                                ref_id = syn_to_ref.get(syn_path)
+                                if ref_id is not None:
+                                    if ref_id not in grouped_scores:
+                                        grouped_scores[ref_id] = []
+                                    grouped_scores[ref_id].append(score)
                             
                     else:
                         audio_pairs = [(p["ref_path"], p["syn_path"]) for p in pairs]
