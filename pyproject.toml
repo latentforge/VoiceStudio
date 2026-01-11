@@ -36,34 +36,37 @@ dependencies = [
     "torchaudio ; platform_system == 'Windows'",
     "torchaudio>=2.8.0",
     "torchcodec>=0.9.1",
+    "librosa>=0.11.0",
     #"transformers>=5.0.0rc1",
     "transformers>=4.57.3",
     "accelerate>=1.10.0",
-    "peft>=0.18.0",
-    "librosa>=0.11.0",
+    "peft>=0.18.1",
+    "hf-xet>=1.1.8",
+    "tqdm>=4.67.1",
+    "matplotlib>=3.10.5",
+    # -----------------------------------------
+    # Evaluation Metrics
+    # -----------------------------------------
     "pyworld>=0.3.5",
     "pysptk>=1.0.1",
     "jiwer>=4.0.0",
-    "datasets>=4.0.0",
-    "hf-xet>=1.1.8",
-    "tqdm>=4.67.1",
-    "wandb>=0.21.1",
-    "notebook>=7.4.5",
-    "ipywidgets>=8.1.7",
-    "matplotlib>=3.10.5",
     "utmosv2",
     # -----------------------------------------
     # Model Namespace Packages
     # -----------------------------------------
     "voicestudio-parler-tts",  # Apache 2.0 License
     "voicestudio-higgs-audio",  # Apache 2.0 License
-    "voicestudio-f5-tts",  # MIT License
-    "speechbrain",  # Apache 2.0 License
+
+    "voicestudio-f5-tts"  # MIT License
 ]
 [project.optional-dependencies]
 all = [
     "voicestudio[flash]",
     "voicestudio[web]",
+    "wandb>=0.21.1",
+    "notebook>=7.4.5",
+    "ipywidgets>=8.1.7",
+    "datasets>=4.0.0",
 ]
 flash = [ "flash-attn" ]
 # -----------------------------------------
@@ -82,10 +85,10 @@ torchaudio = [
 ]
 voicestudio-parler-tts = { git = "https://github.com/latentforge/parler-tts", rev = "namespace" }
 voicestudio-higgs-audio = { git = "https://github.com/latentforge/higgs-audio", rev = "namespace" }
-speechbrain = { git = "https://github.com/latentforge/speechbrain", rev = "namespace" }
-utmosv2 = { git = "https://github.com/sarulab-speech/UTMOSv2" }
 
 voicestudio-f5-tts = { git = "https://github.com/latentforge/f5-tts", rev = "namespace" }
+speechbrain = { git = "https://github.com/latentforge/speechbrain", rev = "fix/support_torch2.9" }
+utmosv2 = { git = "https://github.com/sarulab-speech/UTMOSv2" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = ["torch"]
