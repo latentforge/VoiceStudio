@@ -46,8 +46,10 @@ dependencies = [
     # -----------------------------------------
     "voicestudio-parler-tts",  # Apache 2.0 License
     "voicestudio-higgs-audio",  # Apache 2.0 License
-    #"voicestudio-spark-tts",  # Apache 2.0 License
-    #"voicestudio-cosyvoice",  # Apache 2.0 License
+    "voicestudio-qwen3-tts",  # Apache 2.0 License
+    "voicestudio-chroma",  # Apache 2.0 License
+    "voicestudio-spark-tts",  # Apache 2.0 License
+    "voicestudio-cosyvoice",  # Apache 2.0 License
     "voicestudio-f5-tts",  # MIT License
     # -----------------------------------------
     # Audio Processing Dependencies
@@ -76,6 +78,11 @@ eval = [
     "utmosv2",
 ]
 flash = [ "flash-attn" ]
+onnx = [  # for Qwen3-TTS, CosyVoice
+    "onnxruntime-gpu>=1.18.0 ; platform_system == 'linux' or platform_system == 'windows'",
+    "onnxruntime>=1.18.0 ; platform_system == 'darwin'",
+    "onnx",
+]
 # -----------------------------------------
 # Voice Studio Web
 # -----------------------------------------
@@ -90,8 +97,13 @@ torch = [
 torchaudio = [
     { index = "pytorch-windows", marker = "platform_system == 'Windows'" },
 ]
+onnxruntime-gpu = [
+    { index = "onnxruntime-cuda12", marker = "platform_system == 'linux' or platform_system == 'windows'" },
+]
 voicestudio-parler-tts = { git = "https://github.com/latentforge/parler-tts", rev = "namespace" }
 voicestudio-higgs-audio = { git = "https://github.com/latentforge/higgs-audio", rev = "namespace" }
+voicestudio-qwen3-tts = { git = "https://github.com/latentforge/Qwen3-TTS", rev = "namespace" }
+voicestudio-chroma = { git = "https://github.com/latentforge/Chroma", rev = "namespace" }
 voicestudio-spark-tts = { git = "https://github.com/latentforge/Spark-TTS", rev = "namespace" }
 voicestudio-cosyvoice = { git = "https://github.com/latentforge/CosyVoice", rev = "namespace" }
 voicestudio-f5-tts = { git = "https://github.com/latentforge/f5-tts", rev = "namespace" }
