@@ -31,6 +31,7 @@ dependencies = [
     # -----------------------------------------
     # General dependencies
     # -----------------------------------------
+    "numpy>=2.3.5",
     "torch ; platform_system == 'Windows'",
     "torch>=2.8.0",
     "torchaudio ; platform_system == 'Windows'",
