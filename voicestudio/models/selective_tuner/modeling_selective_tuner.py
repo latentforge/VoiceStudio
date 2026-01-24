@@ -1,4 +1,5 @@
 from typing import Optional, Union
+import types
 import os
 
 from transformers import PreTrainedModel, AutoModel
@@ -298,4 +299,9 @@ class SelectiveTunerForConditionalGeneration(PreTrainedModel):
             weights_only=weights_only, **kwargs
         )
         cls._replace_embeddings_with_anchors(instance, instance.config)
+
+        # Dynamically bind utility methods to the instance
+        instance.extend_vocabulary = types.MethodType(cls.extend_vocabulary, instance)
+        instance.merge_and_unload = types.MethodType(cls.merge_and_unload, instance)
+
         return instance
