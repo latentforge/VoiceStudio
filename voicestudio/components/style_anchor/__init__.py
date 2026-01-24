@@ -5,19 +5,125 @@ from torch import nn
 class StyleAnchorEmbedding(nn.Embedding):
     """
     Base class for style anchor embeddings.
+
+    This class extends nn.Embedding to enable selective tuning of specific token embeddings
+    (e.g., BOS token) while keeping others frozen. It's a drop-in replacement for nn.Embedding
+    that adds style anchor functionality.
+
+    Args:
+        num_embeddings (int): Size of the vocabulary
+        embedding_dim (int): Dimension of embeddings
+        anchor_token_id (int or tuple[int]): Token ID(s) to use as style anchor
+        pretrained_weight (torch.Tensor, optional): Pretrained embedding weights to initialize from
+        padding_idx (int, optional): Padding index (passed to nn.Embedding)
+        **kwargs: Additional arguments passed to nn.Embedding
     """
+    def __init__(
+        self,
+        num_embeddings: int,
+        embedding_dim: int,
+        anchor_token_id: int | tuple[int] = 1,
+        pretrained_weight: torch.Tensor | None = None,
+        padding_idx: int | None = None,
+        **kwargs
+    ):
+        super().__init__(num_embeddings, embedding_dim, padding_idx=padding_idx, **kwargs)
 
-    def get_anchor_embeddings(self) -> list[torch.Tensor]:
+        # Handle single or multiple anchor tokens
+        if isinstance(anchor_token_id, int):
+            self.anchor_token_ids = [anchor_token_id]
+        else:
+            self.anchor_token_ids = list(anchor_token_id)
+
+        # Initialize with pretrained weights if provided
+        if pretrained_weight is not None:
+            with torch.no_grad():
+                self.weight.copy_(pretrained_weight)
+
+        # Freeze the main embedding weight
+        self.weight.requires_grad = False
+
+    def _compute_deltas(self) -> list[torch.Tensor]:
+        """Compute the delta values for each anchor token."""
+        return []
+
+    def _reset_deltas(self):
+        """Reset the learned parameters so deltas become effectively zero (or re-initialized)."""
         pass
 
-    def get_anchor_deltas(self) -> list[torch.Tensor]:
-        pass
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass that adds learned deltas to anchor token embeddings.
 
-    def merge_anchor_deltas(self):
-        pass
+        This additive approach preserves pretrained knowledge while allowing
+        task-specific adaptation with minimal parameters.
+
+        Args:
+            input: Input tensor of token IDs (any shape)
+
+        Returns:
+            Embedding tensor with anchor deltas applied
+        """
+        # Get base embeddings from pretrained weights
+        embeddings = super().forward(input)
+
+        # Get deltas from subclass implementation
+        deltas = self._compute_deltas()
+
+        # Add learned deltas to anchor token embeddings
+        for anchor_id, delta in zip(self.anchor_token_ids, deltas):
+            # Find positions where anchor token appears
+            mask = (input == anchor_id)
+            if mask.any():
+                # Add delta to those positions (preserves pretrained knowledge)
+                embeddings = embeddings + mask.unsqueeze(-1) * delta
+
+        return embeddings
+
+    @property
+    def anchor_embeddings(self) -> list[torch.Tensor]:
+        """
+        Get the current effective anchor embeddings (pretrained + delta).
+
+        Returns:
+            List of effective embeddings for each anchor token
+        """
+        deltas = self._compute_deltas()
+        return [
+            self.weight[anchor_id] + delta
+            for anchor_id, delta in zip(self.anchor_token_ids, deltas)
+        ]
+
+    @property
+    def anchor_embedding_deltas(self) -> list[torch.Tensor]:
+        """Get the learned delta values for anchor tokens."""
+        return [delta.clone() for delta in self._compute_deltas()]
+
+    def merge_deltas(self):
+        """
+        Permanently merge the learned deltas into the base embedding weights.
+
+        This is useful for inference optimization or when saving the model.
+        After merging, the deltas are reset to avoid double-counting.
+        Note: This changes the underlying pretrained weights.
+        """
+        deltas = self._compute_deltas()
+
+        with torch.no_grad():
+            for anchor_id, delta in zip(self.anchor_token_ids, deltas):
+                self.weight[anchor_id] += delta
+
+        self._reset_deltas()
 
     @property
     def stats(self) -> dict:
+        """
+        Get statistics about anchor embeddings for debugging.
+
+        Returns:
+            Dictionary with stats for each anchor token including base stats,
+            delta norms, and effective embedding norms
+        """
         return {}
 
 
@@ -53,18 +159,14 @@ class DirectStyleAnchorEmbedding(StyleAnchorEmbedding):
         padding_idx: int | None = None,
         **kwargs
     ):
-        super().__init__(num_embeddings, embedding_dim, padding_idx=padding_idx, **kwargs)
-
-        # Handle single or multiple anchor tokens
-        if isinstance(anchor_token_id, int):
-            self.anchor_token_ids = [anchor_token_id]
-        else:
-            self.anchor_token_ids = list(anchor_token_id)
-
-        # Initialize with pretrained weights if provided
-        if pretrained_weight is not None:
-            with torch.no_grad():
-                self.weight.copy_(pretrained_weight)
+        super().__init__(
+            num_embeddings,
+            embedding_dim,
+            anchor_token_id=anchor_token_id,
+            pretrained_weight=pretrained_weight,
+            padding_idx=padding_idx,
+            **kwargs
+        )
 
         # Create learnable delta (residual) parameters for each anchor token
         # These will be ADDED to the pretrained embeddings during forward pass
@@ -74,67 +176,18 @@ class DirectStyleAnchorEmbedding(StyleAnchorEmbedding):
             for _ in self.anchor_token_ids
         ])
 
-        # Freeze the main embedding weight
-        self.weight.requires_grad = False
+    def _compute_deltas(self) -> list[torch.Tensor]:
+        return [delta for delta in self.anchor_deltas]
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass that adds learned deltas to anchor token embeddings.
-
-        This additive approach preserves pretrained knowledge while allowing
-        task-specific adaptation with minimal parameters.
-
-        Args:
-            input: Input tensor of token IDs (any shape)
-
-        Returns:
-            Embedding tensor with anchor deltas applied
-        """
-        # Get base embeddings from pretrained weights
-        embeddings = super().forward(input)
-
-        # Add learned deltas to anchor token embeddings
-        for anchor_id, delta in zip(self.anchor_token_ids, self.anchor_deltas):
-            # Find positions where anchor token appears
-            mask = (input == anchor_id)
-            if mask.any():
-                # Add delta to those positions (preserves pretrained knowledge)
-                embeddings = embeddings + mask.unsqueeze(-1) * delta
-
-        return embeddings
-
-    def get_anchor_embeddings(self) -> list[torch.Tensor]:
-        """
-        Get the current effective anchor embeddings (pretrained + delta).
-
-        Returns:
-            List of effective embeddings for each anchor token
-        """
-        return [
-            self.weight[anchor_id] + delta
-            for anchor_id, delta in zip(self.anchor_token_ids, self.anchor_deltas)
-        ]
-
-    def get_anchor_deltas(self) -> list[torch.Tensor]:
-        """Get the learned delta values for anchor tokens."""
-        return [delta.clone() for delta in self.anchor_deltas]
-
-    def merge_anchor_deltas(self):
-        pass
+    def _reset_deltas(self):
+        with torch.no_grad():
+            for delta in self.anchor_deltas:
+                delta.zero_()
 
     @property
     def stats(self) -> dict:
-        """
-        Get statistics about anchor embeddings for debugging.
-
-        Returns:
-            Dictionary with stats for each anchor token including delta norms,
-            mean/std values, and effective embedding norms
-        """
         stats = {}
-        for i, (anchor_id, delta) in enumerate(
-            zip(self.anchor_token_ids, self.anchor_deltas)
-        ):
+        for i, (anchor_id, delta) in enumerate(zip(self.anchor_token_ids, self.anchor_deltas)):
             effective = self.weight[anchor_id] + delta
             stats[f'anchor_{i}'] = {
                 'token_id': anchor_id,
@@ -178,18 +231,14 @@ class EncoderStyleAnchorEmbedding(StyleAnchorEmbedding):
         padding_idx: int | None = None,
         **kwargs
     ):
-        super().__init__(num_embeddings, embedding_dim, padding_idx=padding_idx, **kwargs)
-
-        # Handle single or multiple anchor tokens
-        if isinstance(anchor_token_id, int):
-            self.anchor_token_ids = [anchor_token_id]
-        else:
-            self.anchor_token_ids = list(anchor_token_id)
-
-        # Initialize with pretrained weights if provided
-        if pretrained_weight is not None:
-            with torch.no_grad():
-                self.weight.copy_(pretrained_weight)
+        super().__init__(
+            num_embeddings,
+            embedding_dim,
+            anchor_token_id=anchor_token_id,
+            pretrained_weight=pretrained_weight,
+            padding_idx=padding_idx,
+            **kwargs
+        )
 
         # Hidden dimension defaults to embedding_dim // 4
         if hidden_dim is None:
@@ -202,7 +251,6 @@ class EncoderStyleAnchorEmbedding(StyleAnchorEmbedding):
             nn.Parameter(torch.randn(embedding_dim) * 0.01)
             for _ in self.anchor_token_ids
         ])
-
         self.anchor_encoders = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(embedding_dim, hidden_dim),
@@ -212,77 +260,27 @@ class EncoderStyleAnchorEmbedding(StyleAnchorEmbedding):
             for _ in self.anchor_token_ids
         ])
 
-        # Freeze the main embedding weight
-        self.weight.requires_grad = False
-
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass that generates and adds style anchor deltas via MLP.
-
-        The MLP generates a delta that is added to the pretrained embedding,
-        preserving pretrained knowledge while enabling expressive adaptation.
-
-        Args:
-            input: Input tensor of token IDs
-
-        Returns:
-            Embedding tensor with MLP-generated deltas added
-        """
-        # Get base embeddings from pretrained weights
-        embeddings = super().forward(input)
-
-        # Generate and add deltas for each anchor token
-        for anchor_id, base, encoder in zip(
-                self.anchor_token_ids, self.anchor_bases, self.anchor_encoders
-        ):
-            # Generate delta from base via MLP
-            delta = encoder(base)
-
-            # Find positions where anchor token appears
-            mask = (input == anchor_id)
-            if mask.any():
-                # Add delta to those positions
-                embeddings = embeddings + mask.unsqueeze(-1) * delta
-
-        return embeddings
-
-    def get_anchor_embeddings(self) -> list[torch.Tensor]:
-        """
-        Get the current effective anchor embeddings (pretrained + generated delta).
-
-        Returns:
-            List of effective embeddings for each anchor token
-        """
+    def _compute_deltas(self) -> list[torch.Tensor]:
         return [
-            self.weight[anchor_id] + encoder(base)
-            for anchor_id, base, encoder in zip(
-                self.anchor_token_ids, self.anchor_bases, self.anchor_encoders
-            )
-        ]
-
-    def get_anchor_deltas(self) -> list[torch.Tensor]:
-        """Get the MLP-generated delta values for anchor tokens."""
-        return [
-            encoder(base).clone()
+            encoder(base)
             for base, encoder in zip(self.anchor_bases, self.anchor_encoders)
         ]
 
-    def merge_anchor_deltas(self):
-        pass
+    def _reset_deltas(self):
+        # Re-initialize bases and encoders to ensure we start fresh (delta approx zero or random small)
+        with torch.no_grad():
+            for base in self.anchor_bases:
+                base.data.normal_(0, 0.01)
+
+            for encoder in self.anchor_encoders:
+                for layer in encoder.modules():
+                    if isinstance(layer, nn.Linear):
+                        layer.reset_parameters()
 
     @property
     def stats(self) -> dict:
-        """
-        Get statistics about anchor embeddings for debugging.
-
-        Returns:
-            Dictionary with stats for each anchor token including base stats,
-            delta norms, and effective embedding norms
-        """
         stats = {}
-        for i, (anchor_id, base, encoder) in enumerate(
-            zip(self.anchor_token_ids, self.anchor_bases, self.anchor_encoders)
-        ):
+        for i, (anchor_id, base, encoder) in enumerate(zip(self.anchor_token_ids, self.anchor_bases, self.anchor_encoders)):
             delta = encoder(base)
             effective = self.weight[anchor_id] + delta
             stats[f'anchor_{i}'] = {
@@ -299,6 +297,8 @@ class EncoderStyleAnchorEmbedding(StyleAnchorEmbedding):
 class MixedStyleAnchorEmbedding(StyleAnchorEmbedding):
     """
     Style Embedding Anchor using a mix of direct and encoder optimization.
+
+
     """
     def __init__(
         self,
@@ -311,4 +311,113 @@ class MixedStyleAnchorEmbedding(StyleAnchorEmbedding):
         padding_idx: int | None = None,
         **kwargs
     ):
-        super().__init__(num_embeddings, embedding_dim, padding_idx=padding_idx, **kwargs)
+        # Flatten ids to lists
+        self.direct_ids = []
+        if direct_anchor_token_id is not None:
+            if isinstance(direct_anchor_token_id, int):
+                self.direct_ids = [direct_anchor_token_id]
+            else:
+                self.direct_ids = list(direct_anchor_token_id)
+
+        self.encoder_ids = []
+        if encoder_anchor_token_id is not None:
+            if isinstance(encoder_anchor_token_id, int):
+                self.encoder_ids = [encoder_anchor_token_id]
+            else:
+                self.encoder_ids = list(encoder_anchor_token_id)
+
+        # Combine for base init (direct first, then encoder)
+        all_anchors = self.direct_ids + self.encoder_ids
+
+        super().__init__(
+            num_embeddings,
+            embedding_dim,
+            anchor_token_id=tuple(all_anchors),
+            pretrained_weight=pretrained_weight,
+            padding_idx=padding_idx,
+            **kwargs
+        )
+
+        # --- Direct Optimization Setup ---
+        self.direct_anchor_deltas = nn.ParameterList([
+            nn.Parameter(torch.zeros(embedding_dim))
+            for _ in self.direct_ids
+        ])
+
+        # --- Encoder Optimization Setup ---
+        if hidden_dim is None:
+            hidden_dim = embedding_dim // 4
+
+        self.encoder_bases = nn.ParameterList([
+            nn.Parameter(torch.randn(embedding_dim) * 0.01)
+            for _ in self.encoder_ids
+        ])
+
+        self.encoder_comps = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(embedding_dim, hidden_dim),
+                nn.Tanh(),
+                nn.Linear(hidden_dim, embedding_dim)
+            )
+            for _ in self.encoder_ids
+        ])
+
+    def _compute_deltas(self) -> list[torch.Tensor]:
+        # Direct deltas
+        direct_deltas = [d for d in self.direct_anchor_deltas]
+
+        # Encoder deltas
+        encoder_deltas = [
+            encoder(base)
+            for base, encoder in zip(self.encoder_bases, self.encoder_comps)
+        ]
+
+        # Return combined in order (directs then encoders)
+        return direct_deltas + encoder_deltas
+
+    def _reset_deltas(self):
+        with torch.no_grad():
+            # Reset direct
+            for delta in self.direct_anchor_deltas:
+                delta.zero_()
+
+            # Reset encoder
+            for base in self.encoder_bases:
+                base.data.normal_(0, 0.01)
+
+            for encoder in self.encoder_comps:
+                for layer in encoder.modules():
+                    if isinstance(layer, nn.Linear):
+                        layer.reset_parameters()
+
+    @property
+    def stats(self) -> dict:
+        stats = {}
+
+        # Direct stats
+        for i, (anchor_id, delta) in enumerate(zip(self.direct_ids, self.direct_anchor_deltas)):
+            effective = self.weight[anchor_id] + delta
+            stats[f'direct_anchor_{i}'] = {
+                'token_id': anchor_id,
+                'delta_norm': delta.norm().item(),
+                'delta_mean': delta.mean().item(),
+                'delta_std': delta.std().item(),
+                'effective_norm': effective.norm().item(),
+            }
+
+        # Encoder stats
+        for i, (anchor_id, base, encoder) in enumerate(
+                zip(self.encoder_ids, self.encoder_bases, self.encoder_comps)
+        ):
+            delta = encoder(base)
+            effective = self.weight[anchor_id] + delta
+            stats[f'encoder_anchor_{i}'] = {
+                'token_id': anchor_id,
+                'base_norm': base.norm().item(),
+                'delta_norm': delta.norm().item(),
+                'delta_mean': delta.mean().item(),
+                'delta_std': delta.std().item(),
+                'effective_norm': effective.norm().item(),
+            }
+
+        return stats
