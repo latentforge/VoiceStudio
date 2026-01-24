@@ -9,5 +9,5 @@ except ImportError:
 
 
 AutoConfig.register("parler_tts", ParlerTTSConfig)
-AutoModel.register(ParlerTTSConfig, ParlerTTSForCausalLM)
+AutoModel.register(ParlerTTSDecoderConfig, ParlerTTSForCausalLM)
 AutoModel.register(ParlerTTSConfig, ParlerTTSForConditionalGeneration)
