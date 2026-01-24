@@ -201,6 +201,80 @@ class SelectiveTunerForConditionalGeneration(PreTrainedModel):
              else:
                  config.anchor_token_id = tuple([tokenizer.convert_tokens_to_ids(t) for t in target_tokens])
 
+    def merge_and_unload(self, cast_to_embedding: bool = False):
+        """
+        Merge anchor deltas into the base weights and reset deltas.
+        
+        Handles shared weights (tied embeddings) safely:
+        1. Merges deltas into each unique weight tensor exactly once.
+        2. Resets deltas only after all merges are complete to avoid data loss in tied anchors.
+        
+        Args:
+            cast_to_embedding (bool): If True, replaces StyleAnchorEmbedding modules with 
+                                      standard nn.Embedding containing the merged weights.
+                                      Useful for optimized inference.
+        """
+        processed_weight_ids = set()
+        anchor_modules = []
+
+        # Collect modules (store name/parent info for replacement if needed)
+        # Using instance.named_modules() is better for replacement
+        anchor_modules_info = [] # (parent_name, parent_module, child_name, child_module)
+
+        for parent_name, parent_module in self.named_modules():
+            for child_name, child_module in list(parent_module.named_children()):
+                 if isinstance(child_module, (DirectStyleAnchorEmbedding, EncoderStyleAnchorEmbedding, MixedStyleAnchorEmbedding)):
+                     anchor_modules_info.append((parent_name, parent_module, child_name, child_module))
+                     anchor_modules.append(child_module)
+
+        # Phase 1: Merge Unique Weights (without resetting)
+        for module in anchor_modules:
+            weight_id = id(module.weight)
+            if weight_id not in processed_weight_ids:
+                module.merge_deltas(reset=False)
+                processed_weight_ids.add(weight_id)
+
+        # Phase 2: Reset Deltas
+        for module in anchor_modules:
+            module._reset_deltas()
+
+        logger.info(f"Merged anchor deltas into {len(processed_weight_ids)} unique embedding weights.")
+
+        # Phase 3: Cast to nn.Embedding (Optional)
+        if cast_to_embedding:
+            # Map original weight ID to NEW nn.Embedding weight parameter
+            # This ensures we preserve weight tying in the new nn.Embedding objects
+            new_weight_map = {} 
+
+            replaced_count = 0
+            for parent_name, parent_module, child_name, child_module in anchor_modules_info:
+                weight_id = id(child_module.weight)
+
+                # Create standard embedding
+                new_emb = nn.Embedding(
+                    num_embeddings=child_module.num_embeddings,
+                    embedding_dim=child_module.embedding_dim,
+                    padding_idx=child_module.padding_idx,
+                    max_norm=child_module.max_norm,
+                    norm_type=child_module.norm_type,
+                    scale_grad_by_freq=child_module.scale_grad_by_freq,
+                    sparse=child_module.sparse
+                )
+
+                # Assign Weight
+                if weight_id in new_weight_map:
+                    # Reuse the same parameter object if weight was tied
+                    new_emb.weight = new_weight_map[weight_id]
+                else:
+                    # Use the data from the merged anchor embedding
+                    new_emb.weight = nn.Parameter(child_module.weight.data)
+                    new_weight_map[weight_id] = new_emb.weight
+
+                setattr(parent_module, child_name, new_emb)
+                replaced_count += 1
+
+            logger.info(f"Converted {replaced_count} StyleAnchorEmbedding modules to standard nn.Embedding.")
+
     @classmethod
     def from_pretrained(
         cls,

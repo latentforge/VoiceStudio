@@ -99,13 +99,18 @@ class StyleAnchorEmbedding(nn.Embedding):
         """Get the learned delta values for anchor tokens."""
         return [delta.clone() for delta in self._compute_deltas()]
 
-    def merge_deltas(self):
+    def merge_deltas(self, reset: bool = True):
         """
         Permanently merge the learned deltas into the base embedding weights.
 
         This is useful for inference optimization or when saving the model.
         After merging, the deltas are reset to avoid double-counting.
         Note: This changes the underlying pretrained weights.
+        
+        Args:
+            reset (bool): Whether to reset the deltas after merging. 
+                          Set to False if sharing weights/deltas across modules 
+                          to avoid premature reset.
         """
         deltas = self._compute_deltas()
 
@@ -113,7 +118,8 @@ class StyleAnchorEmbedding(nn.Embedding):
             for anchor_id, delta in zip(self.anchor_token_ids, deltas):
                 self.weight[anchor_id] += delta
 
-        self._reset_deltas()
+        if reset:
+            self._reset_deltas()
 
     @property
     def stats(self) -> dict:
