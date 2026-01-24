@@ -33,6 +33,9 @@ class SelectiveTunerConfig(PretrainedConfig):
         use_direct_anchor (`bool`, *optional*, defaults to `True`):
             Whether to use direct anchor (DirectStyleAnchor) or encoder-based anchor 
             (EncoderStyleAnchor with 2-layer MLP).
+        use_mixed_anchor (`bool`, *optional*, defaults to `False`):
+            Whether to use mixed anchor (MixedStyleAnchor) or encoder-based anchor
+            (EncoderStyleAnchor with 2-layer MLP).
         tie_embeddings (`bool`, *optional*, defaults to `True`):
             Whether to share weights between all replaced embedding layers. When True,
             all StyleAnchorEmbedding instances will share the same pretrained weights
@@ -71,6 +74,7 @@ class SelectiveTunerConfig(PretrainedConfig):
         anchor_token: str | tuple[str] = "<bos>",
         anchor_token_id: Optional[int | tuple[int]] = None,
         use_direct_anchor: bool = True,
+        use_mixed_anchor: bool = False,
         tie_embeddings: bool = True,
         **kwargs,
     ):
@@ -86,6 +90,8 @@ class SelectiveTunerConfig(PretrainedConfig):
             anchor_token: Token(s) to use as style anchor
             anchor_token_id: Explicit token ID(s) for anchor
             use_direct_anchor: Whether to use direct or encoder-based anchor
+            use_mixed_anchor: Whether to use mixed anchor (DirectStyleAnchor + EncoderStyleAnchor)
+            tie_embeddings: Whether to share weights between all replaced embedding layers
             **kwargs: Additional attributes to set on the config
 
         Returns:
@@ -109,6 +115,7 @@ class SelectiveTunerConfig(PretrainedConfig):
             else:
                 config.anchor_token_id = anchor_token_id
             config.use_direct_anchor = use_direct_anchor
+            config.use_mixed_anchor = use_mixed_anchor
             config.tie_embeddings = tie_embeddings
             for k, v in kwargs.items():
                 setattr(config, k, v)
@@ -120,6 +127,7 @@ class SelectiveTunerConfig(PretrainedConfig):
         anchor_token: str | tuple[str] = "<bos>",
         anchor_token_id: Optional[int | tuple[int]] = None,
         use_direct_anchor: bool = True,
+        use_mixed_anchor: bool = False,
         tie_embeddings: bool = True,
         **kwargs,
     ):
@@ -134,6 +142,8 @@ class SelectiveTunerConfig(PretrainedConfig):
             anchor_token: Token(s) to use as style anchor
             anchor_token_id: Explicit token ID(s) for anchor  
             use_direct_anchor: Whether to use direct or encoder-based anchor
+            use_mixed_anchor: Whether to use mixed anchor (DirectStyleAnchor + EncoderStyleAnchor)
+            tie_embeddings: Whether to share weights between all replaced embedding layers
             **kwargs: Additional config parameters
         """
         super().__init__(**kwargs)
@@ -142,6 +152,7 @@ class SelectiveTunerConfig(PretrainedConfig):
         if anchor_token_id is None:
             raise AttributeError("`anchor_token_id` cannot be inferred from provided `anchor_token` since there weren't provided any vocab info")
         self.use_direct_anchor = use_direct_anchor
+        self.use_mixed_anchor = use_mixed_anchor
         self.tie_embeddings = tie_embeddings
 
     @classmethod
@@ -156,9 +167,14 @@ class SelectiveTunerConfig(PretrainedConfig):
         anchor_token = kwargs.pop('anchor_token', None)
         anchor_token_id = kwargs.pop('anchor_token_id', None)
         use_direct_anchor = kwargs.pop('use_direct_anchor', None)
+        use_mixed_anchor = kwargs.pop('use_mixed_anchor', None)
         tie_embeddings = kwargs.pop('tie_embeddings', None)
 
-        for arg, data in (('anchor_token', anchor_token), ('anchor_token_id', anchor_token_id), ('use_direct_anchor', use_direct_anchor), ('tie_embeddings', tie_embeddings)):
+        for arg, data in (
+            ('anchor_token', anchor_token), ('anchor_token_id', anchor_token_id),
+            ('use_direct_anchor', use_direct_anchor), ('use_mixed_anchor', use_mixed_anchor),
+            ('tie_embeddings', tie_embeddings)
+        ):
             if data is not None:
                 config_dict[arg] = data
 

@@ -2,7 +2,26 @@ import torch
 from torch import nn
 
 
-class DirectStyleAnchorEmbedding(nn.Embedding):
+class StyleAnchorEmbedding(nn.Embedding):
+    """
+    Base class for style anchor embeddings.
+    """
+
+    def get_anchor_embeddings(self) -> list[torch.Tensor]:
+        pass
+
+    def get_anchor_deltas(self) -> list[torch.Tensor]:
+        pass
+
+    def merge_anchor_deltas(self):
+        pass
+
+    @property
+    def stats(self) -> dict:
+        return {}
+
+
+class DirectStyleAnchorEmbedding(StyleAnchorEmbedding):
     """
     Style Embedding Anchor using Direct Optimization.
 
@@ -100,28 +119,11 @@ class DirectStyleAnchorEmbedding(nn.Embedding):
         """Get the learned delta values for anchor tokens."""
         return [delta.clone() for delta in self.anchor_deltas]
 
-    def reset_anchor_embeddings(self, token_id: int | None = None):
-        """
-        Reset anchor delta(s) to zero (returning to pretrained values).
+    def merge_anchor_deltas(self):
+        pass
 
-        Args:
-            token_id: Specific token ID to reset, or None to reset all
-        """
-        with torch.no_grad():
-            if token_id is None:
-                # Reset all deltas to zero
-                for delta in self.anchor_deltas:
-                    delta.zero_()
-            else:
-                # Reset specific delta
-                idx = self.anchor_token_ids.index(token_id)
-                self.anchor_deltas[idx].zero_()
-
-    def get_tunable_parameters(self) -> int:
-        """Get total number of tunable parameters."""
-        return sum(p.numel() for p in self.anchor_deltas)
-
-    def get_embedding_stats(self) -> dict:
+    @property
+    def stats(self) -> dict:
         """
         Get statistics about anchor embeddings for debugging.
 
@@ -144,8 +146,7 @@ class DirectStyleAnchorEmbedding(nn.Embedding):
         return stats
 
 
-
-class EncoderStyleAnchorEmbedding(nn.Embedding):
+class EncoderStyleAnchorEmbedding(StyleAnchorEmbedding):
     """
     Style Embedding Anchor using Indirect Optimization with 2-Layer MLP (P-Tuning concept).
 
@@ -190,9 +191,9 @@ class EncoderStyleAnchorEmbedding(nn.Embedding):
             with torch.no_grad():
                 self.weight.copy_(pretrained_weight)
 
-        # Hidden dimension defaults to embedding_dim
+        # Hidden dimension defaults to embedding_dim // 4
         if hidden_dim is None:
-            hidden_dim = embedding_dim
+            hidden_dim = embedding_dim // 4
 
         # Create learnable base parameters and MLP encoders for each anchor
         # MLP generates delta (residual) to add to pretrained embedding
@@ -266,12 +267,11 @@ class EncoderStyleAnchorEmbedding(nn.Embedding):
             for base, encoder in zip(self.anchor_bases, self.anchor_encoders)
         ]
 
-    def get_tunable_parameters(self) -> int:
-        """Get total number of tunable parameters."""
-        return sum(p.numel() for p in self.anchor_bases) + \
-               sum(p.numel() for p in self.anchor_encoders.parameters())
+    def merge_anchor_deltas(self):
+        pass
 
-    def get_embedding_stats(self) -> dict:
+    @property
+    def stats(self) -> dict:
         """
         Get statistics about anchor embeddings for debugging.
 
@@ -294,3 +294,21 @@ class EncoderStyleAnchorEmbedding(nn.Embedding):
                 'effective_norm': effective.norm().item(),
             }
         return stats
+
+
+class MixedStyleAnchorEmbedding(StyleAnchorEmbedding):
+    """
+    Style Embedding Anchor using a mix of direct and encoder optimization.
+    """
+    def __init__(
+        self,
+        num_embeddings: int,
+        embedding_dim: int,
+        direct_anchor_token_id: int | tuple[int] | None = None,
+        encoder_anchor_token_id: int | tuple[int] | None = None,
+        pretrained_weight: torch.Tensor | None = None,
+        hidden_dim: int | None = None,
+        padding_idx: int | None = None,
+        **kwargs
+    ):
+        super().__init__(num_embeddings, embedding_dim, padding_idx=padding_idx, **kwargs)

@@ -6,7 +6,9 @@ from transformers.utils import logging
 from torch import nn
 
 from .configuration_selective_tuner import SelectiveTunerConfig
-from ...components.style_anchor import DirectStyleAnchorEmbedding, EncoderStyleAnchorEmbedding
+from ...components.style_anchor import (
+    DirectStyleAnchorEmbedding, EncoderStyleAnchorEmbedding, MixedStyleAnchorEmbedding
+)
 
 logger = logging.get_logger(__name__)
 
@@ -24,15 +26,17 @@ class SelectiveTunerForConditionalGeneration(PreTrainedModel):
     @staticmethod
     def _replace_embeddings_with_anchors(instance: PreTrainedModel, config: SelectiveTunerConfig):
         """Replace nn.Embedding layers with StyleAnchorEmbedding.
-        
+
         Args:
             instance: PreTrainedModel instance to modify
             config: SelectiveTunerConfig with anchor configuration
-            
+
         When config.tie_embeddings is True, all replaced embeddings will keep their
         own pretrained weights but share anchor-specific parameters (deltas/bases/encoders).
         """
         embedding_class = DirectStyleAnchorEmbedding if config.use_direct_anchor else EncoderStyleAnchorEmbedding
+        if config.use_mixed_anchor:
+            embedding_class = MixedStyleAnchorEmbedding
         anchor_token_id = config.anchor_token_id
         tie_embeddings = getattr(config, 'tie_embeddings', False)
 
