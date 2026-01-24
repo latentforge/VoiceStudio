@@ -7,5 +7,7 @@ try:
 except ImportError:
     from voicestudio._parler_tts import ParlerTTSStreamer
 
+
 AutoConfig.register("parler_tts", ParlerTTSConfig)
+AutoModel.register(ParlerTTSConfig, ParlerTTSForCausalLM)
 AutoModel.register(ParlerTTSConfig, ParlerTTSForConditionalGeneration)
