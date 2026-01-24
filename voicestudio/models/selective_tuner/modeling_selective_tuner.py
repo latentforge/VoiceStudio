@@ -59,25 +59,42 @@ class SelectiveTunerForConditionalGeneration(PreTrainedModel):
             for child_name, child_module in list(parent_module.named_children()):
                 # Check if it's a standard nn.Embedding (not already replaced)
                 if isinstance(child_module, nn.Embedding) and not isinstance(
-                    child_module, (DirectStyleAnchorEmbedding, EncoderStyleAnchorEmbedding)
+                    child_module, (DirectStyleAnchorEmbedding, EncoderStyleAnchorEmbedding, MixedStyleAnchorEmbedding)
                 ):
                     # Only replace if size matches target
                     if child_module.num_embeddings == vocab_size and child_module.embedding_dim == embedding_dim:
 
                         # Create new anchor embedding with original pretrained weights
-                        new_embedding = embedding_class(
-                            num_embeddings=child_module.num_embeddings,
-                            embedding_dim=child_module.embedding_dim,
-                            anchor_token_id=anchor_token_id,
-                            pretrained_weight=child_module.weight.data.clone(),
-                            padding_idx=child_module.padding_idx,
-                        )
+                        if config.use_mixed_anchor:
+                            direct_ids, encoder_ids = anchor_token_id
+                            new_embedding = embedding_class(
+                                num_embeddings=child_module.num_embeddings,
+                                embedding_dim=child_module.embedding_dim,
+                                direct_anchor_token_id=direct_ids,
+                                encoder_anchor_token_id=encoder_ids,
+                                pretrained_weight=child_module.weight.data.clone(),
+                                padding_idx=child_module.padding_idx,
+                            )
+                        else:
+                            new_embedding = embedding_class(
+                                num_embeddings=child_module.num_embeddings,
+                                embedding_dim=child_module.embedding_dim,
+                                anchor_token_id=anchor_token_id,
+                                pretrained_weight=child_module.weight.data.clone(),
+                                padding_idx=child_module.padding_idx,
+                            )
 
                         # Share anchor parameters if tie_embeddings is True
                         if tie_embeddings:
                             if shared_anchor_params is None:
                                 # Store first embedding's anchor parameters
-                                if config.use_direct_anchor:
+                                if config.use_mixed_anchor:
+                                    shared_anchor_params = {
+                                        'deltas': new_embedding.anchor_deltas,
+                                        'bases': new_embedding.anchor_bases,
+                                        'encoders': new_embedding.anchor_encoders
+                                    }
+                                elif config.use_direct_anchor:
                                     shared_anchor_params = new_embedding.anchor_deltas
                                 else:
                                     shared_anchor_params = {
@@ -86,7 +103,11 @@ class SelectiveTunerForConditionalGeneration(PreTrainedModel):
                                     }
                             else:
                                 # Replace anchor parameters with shared ones
-                                if config.use_direct_anchor:
+                                if config.use_mixed_anchor:
+                                    new_embedding.anchor_deltas = shared_anchor_params['deltas']
+                                    new_embedding.anchor_bases = shared_anchor_params['bases']
+                                    new_embedding.anchor_encoders = shared_anchor_params['encoders']
+                                elif config.use_direct_anchor:
                                     new_embedding.anchor_deltas = shared_anchor_params
                                 else:
                                     new_embedding.anchor_bases = shared_anchor_params['bases']

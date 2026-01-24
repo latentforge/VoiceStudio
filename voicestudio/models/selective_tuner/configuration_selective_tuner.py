@@ -101,10 +101,10 @@ class SelectiveTunerConfig(PretrainedConfig):
             If base_config is provided: Deepcopy of base_config with anchor attributes added
         """
         if use_mixed_anchor:  # Enforce ((direct), (encoder)) structure
-            if not isinstance(anchor_token, (tuple, list)) or len(anchor_token) != 2 or isinstance(anchor_token[0], (tuple, list)):
+            if not isinstance(anchor_token, (tuple, list)) or len(anchor_token) != 2 or not isinstance(anchor_token[0], (tuple, list)):
                 raise ValueError("When `use_mixed_anchor=True`, `anchor_token` must be a tuple of two tuples/lists: ((direct_ids), (encoder_ids)).")
             if anchor_token_id is not None and (
-                not isinstance(anchor_token_id, (tuple, list)) or len(anchor_token_id) != 2 or isinstance(anchor_token_id[0], (tuple, list))
+                not isinstance(anchor_token_id, (tuple, list)) or len(anchor_token_id) != 2 or not isinstance(anchor_token_id[0], (tuple, list))
             ):
                 raise ValueError("When `use_mixed_anchor=True`, `anchor_token_id` must be a tuple of two tuples/lists: ((direct_ids), (encoder_ids)).")
 
