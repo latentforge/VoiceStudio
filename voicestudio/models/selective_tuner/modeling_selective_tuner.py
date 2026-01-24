@@ -154,6 +154,53 @@ class SelectiveTunerForConditionalGeneration(PreTrainedModel):
                         else:
                             logger.info(f"Replaced {full_name} with {embedding_class.__name__}")
 
+    def extend_vocabulary(self, tokenizer):
+        """
+        Extend tokenizer vocabulary with anchor tokens and update config anchor IDs.
+
+        Args:
+            tokenizer: Tokenizer instance (e.g., AutoTokenizer)
+        """
+        config = self.config
+
+        # Determine effective anchor tokens
+        tokens_to_add = []
+        target_tokens = config.anchor_token
+
+        if config.use_mixed_anchor:
+            # Expecting ((directs), (encoders))
+            if isinstance(target_tokens, (tuple, list)) and len(target_tokens) == 2:
+                for group in target_tokens:
+                    if isinstance(group, (tuple, list)):
+                        tokens_to_add.extend(group)
+                    else:
+                        tokens_to_add.append(group)
+        else:
+             if isinstance(target_tokens, (tuple, list)):
+                tokens_to_add.extend(target_tokens)
+             else:
+                tokens_to_add.append(target_tokens)
+
+        # strings only
+        tokens_to_add = [t for t in tokens_to_add if isinstance(t, str)]
+
+        # Add to tokenizer
+        num_added = tokenizer.add_tokens(tokens_to_add)
+        if num_added > 0:
+            logger.info(f"Added {num_added} anchor tokens to tokenizer.")
+
+        # re-resolve IDs
+        if config.use_mixed_anchor:
+            direct_tokens, encoder_tokens = target_tokens
+            direct_ids = tuple([tokenizer.convert_tokens_to_ids(t) for t in direct_tokens])
+            encoder_ids = tuple([tokenizer.convert_tokens_to_ids(t) for t in encoder_tokens])
+            config.anchor_token_id = (direct_ids, encoder_ids)
+        else:
+             if isinstance(target_tokens, str):
+                 config.anchor_token_id = tokenizer.convert_tokens_to_ids(target_tokens)
+             else:
+                 config.anchor_token_id = tuple([tokenizer.convert_tokens_to_ids(t) for t in target_tokens])
+
     @classmethod
     def from_pretrained(
         cls,
