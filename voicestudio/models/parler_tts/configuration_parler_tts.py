@@ -30,10 +30,13 @@ except ImportError:
         modeling_parler_tts
     )
 
+_ParlerTTSDecoderConfig = configuration_parler_tts.ParlerTTSDecoderConfig
+_ParlerTTSConfig = configuration_parler_tts.ParlerTTSConfig
+
 logger = logging.get_logger(__name__)
 
 
-class ParlerTTSDecoderConfig(configuration_parler_tts.ParlerTTSDecoderConfig):
+class ParlerTTSDecoderConfig(_ParlerTTSDecoderConfig):
     r"""
     This is the configuration class to store the configuration of an [`ParlerTTSDecoder`]. It is used to instantiate a
     Parler-TTS decoder according to the specified arguments, defining the model architecture. Instantiating a
@@ -163,7 +166,7 @@ class ParlerTTSDecoderConfig(configuration_parler_tts.ParlerTTSDecoderConfig):
         self.scale_embedding = scale_embedding  # scale factor will be sqrt(d_model) if True
         self.num_codebooks = num_codebooks
         self.rope_embeddings = rope_embeddings
-        
+
         # Handle rope_parameters for Transformers 5.0 compatibility
         if rope_parameters is not None:
             self.rope_parameters = rope_parameters
@@ -173,26 +176,26 @@ class ParlerTTSDecoderConfig(configuration_parler_tts.ParlerTTSDecoderConfig):
         else:
             # Default value
             self.rope_parameters = {"rope_theta": 10_000.0}
-        
+
         self.cross_attention_implementation_strategy = cross_attention_implementation_strategy
         self.use_fused_lm_heads = use_fused_lm_heads
         self.codebook_weights = codebook_weights
 
         if codebook_weights is not None and len(codebook_weights) != num_codebooks:
             raise ValueError(f"`codebook_weights` has length {len(codebook_weights)} when it should be of length {num_codebooks}.")
-        super().__init__(
+        super(_ParlerTTSDecoderConfig, self).__init__(
             pad_token_id=pad_token_id,
             bos_token_id=bos_token_id,
             eos_token_id=eos_token_id,
             tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )
-    
+
     @property
     def rope_theta(self):
         """Backward compatibility property to access rope_theta from rope_parameters."""
         return self.rope_parameters.get("rope_theta", 10_000.0)
-    
+
     @rope_theta.setter
     def rope_theta(self, value):
         """Backward compatibility setter for rope_theta."""
@@ -201,7 +204,7 @@ class ParlerTTSDecoderConfig(configuration_parler_tts.ParlerTTSDecoderConfig):
         self.rope_parameters["rope_theta"] = value
 
 
-class ParlerTTSConfig(configuration_parler_tts.ParlerTTSConfig):
+class ParlerTTSConfig(_ParlerTTSConfig):
     @classmethod
     def from_sub_models_config(
         cls,
