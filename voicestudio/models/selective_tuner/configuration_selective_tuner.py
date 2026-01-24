@@ -33,7 +33,7 @@ class SelectiveTunerConfig(PretrainedConfig):
         use_direct_anchor (`bool`, *optional*, defaults to `True`):
             Whether to use direct anchor (DirectStyleAnchor) or encoder-based anchor 
             (EncoderStyleAnchor with 2-layer MLP).
-        tie_embeddings (`bool`, *optional*, defaults to `False`):
+        tie_embeddings (`bool`, *optional*, defaults to `True`):
             Whether to share weights between all replaced embedding layers. When True,
             all StyleAnchorEmbedding instances will share the same pretrained weights
             and anchor parameters.
@@ -71,7 +71,7 @@ class SelectiveTunerConfig(PretrainedConfig):
         anchor_token: str | tuple[str] = "<bos>",
         anchor_token_id: Optional[int | tuple[int]] = None,
         use_direct_anchor: bool = True,
-        tie_embeddings: bool = False,
+        tie_embeddings: bool = True,
         **kwargs,
     ):
         """
@@ -120,7 +120,7 @@ class SelectiveTunerConfig(PretrainedConfig):
         anchor_token: str | tuple[str] = "<bos>",
         anchor_token_id: Optional[int | tuple[int]] = None,
         use_direct_anchor: bool = True,
-        tie_embeddings: bool = False,
+        tie_embeddings: bool = True,
         **kwargs,
     ):
         """
