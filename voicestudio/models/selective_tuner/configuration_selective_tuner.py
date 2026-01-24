@@ -76,18 +76,18 @@ class SelectiveTunerConfig(PretrainedConfig):
     ):
         """
         Custom __new__ method to enable config inheritance from base models.
-        
+
         When base_config is provided, this method returns a modified copy of that config
         instead of creating a new SelectiveTunerConfig instance. This preserves all
         base model configuration while adding anchor-specific parameters.
-        
+
         Args:
             base_config: Base model config to extend (e.g., ParlerTTS config)
             anchor_token: Token(s) to use as style anchor
             anchor_token_id: Explicit token ID(s) for anchor
             use_direct_anchor: Whether to use direct or encoder-based anchor
             **kwargs: Additional attributes to set on the config
-            
+
         Returns:
             If base_config is None: New SelectiveTunerConfig instance
             If base_config is provided: Deepcopy of base_config with anchor attributes added
@@ -95,10 +95,7 @@ class SelectiveTunerConfig(PretrainedConfig):
         if base_config is None:
             return super().__new__(cls)
         else:  # does not init a new class (use base_config instead)
-            # TODO: Fix AutoConfig
-            #config = AutoConfig.from_pretrained(base_config) if isinstance(base_config, str) else deepcopy(base_config)
-            from ..parler_tts import ParlerTTSConfig
-            config = ParlerTTSConfig.from_pretrained(base_config) if isinstance(base_config, str) else deepcopy(base_config)
+            config = AutoConfig.from_pretrained(base_config) if isinstance(base_config, str) else deepcopy(base_config)
             config.anchor_token = anchor_token
             if anchor_token_id is None:
                 if isinstance(base_config, str):
