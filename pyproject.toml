@@ -77,6 +77,7 @@ eval = [
     "pyworld>=0.3.5",
     "pysptk>=1.0.1",
     "jiwer>=4.0.0",
+    "speechbrain",
     "utmosv2",
 ]
 flash = [ "flash-attn" ]
