@@ -10,7 +10,7 @@ import pysptk
 import pyworld
 import torch
 from librosa.sequence import dtw
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig
 

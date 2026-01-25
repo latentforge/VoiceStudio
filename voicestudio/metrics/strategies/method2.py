@@ -2,7 +2,7 @@
 Method 2: 10 references × 10 synthesis each for speaker consistency.
 """
 
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from .base import BaseGenerationStrategy
 

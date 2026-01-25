@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import shutil  # Used for cleaning up the directory
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import warnings
 from typing import List, Optional
 import argparse

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig
 

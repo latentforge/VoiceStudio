@@ -5,7 +5,7 @@ XTTS v2 synthesizer implementation.
 from pathlib import Path
 from typing import Optional, List
 import torch
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from .base import BaseSynthesizer
 

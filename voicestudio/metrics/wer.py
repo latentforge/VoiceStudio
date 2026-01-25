@@ -7,7 +7,7 @@ from pathlib import Path
 import jiwer
 import numpy as np
 import torch
-from tqdm import tqdm
+from tqdm.auto import tqdm
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
 from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig

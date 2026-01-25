@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 import numpy as np
 import torch
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from ..utils.loader import AudioLoader
 

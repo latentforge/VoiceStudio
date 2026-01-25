@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from speechbrain.inference.speaker import EncoderClassifier
 from torch.nn.utils.rnn import pad_sequence
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from .base import BaseMetricCalculator, MetricCalculationError, ModelConfig
 

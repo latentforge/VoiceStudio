@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import json
 import numpy as np
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from models.tts_lora import TTSWithLoRA
 from data_loading.dataset import create_dataloader

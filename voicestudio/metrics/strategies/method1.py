@@ -2,7 +2,7 @@
 Method 1: 100 reference-synthesis pairs generation.
 """
 
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from .base import BaseGenerationStrategy
 
