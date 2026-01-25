@@ -1,7 +1,7 @@
 """
 Method 1: 100 reference-synthesis pairs generation.
 """
-
+import traceback
 from tqdm.auto import tqdm
 
 from .base import BaseGenerationStrategy
@@ -70,7 +70,8 @@ class Method1Strategy(BaseGenerationStrategy):
                     print(f"Failed to synthesize audio for sample {i}")
 
             except Exception as e:
-                print(f"Error processing sample {i}: {e}")
+                print(f"Error processing sample {i}")
+                traceback.print_exc()
                 continue
 
         print(f"Method 1 completed: {success_count}/{len(sample_indices)} pairs generated")

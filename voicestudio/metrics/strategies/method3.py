@@ -3,7 +3,7 @@ Method 3: 10 references × 3 synthesis each for speaker consistency.
 """
 
 import re
-
+import traceback
 from tqdm.auto import tqdm
 
 from .base import BaseGenerationStrategy
@@ -108,7 +108,8 @@ class Method3Strategy(BaseGenerationStrategy):
                 print(f"Set {ref_idx}: {set_success}/{num_syn_per_ref} synthesis generated")
 
             except Exception as e:
-                print(f"Error processing reference {ref_idx}: {e}")
+                print(f"Error processing reference {ref_idx}")
+                traceback.print_exc()
                 continue
 
         expected_total = len(sample_indices) * num_syn_per_ref
