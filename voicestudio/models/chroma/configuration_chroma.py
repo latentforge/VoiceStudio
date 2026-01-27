@@ -18,8 +18,22 @@ from typing import Optional, Dict, Any
 
 from transformers.utils import logging
 from transformers.configuration_utils import PretrainedConfig
-from transformers.models.qwen2_5_omni.configuration_qwen2_5_omni import Qwen2_5OmniThinkerConfig
-from transformers.models.mimi.configuration_mimi import MimiConfig
+
+# Transformers 4.x.x compatibility: Qwen2_5OmniThinkerConfig may not exist
+try:
+    from transformers.models.qwen2_5_omni.configuration_qwen2_5_omni import Qwen2_5OmniThinkerConfig
+    _HAS_QWEN_OMNI = True
+except ImportError:
+    Qwen2_5OmniThinkerConfig = None
+    _HAS_QWEN_OMNI = False
+
+# Transformers 4.x.x compatibility: MimiConfig may not exist
+try:
+    from transformers.models.mimi.configuration_mimi import MimiConfig
+    _HAS_MIMI = True
+except ImportError:
+    MimiConfig = None
+    _HAS_MIMI = False
 
 logger = logging.get_logger(__name__)
 
@@ -127,12 +141,16 @@ class ChromaDecoderConfig(PretrainedConfig):
 class ChromaConfig(PretrainedConfig):
     model_type = "chroma"
 
+    # Transformers 4.x.x compatibility: sub_configs is only supported in 5.x.x
+    # Build sub_configs dynamically based on available classes
     sub_configs = {
-        "thinker_config": Qwen2_5OmniThinkerConfig,
-        "codec_config": MimiConfig,
         "backbone_config": ChromaBackboneConfig,
         "decoder_config": ChromaDecoderConfig
     }
+    if _HAS_QWEN_OMNI and Qwen2_5OmniThinkerConfig is not None:
+        sub_configs["thinker_config"] = Qwen2_5OmniThinkerConfig
+    if _HAS_MIMI and MimiConfig is not None:
+        sub_configs["codec_config"] = MimiConfig
 
     def __init__(
         self,
@@ -149,13 +167,17 @@ class ChromaConfig(PretrainedConfig):
         audio_frame_freq=1920,
         **kwargs
     ):
-        # thinker config
-        if isinstance(thinker_config, dict):
-            self.thinker_config = Qwen2_5OmniThinkerConfig(**thinker_config)
-        elif isinstance(thinker_config, Qwen2_5OmniThinkerConfig):
+        # thinker config (Transformers 4.x.x compatibility)
+        if _HAS_QWEN_OMNI and Qwen2_5OmniThinkerConfig is not None:
+            if isinstance(thinker_config, dict):
+                self.thinker_config = Qwen2_5OmniThinkerConfig(**thinker_config)
+            elif isinstance(thinker_config, Qwen2_5OmniThinkerConfig):
+                self.thinker_config = thinker_config
+            elif thinker_config is None:
+                self.thinker_config = Qwen2_5OmniThinkerConfig()
+        else:
+            # Fallback for Transformers 4.x.x: store as dict or None
             self.thinker_config = thinker_config
-        elif thinker_config is None:
-            self.thinker_config = Qwen2_5OmniThinkerConfig()
 
         # backbone config
         if isinstance(backbone_config, dict):
@@ -173,13 +195,17 @@ class ChromaConfig(PretrainedConfig):
         elif decoder_config is None:
             self.decoder_config = ChromaDecoderConfig(audio_num_codebooks=audio_num_codebooks)
 
-        # codec config (Mimi)
-        if isinstance(codec_config, dict):
-            self.codec_config = MimiConfig(**codec_config)
-        elif isinstance(codec_config, MimiConfig):
+        # codec config (Mimi) - Transformers 4.x.x compatibility
+        if _HAS_MIMI and MimiConfig is not None:
+            if isinstance(codec_config, dict):
+                self.codec_config = MimiConfig(**codec_config)
+            elif isinstance(codec_config, MimiConfig):
+                self.codec_config = codec_config
+            elif codec_config is None:
+                self.codec_config = MimiConfig(num_quantizers=audio_num_codebooks, frame_rate=12.5)
+        else:
+            # Fallback for Transformers 4.x.x: store as dict or None
             self.codec_config = codec_config
-        elif codec_config is None:
-            self.codec_config = MimiConfig(num_quantizers=audio_num_codebooks, frame_rate=12.5)
 
         self.audio_num_codebooks = audio_num_codebooks
         self.codebook_pad_token_id = codebook_pad_token_id
