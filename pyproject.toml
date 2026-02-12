@@ -83,8 +83,8 @@ eval = [
 flash = [ "flash-attn" ]
 flash-prebuilt = [ "flash-attn" ]
 onnx = [  # for Qwen3-TTS, CosyVoice
-    "onnxruntime-gpu[cuda,cudnn]>=1.18.0 ; platform_system == 'linux' or platform_system == 'windows'",
-    "onnxruntime>=1.18.0 ; platform_system == 'darwin'",
+    "onnxruntime-gpu[cuda,cudnn]>=1.18.0 ; platform_system == 'Linux' or platform_system == 'Windows'",
+    "onnxruntime>=1.18.0 ; platform_system == 'Darwin'",
     "onnx",
 ]
 # -----------------------------------------
