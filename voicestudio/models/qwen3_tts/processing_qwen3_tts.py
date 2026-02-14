@@ -194,6 +194,104 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
 
         return list(dict.fromkeys(names))
 
+    def get_model_type(self) -> str:
+        """
+        Get the underlying tokenizer model type.
+
+        Returns:
+            str: Model type string from `self.model.config.model_type`
+                (e.g. "qwen3_tts_tokenizer_25hz" / "qwen3_tts_tokenizer_12hz").
+        """
+        return self.audio_tokenizer.get_model_type()
+
+    def get_input_sample_rate(self) -> int:
+        """
+        Get the expected input sample rate for encoding.
+
+        Returns:
+            int: Input sample rate (Hz).
+        """
+        return int(self.audio_tokenizer.get_input_sample_rate())
+
+    def get_output_sample_rate(self) -> int:
+        """
+        Get the output sample rate for decoded waveforms.
+
+        Returns:
+            int: Output sample rate (Hz).
+        """
+        return int(self.audio_tokenizer.get_output_sample_rate())
+
+    def get_encode_downsample_rate(self) -> int:
+        """
+        Get the encoder downsample rate (waveform samples per code step).
+
+        Returns:
+            int: Encode downsample rate.
+        """
+        return int(self.audio_tokenizer.get_encode_downsample_rate())
+
+    def get_decode_upsample_rate(self) -> int:
+        """
+        Get the decoder upsample rate (waveform samples per code step).
+
+        Returns:
+            int: Decode upsample rate.
+        """
+        return int(self.audio_tokenizer.get_decode_upsample_rate())
+
+    def encode_voice_clone(
+        self,
+        text: Union[str, list[str]],
+        instruct: Union[dict[str, Any], list[VoiceClonePrompt]] | None = None,
+        language: Union[str, list[str]] = None,
+        prompt_audio: Union[AudioLike, list[AudioLike]] | None = None,
+        prompt_text: Union[str, list[Optional[str]]] | None = None,
+        x_vector_only_mode: Union[bool, list[bool]] = False,
+        return_tensors: Literal["pt", "np"] = "pt",
+    ):
+        """Encoding parameter guide for voice cloning task"""
+        if instruct is None and prompt_audio is None:
+            raise ValueError("You need to specify either `instruct` or `prompt_audio` input.")
+        elif instruct is None and prompt_audio is not None:
+            return self(text=text, audio=prompt_audio, return_tensors=return_tensors, language=language, prompt_text=prompt_text, x_vector_only_mode=x_vector_only_mode)
+        else:
+            return self.encode(text=text, instruct=instruct, language=language, return_tensors=return_tensors)
+
+    def encode_custom_voice(
+        self,
+        text: Union[str, list[str]],
+        speaker: Union[str, list[str]],
+        instruct: Union[str, list[str]],
+        language: Union[str, list[str]] = None,
+        return_tensors: Literal["pt", "np"] = "pt",
+    ):
+        """Encoding parameter guide for voice editing task"""
+        return self.encode(text=text, speaker=speaker, language=language, instruct=instruct, return_tensors=return_tensors)
+
+    def encode_voice_design(
+        self,
+        text: Union[str, list[str]],
+        instruct: Union[str, list[str]],
+        language: Union[str, list[str]] = None,
+        return_tensors: Literal["pt", "np"] = "pt",
+    ):
+        """Encoding parameter guide for voice design task"""
+        return self.encode(text=text, speaker=speaker, language=language, instruct=instruct, return_tensors=return_tensors)
+
+    def encode(
+        self,
+        text: Union[str, list[str]],
+        audio: AudioInput | None = None,
+        sampling_rate: int | None = None,
+        speaker: Union[str, list[str]] | None = None,
+        instruct: Union[str, list[str], dict[str, Any], list[VoiceClonePrompt]] | None = None,
+        language: Union[str, list[str]] = None,
+        return_tensors: Literal["pt", "np"] = "pt",
+    ):
+        """Encoding parameter guide for text-to-speech task"""
+        return self(text=text, return_tensors=return_tensors, speaker=speaker, language=language, instruct=instruct)
+
     def __call__(
         self,
         images: ImageInput | None = None,
@@ -286,61 +384,6 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
             data=outputs,
             tensor_type=kwargs.get("return_tensors"),
         )
-
-    def encode(
-        self,
-        text: Union[str, list[str]],
-        audio: AudioInput | None = None,
-        sampling_rate: int | None = None,
-        speaker: Union[str, list[str]] | None = None,
-        instruct: Union[str, list[str], dict[str, Any], list[VoiceClonePrompt]] | None = None,
-        return_tensors: Literal["pt", "np"] = "pt",
-    ):
-        """Encoding parameter guide for text-to-speech task"""
-        return self(text=text, return_tensors=return_tensors, speaker=speaker, language=language, instruct=instruct)
-
-    def encode_voice_clone(
-        self,
-        text: Union[str, list[str]],
-        instruct: Union[dict[str, Any], list[VoiceClonePrompt]] | None = None,
-        prompt_audio: Union[AudioLike, list[AudioLike]] | None = None,
-        prompt_text: Union[str, list[Optional[str]]] | None = None,
-        x_vector_only_mode: Union[bool, list[bool]] = False,
-        return_tensors: Literal["pt", "np"] = "pt",
-    ):
-        """Encoding parameter guide for voice cloning task"""
-        if instruct is None and prompt_audio is None:
-            raise ValueError("You need to specify either `instruct` or `prompt_audio` input.")
-        elif instruct is None and prompt_audio is not None:
-            return self(
-                text=text,
-                audio=prompt_audio,
-                sampling_rate=sampling_rate,
-                language=language,
-                return_tensors=return_tensors,
-            )
-        else:
-            return self.encode(text=text, return_tensors=return_tensors, language=language, instruct=instruct)
-
-    def encode_custom_voice(
-        self,
-        text: Union[str, list[str]],
-        speaker: Union[str, list[str]],
-        instruct: Union[str, list[str]],
-        return_tensors: Literal["pt", "np"] = "pt",
-    ):
-        """Encoding parameter guide for voice editing task"""
-        return self.encode(text=text, return_tensors=return_tensors, speaker=speaker, language=language, instruct=instruct)
-
-    def encode_voice_design(
-        self,
-        text: Union[str, list[str]],
-        instruct: Union[str, list[str]],
-        language: Union[str, list[str]] = None,
-        return_tensors: Literal["pt", "np"] = "pt",
-    ):
-        """Encoding parameter guide for voice design task"""
-        return self.encode(text=text, return_tensors=return_tensors, speaker=speaker, language=language, instruct=instruct)
 
     def create_voice_clone_prompt(
         self,
@@ -539,49 +582,3 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         sr: Optional[int],
     ) -> list[np.ndarray]:
         return _Qwen3TTSTokenizer._normalize_audio_inputs(self, audios, sr)
-
-    def get_model_type(self) -> str:
-        """
-        Get the underlying tokenizer model type.
-
-        Returns:
-            str: Model type string from `self.model.config.model_type`
-                (e.g. "qwen3_tts_tokenizer_25hz" / "qwen3_tts_tokenizer_12hz").
-        """
-        return self.audio_tokenizer.get_model_type()
-
-    def get_input_sample_rate(self) -> int:
-        """
-        Get the expected input sample rate for encoding.
-
-        Returns:
-            int: Input sample rate (Hz).
-        """
-        return int(self.audio_tokenizer.get_input_sample_rate())
-
-    def get_output_sample_rate(self) -> int:
-        """
-        Get the output sample rate for decoded waveforms.
-
-        Returns:
-            int: Output sample rate (Hz).
-        """
-        return int(self.audio_tokenizer.get_output_sample_rate())
-
-    def get_encode_downsample_rate(self) -> int:
-        """
-        Get the encoder downsample rate (waveform samples per code step).
-
-        Returns:
-            int: Encode downsample rate.
-        """
-        return int(self.audio_tokenizer.get_encode_downsample_rate())
-
-    def get_decode_upsample_rate(self) -> int:
-        """
-        Get the decoder upsample rate (waveform samples per code step).
-
-        Returns:
-            int: Decode upsample rate.
-        """
-        return int(self.audio_tokenizer.get_decode_upsample_rate())
