@@ -114,6 +114,17 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
             chat_template=chat_template
         )
 
+    @property
+    def device(self) -> torch.device:
+        """Get device from audio_tokenizer."""
+        device = getattr(self.audio_tokenizer, "device", None)
+        if device is None:
+            try:
+                device = next(self.audio_tokenizer.parameters()).device
+            except StopIteration:
+                device = torch.device("cpu")
+        return device
+
     @classmethod
     def from_pretrained(
         cls,
@@ -312,14 +323,18 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
                 - str: wav file path or base64 audio string
                 - np.ndarray: raw waveform (requires `sr` parameter)
                 - List of above types
-            sr (`int`, *optional*):
-                Sampling rate for numpy array inputs. Required when audio is np.ndarray.
             **kwargs:
                 Additional arguments passed to tokenizer and feature_extractor.
+                sampling_rate (`int`, *optional*):
+                    Sampling rate for numpy array inputs. Required when audio is np.ndarray.
 
         Returns:
             [`BatchFeature`]: Processed inputs containing text and/or audio features.
         """
+        # Validate unsupported modalities
+        if images is not None or videos is not None:
+            raise ValueError(f"{self.__class__.__name__} does not support image or video inputs.")
+
         if text is None and audio is None:
             raise ValueError("You need to specify either `text` or `audio` input.")
 
@@ -333,21 +348,17 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
 
         # Process text
         if text is not None:
-            if not isinstance(text, list):
-                text = [text]
+            text = self._ensure_list(text)
             text_inputs = self.tokenizer(text, **output_kwargs["text_kwargs"])
             outputs.update(text_inputs)
 
         # Process audio
         if audio is not None:
-            if not hasattr(self, "audio_tokenizer"):
-                raise ValueError(
-                    "audio_tokenizer is required to process audio inputs. "
-                    "Make sure the processor was loaded with audio_tokenizer support."
-                )
+            # Extract sr from kwargs if provided
+            sampling_rate = kwargs.get("sampling_rate", None)
 
             # Normalize audio inputs (handles paths, base64, numpy arrays)
-            audio_list = self._normalize_audio_inputs(audio, sr)
+            audio_list = self._normalize_audio_inputs(audio, sampling_rate)
 
             # Use feature_extractor to preprocess
             feature_inputs = self.feature_extractor(
@@ -358,11 +369,11 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
             )
 
             # Move to model device and dtype
-            device = self._get_audio_tokenizer_device()
-            feature_inputs = feature_inputs.to(device).to(self.audio_tokenizer.dtype)
+            feature_inputs = feature_inputs.to(self.device).to(self.audio_tokenizer.dtype)
 
             # Encode with audio_tokenizer model
             with torch.inference_mode():
+                # audio_tokenizer.encode expects (B, T) and (B, T)
                 audio_outputs = self.audio_tokenizer.encode(
                     feature_inputs["input_values"].squeeze(1),
                     feature_inputs["padding_mask"].squeeze(1),
@@ -382,7 +393,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
 
         return BatchFeature(
             data=outputs,
-            tensor_type=kwargs.get("return_tensors"),
+            tensor_type=return_tensors,
         )
 
     def create_voice_clone_prompt(
