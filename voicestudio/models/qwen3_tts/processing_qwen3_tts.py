@@ -476,7 +476,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         normalized: List[Tuple[np.ndarray, int]] = []
         for a in prompt_audio_list:
             if isinstance(a, str):
-                normalized.append(self.load_audio(a))
+                normalized.append(self._load_audio_to_np(a))
             elif isinstance(a, tuple) and len(a) == 2 and isinstance(a[0], np.ndarray):
                 normalized.append((a[0].astype(np.float32), int(a[1])))
             elif isinstance(a, np.ndarray):
@@ -662,6 +662,9 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
 
     def _build_instruct_text(self, instruct: str) -> str:
         return _Qwen3TTSModel._build_instruct_text(self, instruct)
+
+    def _load_audio_to_np(self, x: str) -> Tuple[np.ndarray, int]:
+        return _Qwen3TTSTokenizer._load_audio_to_np(self, x)
 
     def load_audio(
         self,
