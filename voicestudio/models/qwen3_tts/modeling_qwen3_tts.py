@@ -41,6 +41,9 @@ class Qwen3TTSForConditionalGeneration(_Qwen3TTSForConditionalGeneration):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+    def load_speech_tokenizer(self, *args, **kwargs):
+        pass
+
     def _supported_languages_set(self) -> Optional[set]:
         """Get set of supported languages from parent model."""
         v = self.get_supported_languages()
