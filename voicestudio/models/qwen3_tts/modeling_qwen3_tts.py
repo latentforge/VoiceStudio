@@ -344,9 +344,9 @@ class Qwen3TTSForConditionalGeneration(_Qwen3TTSForConditionalGeneration):
         if speakers is not None:
             self._validate_speakers(speakers)
 
-            if self.tts_model_size in "0b6":  # for 0b6 model, instruct is not supported
-                logger.warning("instruct_id is not supported for 0b6 model, please remove it")
-                instruct_id = None
+            if self.tts_model_size == "0.6b":  # for 0.6b model, instruct is not supported
+                logger.warning("instruct_ids is not supported for 0.6b model, please remove it")
+                instruct_ids = None
 
         # Merge generation kwargs with defaults from generate_config
         merged_kwargs = self._merge_generate_kwargs(**kwargs)
