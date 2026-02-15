@@ -129,6 +129,9 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
                 device = torch.device("cpu")
         return device
 
+    def to(self, *args, **kwargs):
+        return self.audio_tokenizer.to(*args, **kwargs)
+
     @classmethod
     def from_pretrained(
         cls,
@@ -277,7 +280,10 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         if instruct is None and prompt_audio is None:
             raise ValueError("You need to specify either `instruct` or `prompt_audio` input.")
         elif instruct is None and prompt_audio is not None:
-            return self(text=text, audio=prompt_audio, language=language, prompt_text=prompt_text, x_vector_only_mode=x_vector_only_mode, sampling_rate=sampling_rate, return_tensors=return_tensors)
+            return self(
+                text=text, audio=prompt_audio, return_tensors=return_tensors,
+                language=language, prompt_text=prompt_text, x_vector_only_mode=x_vector_only_mode, sampling_rate=sampling_rate
+            )
         else:
             return self.encode(text=text, instruct=instruct, language=language, return_tensors=return_tensors)
 
