@@ -111,7 +111,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         self.audio_tokenizer: Qwen3TTSTokenizerV1Model | Qwen3TTSTokenizerV2Model
 
         kwargs = dict(tokenizer=tokenizer, audio_tokenizer=audio_tokenizer, chat_template=chat_template)
-        if "feature_extractor" not in self.attributes:
+        if "feature_extractor" in self.attributes:
             kwargs['feature_extractor'] = feature_extractor
 
         super(_Qwen3TTSProcessor, self).__init__(**kwargs)
