@@ -158,9 +158,10 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         try:
             processor = super(_Qwen3TTSProcessor, cls).from_pretrained(pretrained_model_name_or_path, **kwargs)
         except (OSError, ValueError):
-            temp_cls = cls.copy()
+            from copy import copy
+            temp_cls = copy(cls)
             temp_cls.attributes = [attr for attr in temp_cls.attributes if attr != "feature_extractor"]
-            processor = super(_Qwen3TTSProcessor, cls).from_pretrained(pretrained_model_name_or_path, **kwargs)
+            processor = super(_Qwen3TTSProcessor, temp_cls).from_pretrained(pretrained_model_name_or_path, **kwargs)
             processor.__class__ = cls
 
         # If audio_tokenizer wasn't loaded (first time from Qwen repo), load it manually
