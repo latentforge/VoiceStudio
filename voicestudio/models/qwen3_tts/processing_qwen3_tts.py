@@ -109,15 +109,15 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         self.tokenizer: Qwen2Tokenizer
         self.feature_extractor: AutoFeatureExtractor
         self.audio_tokenizer: Qwen3TTSTokenizerV1Model | Qwen3TTSTokenizerV2Model
-        if "feature_extractor" in self.attributes:
-            super(_Qwen3TTSProcessor, self).__init__(
-                tokenizer, feature_extractor, audio_tokenizer=audio_tokenizer, chat_template=chat_template
-            )
-        else:
-            super(_Qwen3TTSProcessor, self).__init__(
-                tokenizer, audio_tokenizer=audio_tokenizer, chat_template=chat_template
-            )
-            self.feature_extractor = feature_extractor
+
+        kwargs = dict(tokenizer=tokenizer, audio_tokenizer=audio_tokenizer, chat_template=chat_template)
+        if "feature_extractor" not in self.attributes:
+            kwargs['feature_extractor'] = feature_extractor
+
+        super(_Qwen3TTSProcessor, self).__init__(**kwargs)
+
+        if "feature_extractor" not in self.attributes:
+            self.feature_extractor = feature_extractor  # manual set
 
     @property
     def device(self) -> torch.device:
@@ -140,6 +140,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         token: str | bool | None = None,
         revision: str = "main",
         fix_mistral_regex: bool = True,
+        audio_tokenizer_subfolder: str = "speech_tokenizer",
         **kwargs,
     ):
         """
@@ -169,36 +170,27 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
                 k: v for k, v in kwargs.items()
                 if k in ["device_map", "torch_dtype", "attn_implementation", "trust_remote_code"]
             }
-            try:
-                processor.audio_tokenizer = AutoModel.from_pretrained(
-                    pretrained_model_name_or_path,
-                    **model_kwargs
-                )
-            except (OSError, ValueError):
-                processor.audio_tokenizer = AutoModel.from_pretrained(
-                    pretrained_model_name_or_path, subfolder="speech_tokenizer", **model_kwargs
-                )
+            processor.audio_tokenizer = AutoModel.from_pretrained(
+                pretrained_model_name_or_path, subfolder=audio_tokenizer_subfolder, **model_kwargs
+            )
 
         # If feature_extractor wasn't loaded, load it manually
         if not hasattr(processor, "feature_extractor") or processor.feature_extractor is None:
-            try:
-                processor.feature_extractor = AutoFeatureExtractor.from_pretrained(
-                    pretrained_model_name_or_path, **kwargs
-                )
-            except (OSError, ValueError):
-                processor.feature_extractor = AutoFeatureExtractor.from_pretrained(
-                    pretrained_model_name_or_path, subfolder="speech_tokenizer", **kwargs
-                )
+            processor.feature_extractor = AutoFeatureExtractor.from_pretrained(
+                pretrained_model_name_or_path, subfolder=audio_tokenizer_subfolder, **kwargs
+            )
 
         return processor
 
-    def save_pretrained(self, save_directory, **kwargs):
+    def save_pretrained(self, save_directory, audio_tokenizer_subfolder="speech_tokenizer", **kwargs):
         """
         Save processor components following transformers standards.
 
         Args:
             save_directory (`str` or `os.PathLike`):
                 Directory to save processor components.
+            audio_tokenizer_subfolder (`str`, *optional*):
+                Subfolder to save audio_tokenizer.
             **kwargs:
                 Additional arguments passed to parent's save_pretrained.
         """
@@ -207,7 +199,8 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
 
         # audio_tokenizer is not in attributes, so we must save it manually
         if hasattr(self, "audio_tokenizer") and self.audio_tokenizer is not None:
-            self.audio_tokenizer.save_pretrained(save_directory)
+            audio_tokenizer_save_directory = os.path.join(save_directory, audio_tokenizer_subfolder)
+            self.audio_tokenizer.save_pretrained(audio_tokenizer_save_directory)
 
         return output_files
 
