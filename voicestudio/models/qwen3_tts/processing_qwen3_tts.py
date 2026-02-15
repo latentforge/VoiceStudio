@@ -158,9 +158,8 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         try:
             processor = super(_Qwen3TTSProcessor, cls).from_pretrained(pretrained_model_name_or_path, **kwargs)
         except (OSError, ValueError):
-            from copy import copy
-            temp_cls = copy(cls)
-            temp_cls.attributes = [attr for attr in temp_cls.attributes if attr != "feature_extractor"]
+            temp_attributes = [attr for attr in cls.attributes if attr != "feature_extractor"]
+            temp_cls = type("TempQwen3TTSProcessor", (cls,), {"attributes": temp_attributes})
             processor = super(_Qwen3TTSProcessor, temp_cls).from_pretrained(pretrained_model_name_or_path, **kwargs)
             processor.__class__ = cls
 
