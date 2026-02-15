@@ -31,10 +31,17 @@ except ImportError:
 from transformers import logging
 from .processing_qwen3_tts import Qwen3TTSProcessor
 
-modeling_qwen3_tts.Qwen3TTSTokenizer = Qwen3TTSProcessor
-
 
 logger = logging.get_logger(__name__)
+
+
+class DummyTokenizer:
+    @classmethod
+    def from_pretrained(cls, *args, **kwargs):
+        pass
+
+
+modeling_qwen3_tts.Qwen3TTSTokenizer = DummyTokenizer
 
 
 class Qwen3TTSForConditionalGeneration(_Qwen3TTSForConditionalGeneration):

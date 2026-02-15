@@ -109,12 +109,15 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         self.tokenizer: Qwen2Tokenizer
         self.feature_extractor: AutoFeatureExtractor
         self.audio_tokenizer: Qwen3TTSTokenizerV1Model | Qwen3TTSTokenizerV2Model
-        super(_Qwen3TTSProcessor, self).__init__(
-            tokenizer,
-            feature_extractor,
-            audio_tokenizer=audio_tokenizer,
-            chat_template=chat_template
-        )
+        if "feature_extractor" in self.attributes:
+            super(_Qwen3TTSProcessor, self).__init__(
+                tokenizer, feature_extractor, audio_tokenizer=audio_tokenizer, chat_template=chat_template
+            )
+        else:
+            super(_Qwen3TTSProcessor, self).__init__(
+                tokenizer, audio_tokenizer=audio_tokenizer, chat_template=chat_template
+            )
+            self.feature_extractor = feature_extractor
 
     @property
     def device(self) -> torch.device:
@@ -152,9 +155,13 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         )
 
         # If processor_config.json has audio_tokenizer info, it will be autoloaded
-        processor = super(_Qwen3TTSProcessor, cls).from_pretrained(
-            pretrained_model_name_or_path, **kwargs
-        )
+        try:
+            processor = super(_Qwen3TTSProcessor, cls).from_pretrained(pretrained_model_name_or_path, **kwargs)
+        except (OSError, ValueError):
+            temp_cls = cls.copy()
+            temp_cls.attributes = [attr for attr in temp_cls.attributes if attr != "feature_extractor"]
+            processor = super(_Qwen3TTSProcessor, cls).from_pretrained(pretrained_model_name_or_path, **kwargs)
+            processor.__class__ = cls
 
         # If audio_tokenizer wasn't loaded (first time from Qwen repo), load it manually
         if not hasattr(processor, "audio_tokenizer") or processor.audio_tokenizer is None:
@@ -162,16 +169,26 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
                 k: v for k, v in kwargs.items()
                 if k in ["device_map", "torch_dtype", "attn_implementation", "trust_remote_code"]
             }
-            processor.audio_tokenizer = AutoModel.from_pretrained(
-                pretrained_model_name_or_path,
-                **model_kwargs
-            )
+            try:
+                processor.audio_tokenizer = AutoModel.from_pretrained(
+                    pretrained_model_name_or_path,
+                    **model_kwargs
+                )
+            except (OSError, ValueError):
+                processor.audio_tokenizer = AutoModel.from_pretrained(
+                    pretrained_model_name_or_path, subfolder="speech_tokenizer", **model_kwargs
+                )
 
         # If feature_extractor wasn't loaded, load it manually
         if not hasattr(processor, "feature_extractor") or processor.feature_extractor is None:
-            processor.feature_extractor = AutoFeatureExtractor.from_pretrained(
-                pretrained_model_name_or_path
-            )
+            try:
+                processor.feature_extractor = AutoFeatureExtractor.from_pretrained(
+                    pretrained_model_name_or_path, **kwargs
+                )
+            except (OSError, ValueError):
+                processor.feature_extractor = AutoFeatureExtractor.from_pretrained(
+                    pretrained_model_name_or_path, subfolder="speech_tokenizer", **kwargs
+                )
 
         return processor
 
