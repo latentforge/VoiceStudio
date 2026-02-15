@@ -151,15 +151,16 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         Returns:
             Qwen3TTSProcessor: Initialized processor instance.
         """
-        kwargs = dict(
+        common_kwargs = dict(
             cache_dir=cache_dir, force_download=force_download,
-            local_files_only=local_files_only, token=token, revision=revision,
-            fix_mistral_regex=fix_mistral_regex
+            local_files_only=local_files_only, token=token, revision=revision
         )
+        processor_kwargs = dict(**common_kwargs, fix_mistral_regex=fix_mistral_regex, **kwargs)
         audio_tokenizer_kwargs = {
             k: v for k, v in kwargs.items()
             if k in ["device", "device_map", "dtype", "torch_dtype", "attn_implementation", "trust_remote_code"]
         }
+        audio_tokenizer_kwargs.update(common_kwargs)
 
         # If processor_config.json has audio_tokenizer info, it will be autoloaded
         try:
@@ -167,7 +168,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         except (OSError, ValueError):
             temp_attributes = [attr for attr in cls.attributes if attr != "feature_extractor"]
             temp_cls = type("TempQwen3TTSProcessor", (cls,), {"attributes": temp_attributes})
-            processor = super(_Qwen3TTSProcessor, temp_cls).from_pretrained(pretrained_model_name_or_path, **kwargs)
+            processor = super(_Qwen3TTSProcessor, temp_cls).from_pretrained(pretrained_model_name_or_path, **processor_kwargs)
             processor.__class__ = cls
 
         # If audio_tokenizer wasn't loaded (first time from Qwen repo), load it manually
@@ -179,7 +180,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         # If feature_extractor wasn't loaded, load it manually
         if not hasattr(processor, "feature_extractor") or processor.feature_extractor is None:
             processor.feature_extractor = AutoFeatureExtractor.from_pretrained(
-                pretrained_model_name_or_path, subfolder=audio_tokenizer_subfolder, **kwargs
+                pretrained_model_name_or_path, subfolder=audio_tokenizer_subfolder, **processor_kwargs
             )
 
         return processor
@@ -554,8 +555,8 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
             wav_resample = wav
             if sr != self.audio_tokenizer.speaker_encoder_sample_rate:
                 wav_resample = librosa.resample(
-                    y=wav_resample.astype(np.float32), 
-                    orig_sr=int(sr), 
+                    y=wav_resample.astype(np.float32),
+                    orig_sr=int(sr),
                     target_sr=self.audio_tokenizer.speaker_encoder_sample_rate
                 )
 
