@@ -456,7 +456,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
 
         # Process style prompt
         if style_prompts:
-            instruct_ids: List[Optional[torch.Tensor]] = []
+            instruct_ids: list[Optional[torch.Tensor]] = []
             for ins in style_prompts:
                 if ins is None or ins == "":
                     instruct_ids.append(None)
@@ -470,10 +470,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         if speakers:
             outputs['speakers'] = speakers
 
-        return BatchFeature(
-            **outputs,
-            tensor_type=return_tensors,
-        )
+        return BatchFeature(data=outputs, tensor_type=return_tensors)
 
     def create_voice_clone_prompt(
         self,
@@ -495,7 +492,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
             )
 
         # Union[AudioLike, List[AudioLike]]) -> List[Tuple[np.ndarray, int]]:
-        normalized: List[Tuple[np.ndarray, int]] = []
+        normalized: list[tuple[np.ndarray, int]] = []
         for a in prompt_audio_list:
             if isinstance(a, str):
                 normalized.append(self._load_audio_to_np(a))
@@ -524,7 +521,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
             # Use feature_extractor to preprocess
             feature_inputs = self.feature_extractor(
                 raw_audio=audio_list,
-                sampling_rate=int(self.feature_extractor.sampling_rate),
+                sampling_rate=int(sampling_rate),
                 return_tensors=return_tensors,
                 **kwargs.get("audio_kwargs", {})
             )
