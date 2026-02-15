@@ -332,7 +332,7 @@ class Qwen3TTSForConditionalGeneration(_Qwen3TTSForConditionalGeneration):
                 f"tts_model_type: {self.tts_model_type}\n"
                 "does not support generate_custom_voice, Please check Model Card or Readme for more details."
             )
-        elif instruct_id is not None and self.tts_model_type != "voice_design":
+        elif instruct_ids is not None and self.tts_model_type != "voice_design":
             raise ValueError(
                 f"model with \ntokenizer_type: {self.tokenizer_type}\n"
                 f"tts_model_size: {self.tts_model_size}\n"
