@@ -17,10 +17,5 @@ from .processing_qwen3_tts import Qwen3TTSProcessor
 
 
 AutoConfig.register("qwen3_tts", Qwen3TTSConfig)
-AutoConfig.register("qwen3_tts_talker", Qwen3TTSTalkerConfig)
-AutoConfig.register("qwen3_tts_speaker_encoder", Qwen3TTSSpeakerEncoderConfig)
-
 AutoModel.register(Qwen3TTSConfig, Qwen3TTSForConditionalGeneration)
-AutoModel.register(Qwen3TTSTalkerConfig, Qwen3TTSTalkerForConditionalGeneration)
-
 AutoProcessor.register(Qwen3TTSConfig, Qwen3TTSProcessor)
