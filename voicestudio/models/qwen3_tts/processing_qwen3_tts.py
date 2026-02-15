@@ -663,7 +663,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
     def _build_instruct_text(self, instruct: str) -> str:
         return _Qwen3TTSModel._build_instruct_text(self, instruct)
 
-    def _load_audio_to_np(self, x: str) -> Tuple[np.ndarray, int]:
+    def _load_audio_to_np(self, x: str) -> tuple[np.ndarray, int]:
         return _Qwen3TTSTokenizer._load_audio_to_np(self, x)
 
     def load_audio(
