@@ -7,7 +7,6 @@ from torch.nn.utils.rnn import pad_sequence
 
 from transformers.processing_utils import ImageInput, TextInput, VideoInput, AudioInput, PreTokenizedInput
 from transformers import AutoConfig, AutoModel, AutoFeatureExtractor
-from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.qwen2 import Qwen2Tokenizer
 
 import numpy as np
@@ -322,7 +321,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         audio: AudioInput | None = None,
         return_tensors: Literal["pt", "np"] = "pt",
         **kwargs: Unpack[Qwen3TTSProcessorKwargs],
-    ) -> BatchFeature:
+    ) -> dict[str, Any]:
         """
         Process text and/or audio inputs.
 
@@ -420,7 +419,6 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
             if len(speakers) != len(texts):
                 raise ValueError(f"Batch size mismatch: speaker={len(speakers)}, text={len(texts)}")
 
-        tensor_outputs = {}
         outputs = {}
 
         # Process text
@@ -434,7 +432,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
             return input_ids
 
         texts = [self._build_assistant_text(t) for t in texts]
-        tensor_outputs['input_ids'] = tokenize_texts(texts)
+        outputs['input_ids'] = tokenize_texts(texts)
 
         # Process cloning prompt
         if voice_clone_prompts is not None:
@@ -453,7 +451,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
                     ref_tok = tokenize_texts([self._build_ref_text(rt)])
                     ref_ids.append(ref_tok)
             outputs['voice_clone_prompt'] = voice_clone_prompt_dict
-            tensor_outputs['ref_ids'] = ref_ids
+            outputs['ref_ids'] = ref_ids
 
         # Process style prompt
         if style_prompts:
@@ -463,7 +461,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
                     instruct_ids.append(None)
                 else:
                     instruct_ids.append(tokenize_texts([self._build_instruct_text(ins)])[0])
-            tensor_outputs['instruct_ids'] = instruct_ids
+            outputs['instruct_ids'] = instruct_ids
 
         # Additional args
         if languages:
@@ -471,13 +469,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         if speakers:
             outputs['speakers'] = speakers
 
-        batch_feature = BatchFeature(data=tensor_outputs, tensor_type=return_tensors)
-
-        for k, v in outputs.items():
-            if k not in tensor_outputs:
-                batch_feature[k] = v
-
-        return batch_feature
+        return outputs
 
     def create_voice_clone_prompt(
         self,
