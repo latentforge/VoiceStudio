@@ -420,9 +420,17 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         outputs = {}
 
         # Process text
+        def tokenize_texts(_texts: list[str]) -> list[torch.Tensor]:
+            input_ids = []
+            for _text in _texts:
+                _in = self.tokenizer(_text, return_tensors=return_tensors, **output_kwargs["text_kwargs"])
+                input_id = _in['input_ids'].to(self.device)
+                input_id = input_id.unsqueeze(0) if input_id.dim() == 1 else input_id
+                input_ids.append(input_id)
+            return input_ids
+
         texts = [self._build_assistant_text(t) for t in texts]
-        text_inputs = self.tokenizer(texts, return_tensors=return_tensors, **output_kwargs["text_kwargs"])[0]
-        outputs['input_ids'] = text_inputs['input_ids']
+        outputs['input_ids'] = tokenize_texts(texts)
 
         # Process cloning prompt
         if voice_clone_prompts is not None:
@@ -438,7 +446,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
                 if rt is None or rt == "":
                     ref_ids.append(None)
                 else:
-                    ref_tok = self.tokenizer([self._build_ref_text(rt)], return_tensors=return_tensors, **output_kwargs["text_kwargs"])[0]
+                    ref_tok = tokenize_texts([self._build_ref_text(rt)])
                     ref_ids.append(ref_tok)
             outputs['voice_clone_prompt'] = voice_clone_prompt_dict
             outputs['ref_ids'] = ref_ids
@@ -450,7 +458,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
                 if ins is None or ins == "":
                     instruct_ids.append(None)
                 else:
-                    instruct_ids.append(self.tokenizer([self._build_instruct_text(ins)], return_tensors=return_tensors, **output_kwargs["text_kwargs"])[0])
+                    instruct_ids.append(tokenize_texts([self._build_instruct_text(ins)]))
             outputs['instruct_ids'] = instruct_ids
 
         # Additional args
