@@ -261,13 +261,14 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         prompt_audio: Union[AudioLike, list[AudioLike]] | None = None,
         prompt_text: Union[str, list[Optional[str]]] | None = None,
         x_vector_only_mode: Union[bool, list[bool]] = False,
+        sampling_rate: int | None = None,
         return_tensors: Literal["pt", "np"] = "pt",
     ):
         """Encoding parameter guide for voice cloning task"""
         if instruct is None and prompt_audio is None:
             raise ValueError("You need to specify either `instruct` or `prompt_audio` input.")
         elif instruct is None and prompt_audio is not None:
-            return self(text=text, audio=prompt_audio, return_tensors=return_tensors, language=language, prompt_text=prompt_text, x_vector_only_mode=x_vector_only_mode)
+            return self(text=text, audio=prompt_audio, language=language, prompt_text=prompt_text, x_vector_only_mode=x_vector_only_mode, sampling_rate=sampling_rate, return_tensors=return_tensors)
         else:
             return self.encode(text=text, instruct=instruct, language=language, return_tensors=return_tensors)
 
@@ -368,6 +369,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
             prompt_audio = kwargs.pop("prompt_audio", audio)  # use audio as default prompt_audio
             prompt_text = kwargs.pop("prompt_text", None)
             x_vector_only_mode = kwargs.pop("x_vector_only_mode", False)
+            sampling_rate = kwargs.pop("sampling_rate", None)
 
             if prompt_audio is None:  # need to check if it is voice cloning task
                 if speaker is not None:
@@ -376,7 +378,11 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
                     pass  # then this is voice design task
                 else:
                     raise ValueError("You need to specify either `voice_clone_prompt` or `prompt_audio` input.")
-            voice_clone_prompt = self.create_voice_clone_prompt(ref_audio=prompt_audio, ref_text=prompt_text, x_vector_only_mode=x_vector_only_mode)
+            voice_clone_prompt = self.create_voice_clone_prompt(
+                prompt_audio=prompt_audio, prompt_text=prompt_text,
+                x_vector_only_mode=x_vector_only_mode, sampling_rate=sampling_rate,
+                return_tensors=return_tensors, **kwargs
+            )
         if voice_clone_prompt is not None:
             voice_clone_prompt = self._ensure_list(voice_clone_prompt)
             if len(voice_clone_prompt) == 1 and len(texts) > 1:
@@ -452,7 +458,11 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         prompt_audio: Union[AudioLike, list[AudioLike]] | None = None,
         prompt_text: Union[str, list[Optional[str]]] | None = None,
         x_vector_only_mode: Union[bool, list[bool]] = False,
+        sampling_rate: int | None = None,
+        return_tensors: Literal["pt", "np"] = "pt",
+        **kwargs: Unpack[Qwen3TTSProcessorKwargs]
     ) -> list[VoiceClonePrompt]:
+        sampling_rate = self.audio_tokenizer.sampling_rate if sampling_rate is None else sampling_rate
         prompt_audio_list = self._ensure_list(prompt_audio)
         prompt_text_list = self._ensure_list(prompt_text) if isinstance(prompt_text, list) else ([prompt_text] * len(prompt_audio_list))
         x_vector_list = self._ensure_list(x_vector_only_mode) if isinstance(x_vector_only_mode, list) else ([x_vector_only_mode] * len(prompt_audio_list))
@@ -466,7 +476,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         normalized: List[Tuple[np.ndarray, int]] = []
         for a in prompt_audio_list:
             if isinstance(a, str):
-                normalized.append(self._load_audio_to_np(a))
+                normalized.append(self.load_audio(a))
             elif isinstance(a, tuple) and len(a) == 2 and isinstance(a[0], np.ndarray):
                 normalized.append((a[0].astype(np.float32), int(a[1])))
             elif isinstance(a, np.ndarray):
@@ -493,8 +503,8 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
             feature_inputs = self.feature_extractor(
                 raw_audio=audio_list,
                 sampling_rate=int(self.feature_extractor.sampling_rate),
-                return_tensors="pt",
-                **output_kwargs.get("audio_kwargs", {})
+                return_tensors=return_tensors,
+                **kwargs.get("audio_kwargs", {})
             )
 
             # Move to model device and dtype
@@ -559,7 +569,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
                 - Output sampling rate
         """
         model_type = self.audio_tokenizer.get_model_type()
-        device = self._get_audio_tokenizer_device()
+        device = self.device
 
         def _to_tensor(x, dtype=None):
             if isinstance(x, torch.Tensor):
