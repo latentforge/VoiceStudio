@@ -1947,12 +1947,31 @@ class SparkTTSForConditionalGeneration(SparkTTSPreTrainedModel):
         if config is None:
             config = SparkTTSConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
 
+        # The subdirectory loads below need a local checkout; resolve a hub repo id to one.
+        if not Path(pretrained_model_name_or_path).is_dir():
+            from huggingface_hub import snapshot_download
+
+            pretrained_model_name_or_path = snapshot_download(
+                pretrained_model_name_or_path,
+                cache_dir=kwargs.get("cache_dir"),
+                revision=kwargs.get("revision"),
+                token=kwargs.get("token"),
+            )
+
+        # The top-level config.json carries no inline llm_config, so it defaults to a
+        # full-size Qwen2Config; read the real (small) LLM config from its own
+        # subdirectory before constructing the model, or __init__ builds a
+        # multi-billion-parameter placeholder just to discard it below.
+        from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
+
+        llm_path = Path(pretrained_model_name_or_path) / config.llm_path
+        config.llm_config = Qwen2Config.from_pretrained(llm_path)
+
         # Initialize model
         model = cls(config)
 
         # Load LLM from subdirectory
         from transformers import AutoModelForCausalLM, AutoTokenizer
-        llm_path = Path(pretrained_model_name_or_path) / config.llm_path
         model.llm = AutoModelForCausalLM.from_pretrained(llm_path, **kwargs)
         model.tokenizer = AutoTokenizer.from_pretrained(llm_path, **kwargs)
 
