@@ -3,6 +3,15 @@
 from transformers.core_model_loading import WeightRenaming
 
 
+def _both(old_prefix: str, new_prefix: str) -> list[WeightRenaming]:
+    """`WeightRenaming` only resolves a single `\\1`-style backreference per rule, so `weight`/`bias` (and any
+    other multi-way suffix) must be listed as separate literal rules rather than as an alternation group."""
+    return [
+        WeightRenaming(rf"{old_prefix}\.weight", rf"{new_prefix}.weight"),
+        WeightRenaming(rf"{old_prefix}\.bias", rf"{new_prefix}.bias"),
+    ]
+
+
 def build_f5_tts_weight_conversion_mapping(prefix: str = "model.") -> list[WeightRenaming]:
     """
     Builds the `WeightRenaming` rules that translate the original F5-TTS repo's `CFM`/`DiT` state dict (the format
@@ -23,76 +32,42 @@ def build_f5_tts_weight_conversion_mapping(prefix: str = "model.") -> list[Weigh
         `list[WeightRenaming]`: Rules to pass to the model loader's weight conversion mapping.
     """
     p = prefix
-    return [
-        WeightRenaming(
-            r"ema_model\.transformer\.input_embed\.conv_pos_embed\.conv1d\.(\d+)\.(weight|bias)",
-            rf"{p}input_embed.conv_pos_embed.block.\1.\2",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.input_embed\.proj\.(weight|bias)",
-            rf"{p}input_embed.proj.\1",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.time_embed\.time_mlp\.0\.(weight|bias)",
-            rf"{p}time_embed.mlp.0.\1",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.time_embed\.time_mlp\.2\.(weight|bias)",
-            rf"{p}time_embed.mlp.2.\1",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.text_embed\.text_embed\.weight",
-            rf"{p}text_embed.text_embed.weight",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.text_embed\.text_blocks\.(\d+)\.(dwconv|norm|pwconv1|pwconv2)\.(weight|bias)",
-            rf"{p}text_embed.text_blocks.\1.\2.\3",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.text_embed\.text_blocks\.(\d+)\.grn\.(gamma|beta)",
-            rf"{p}text_embed.text_blocks.\1.grn.\2",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.transformer_blocks\.(\d+)\.attn_norm\.linear\.(weight|bias)",
-            rf"{p}layers.\1.attn_norm.linear.\2",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.transformer_blocks\.(\d+)\.attn\.(to_q|to_k|to_v)\.(weight|bias)",
-            rf"{p}layers.\1.attn.\2.\3",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.transformer_blocks\.(\d+)\.attn\.to_out\.0\.(weight|bias)",
-            rf"{p}layers.\1.attn.to_out.\2",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.transformer_blocks\.(\d+)\.attn\.q_norm\.weight",
-            rf"{p}layers.\1.attn.q_norm.weight",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.transformer_blocks\.(\d+)\.attn\.k_norm\.weight",
-            rf"{p}layers.\1.attn.k_norm.weight",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.transformer_blocks\.(\d+)\.ff\.ff\.0\.0\.(weight|bias)",
-            rf"{p}layers.\1.ff.net.0.\2",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.transformer_blocks\.(\d+)\.ff\.ff\.2\.(weight|bias)",
-            rf"{p}layers.\1.ff.net.3.\2",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.long_skip_connection\.weight",
-            rf"{p}long_skip_connection.weight",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.norm_out\.linear\.(weight|bias)",
-            rf"{p}norm_out.linear.\1",
-        ),
-        WeightRenaming(
-            r"ema_model\.transformer\.proj_out\.(weight|bias)",
-            rf"{p}proj_out.\1",
-        ),
-    ]
+    o = r"ema_model\.transformer"
+    rules = []
+    rules += _both(rf"{o}\.input_embed\.conv_pos_embed\.conv1d\.(\d+)", rf"{p}input_embed.conv_pos_embed.block.\1")
+    rules += _both(rf"{o}\.input_embed\.proj", rf"{p}input_embed.proj")
+    rules += _both(rf"{o}\.time_embed\.time_mlp\.0", rf"{p}time_embed.mlp.0")
+    rules += _both(rf"{o}\.time_embed\.time_mlp\.2", rf"{p}time_embed.mlp.2")
+    rules.append(
+        WeightRenaming(rf"{o}\.text_embed\.text_embed\.weight", rf"{p}text_embed.text_embed.weight")
+    )
+    for block_name in ("dwconv", "norm", "pwconv1", "pwconv2"):
+        rules += _both(
+            rf"{o}\.text_embed\.text_blocks\.(\d+)\.{block_name}", rf"{p}text_embed.text_blocks.\1.{block_name}"
+        )
+    for grn_param in ("gamma", "beta"):
+        rules.append(
+            WeightRenaming(
+                rf"{o}\.text_embed\.text_blocks\.(\d+)\.grn\.{grn_param}",
+                rf"{p}text_embed.text_blocks.\1.grn.{grn_param}",
+            )
+        )
+    rules += _both(rf"{o}\.transformer_blocks\.(\d+)\.attn_norm\.linear", rf"{p}layers.\1.attn_norm.linear")
+    for proj_name in ("to_q", "to_k", "to_v"):
+        rules += _both(rf"{o}\.transformer_blocks\.(\d+)\.attn\.{proj_name}", rf"{p}layers.\1.attn.{proj_name}")
+    rules += _both(rf"{o}\.transformer_blocks\.(\d+)\.attn\.to_out\.0", rf"{p}layers.\1.attn.to_out")
+    rules.append(
+        WeightRenaming(rf"{o}\.transformer_blocks\.(\d+)\.attn\.q_norm\.weight", rf"{p}layers.\1.attn.q_norm.weight")
+    )
+    rules.append(
+        WeightRenaming(rf"{o}\.transformer_blocks\.(\d+)\.attn\.k_norm\.weight", rf"{p}layers.\1.attn.k_norm.weight")
+    )
+    rules += _both(rf"{o}\.transformer_blocks\.(\d+)\.ff\.ff\.0\.0", rf"{p}layers.\1.ff.net.0")
+    rules += _both(rf"{o}\.transformer_blocks\.(\d+)\.ff\.ff\.2", rf"{p}layers.\1.ff.net.3")
+    rules.append(WeightRenaming(rf"{o}\.long_skip_connection\.weight", rf"{p}long_skip_connection.weight"))
+    rules += _both(rf"{o}\.norm_out\.linear", rf"{p}norm_out.linear")
+    rules += _both(rf"{o}\.proj_out", rf"{p}proj_out")
+    return rules
 
 
 __all__ = ["build_f5_tts_weight_conversion_mapping"]
