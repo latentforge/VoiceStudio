@@ -10,6 +10,14 @@ work progresses instead of tracking migration state only in conversation.
   `Co-Authored-By: Claude ...` trailers.
 - Do not use em dashes anywhere in commit messages, code comments, or generated
   documentation. Use a comma, a period, or restructure the sentence instead.
+- Commit subject line format: `<Type>: <Short Title Case Description>`, matching this
+  repo's existing history (`Feat: Add Higgs Tokenizer`, `Fix: Device`, `Chore: Update
+  gitignore`, `Refactor: Prepare for merging`, `Docs: Update readme`, `Merge: Parler
+  TTS`). Pick `Type` from `Feat`/`Fix`/`Chore`/`Refactor`/`Docs`/`Style`/`Test`/`Merge`,
+  capitalized, followed by a colon and a space. Keep the subject itself short, a few
+  words, Title Case, not a full sentence. A longer body explaining what changed and why
+  is fine below the subject line when the change needs it, same as always; the subject
+  line is what has to follow this format.
 
 ## Model code conventions
 
