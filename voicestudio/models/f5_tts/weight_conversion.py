@@ -3,7 +3,7 @@
 from transformers.core_model_loading import WeightRenaming
 
 
-def build_f5_tts_weight_conversion_mapping(prefix: str = "") -> list[WeightRenaming]:
+def build_f5_tts_weight_conversion_mapping(prefix: str = "model.") -> list[WeightRenaming]:
     """
     Builds the `WeightRenaming` rules that translate the original F5-TTS repo's `CFM`/`DiT` state dict (the format
     the `SWivid/F5-TTS` checkpoints are saved in, e.g. `F5TTS_v1_Base/model_1250000.safetensors`) into the module
@@ -15,9 +15,9 @@ def build_f5_tts_weight_conversion_mapping(prefix: str = "") -> list[WeightRenam
     the EMA transformer weights are mapped here; everything else is left unmapped and dropped as unexpected.
 
     Args:
-        prefix (`str`, *optional*, defaults to `""`):
-            Prefix under which the F5-TTS backbone's weights should live in the target state dict, for use when
-            F5-TTS is embedded as a submodule of a larger composite checkpoint.
+        prefix (`str`, *optional*, defaults to `"model."`):
+            Prefix under which the F5-TTS backbone's weights live in [`F5TTSForConditionalGeneration`] (its
+            `base_model_prefix` is `"model"`); pass `""` when loading directly into [`F5TTSModel`] instead.
 
     Returns:
         `list[WeightRenaming]`: Rules to pass to the model loader's weight conversion mapping.
