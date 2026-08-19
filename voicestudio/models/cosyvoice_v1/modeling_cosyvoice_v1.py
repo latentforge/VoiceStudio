@@ -24,7 +24,11 @@ from torch import nn
 from transformers.modeling_outputs import BaseModelOutput, ModelOutput
 from transformers.modeling_utils import PreTrainedModel
 from transformers.models.wav2vec2_conformer.configuration_wav2vec2_conformer import Wav2Vec2ConformerConfig
-from transformers.models.wav2vec2_conformer.modeling_wav2vec2_conformer import Wav2Vec2ConformerEncoder
+from transformers.models.wav2vec2_conformer.modeling_wav2vec2_conformer import (
+    Wav2Vec2ConformerFeedForward,
+    Wav2Vec2ConformerRelPositionalEmbedding,
+    Wav2Vec2ConformerSelfAttention,
+)
 
 from .configuration_cosyvoice_v1 import (
     CosyVoiceV1Config,
@@ -43,58 +47,104 @@ def _make_pad_mask(lengths: torch.Tensor, max_len: int = 0) -> torch.Tensor:
     return seq_range >= lengths.unsqueeze(-1)
 
 
-def _conformer_config(hidden_size, num_hidden_layers, num_attention_heads, intermediate_size, hidden_dropout, attention_dropout):
+def _conformer_config(hidden_size, num_attention_heads, intermediate_size, hidden_dropout, attention_dropout):
     return Wav2Vec2ConformerConfig(
         hidden_size=hidden_size,
-        num_hidden_layers=num_hidden_layers,
         num_attention_heads=num_attention_heads,
         intermediate_size=intermediate_size,
         hidden_dropout=hidden_dropout,
         attention_dropout=attention_dropout,
+        activation_dropout=hidden_dropout,
         hidden_act="swish",
         position_embeddings_type="relative",
-        conv_depthwise_kernel_size=15,
-        feat_proj_dropout=0.0,
+        max_source_positions=5000,
     )
 
 
-class CosyVoiceV1RelPositionEncoder(Wav2Vec2ConformerEncoder):
-    """A [`Wav2Vec2ConformerEncoder`] that also accepts a precomputed additive attention bias, so the same
-    relative-position Conformer stack can be reused both bidirectionally (a padding-only mask) and causally (a
-    triangular bias built by the caller)."""
+class CosyVoiceV1EncoderLayer(nn.Module):
+    """
+    One pre-norm relative-position self-attention + single feed-forward block, matching the original
+    CosyVoice/WeNet `TransformerEncoderLayer` (`normalize_before=True`, no macaron feed-forward, no depthwise
+    convolution module) rather than the `transformers` `Wav2Vec2ConformerEncoderLayer`, which always includes
+    both.
+    """
+
+    def __init__(self, config: Wav2Vec2ConformerConfig):
+        super().__init__()
+        self.self_attn_layer_norm = nn.LayerNorm(config.hidden_size)
+        self.self_attn = Wav2Vec2ConformerSelfAttention(config)
+        self.self_attn_dropout = nn.Dropout(config.attention_dropout)
+        self.norm_ff = nn.LayerNorm(config.hidden_size)
+        self.feed_forward = Wav2Vec2ConformerFeedForward(config)
+        self.ff_dropout = nn.Dropout(config.hidden_dropout)
+
+    def forward(self, hidden_states, attention_mask=None, relative_position_embeddings=None):
+        residual = hidden_states
+        hidden_states = self.self_attn_layer_norm(hidden_states)
+        hidden_states, _ = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            relative_position_embeddings=relative_position_embeddings,
+        )
+        hidden_states = residual + self.self_attn_dropout(hidden_states)
+
+        residual = hidden_states
+        hidden_states = self.norm_ff(hidden_states)
+        hidden_states = residual + self.ff_dropout(self.feed_forward(hidden_states))
+        return hidden_states
+
+
+class CosyVoiceV1RelPositionEncoder(nn.Module):
+    """
+    A relative-position Transformer stack matching the original CosyVoice/WeNet `TransformerEncoder`: an input
+    `Linear` + `LayerNorm` projection (`embed.out`), a stack of [`CosyVoiceV1EncoderLayer`]s (self-attention +
+    single feed-forward each, no depthwise convolution, no macaron feed-forward), and a final `LayerNorm`
+    (`after_norm`). Accepts either a padding-only boolean mask (bidirectional use, e.g. the text encoder) or a
+    precomputed additive attention bias (causal use, e.g. the speech-token LM).
+    """
+
+    def __init__(self, input_size: int, config: Wav2Vec2ConformerConfig, num_hidden_layers: int):
+        super().__init__()
+        self.embed = nn.Sequential(nn.Linear(input_size, config.hidden_size), nn.LayerNorm(config.hidden_size))
+        self.embed_dropout = nn.Dropout(config.hidden_dropout)
+        self.embed_positions = Wav2Vec2ConformerRelPositionalEmbedding(config)
+        self.layers = nn.ModuleList([CosyVoiceV1EncoderLayer(config) for _ in range(num_hidden_layers)])
+        self.after_norm = nn.LayerNorm(config.hidden_size)
 
     def forward(self, hidden_states, attention_mask=None, attention_bias=None):
-        if attention_bias is not None:
-            expand_mask = attention_mask.unsqueeze(-1).expand_as(hidden_states) if attention_mask is not None else None
-            if expand_mask is not None:
-                hidden_states = hidden_states.masked_fill(~expand_mask.bool(), 0.0)
-            hidden_states = self.dropout(hidden_states)
-            relative_position_embeddings = self.embed_positions(hidden_states) if self.embed_positions is not None else None
-            for layer in self.layers:
-                hidden_states = layer(
-                    hidden_states,
-                    attention_mask=attention_bias,
-                    relative_position_embeddings=relative_position_embeddings,
-                )[0]
-            hidden_states = self.layer_norm(hidden_states)
-            return BaseModelOutput(last_hidden_state=hidden_states)
-        return super().forward(hidden_states, attention_mask=attention_mask, return_dict=True)
+        hidden_states = self.embed(hidden_states)
+        if attention_mask is not None:
+            hidden_states = hidden_states.masked_fill(~attention_mask.unsqueeze(-1).bool(), 0.0)
+        hidden_states = self.embed_dropout(hidden_states)
+        relative_position_embeddings = self.embed_positions(hidden_states)
+
+        layer_attention = attention_bias
+        if layer_attention is None and attention_mask is not None:
+            layer_attention = attention_mask[:, None, None, :].to(hidden_states.dtype)
+            layer_attention = (1.0 - layer_attention) * torch.finfo(hidden_states.dtype).min
+        for layer in self.layers:
+            hidden_states = layer(
+                hidden_states, attention_mask=layer_attention, relative_position_embeddings=relative_position_embeddings
+            )
+        hidden_states = self.after_norm(hidden_states)
+        return BaseModelOutput(last_hidden_state=hidden_states)
 
 
 class CosyVoiceV1TextEncoder(nn.Module):
-    """Embeds text token ids and contextualizes them with a bidirectional relative-position Conformer encoder."""
+    """Embeds text token ids and contextualizes them with a bidirectional relative-position Transformer encoder."""
 
     def __init__(self, config: CosyVoiceV1TextEncoderConfig):
         super().__init__()
         self.encoder = CosyVoiceV1RelPositionEncoder(
+            config.input_size,
             _conformer_config(
                 config.hidden_size,
-                config.num_hidden_layers,
                 config.num_attention_heads,
                 config.intermediate_size,
                 config.hidden_dropout,
                 config.attention_dropout,
-            )
+            ),
+            config.num_hidden_layers,
         )
 
     def forward(self, hidden_states: torch.Tensor, lengths: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -157,14 +207,15 @@ class CosyVoiceV1LLM(CosyVoiceV1PreTrainedModel):
 
         self.llm_embedding = nn.Embedding(2, config.llm_input_size)
         self.llm = CosyVoiceV1RelPositionEncoder(
+            config.llm_input_size,
             _conformer_config(
                 config.llm_input_size,
-                config.num_hidden_layers,
                 config.num_attention_heads,
                 config.intermediate_size,
                 config.hidden_dropout,
                 config.attention_dropout,
-            )
+            ),
+            config.num_hidden_layers,
         )
         self.llm_decoder = nn.Linear(config.llm_output_size, config.speech_token_size + 1)
 
@@ -605,14 +656,15 @@ class CosyVoiceV1FlowMatchingModel(CosyVoiceV1PreTrainedModel):
         self.input_embedding = nn.Embedding(config.vocab_size, config.input_size)
         self.spk_embed_affine_layer = nn.Linear(config.spk_embed_dim, config.output_size)
         self.encoder = CosyVoiceV1RelPositionEncoder(
+            config.input_size,
             _conformer_config(
                 config.encoder_hidden_size,
-                config.encoder_num_hidden_layers,
                 config.encoder_num_attention_heads,
                 config.encoder_intermediate_size,
                 0.1,
                 0.1,
-            )
+            ),
+            config.encoder_num_hidden_layers,
         )
         self.encoder_proj = nn.Linear(config.encoder_hidden_size, config.output_size)
         self.length_regulator = CosyVoiceV1InterpolateRegulator(config.output_size, config.output_size)
@@ -700,13 +752,13 @@ class CosyVoiceV1SourceModule(nn.Module):
     def __init__(self, config: CosyVoiceV1HiftConfig, upsample_scale: int):
         super().__init__()
         self.sine_gen = CosyVoiceV1SineGen(config.sampling_rate, config.nb_harmonics, config.nsf_alpha, config.nsf_sigma, config.nsf_voiced_threshold)
-        self.merge = nn.Linear(config.nb_harmonics + 1, 1)
+        self.l_linear = nn.Linear(config.nb_harmonics + 1, 1)
         self.tanh = nn.Tanh()
         self.sine_amp = config.nsf_alpha
 
     def forward(self, f0_upsampled: torch.Tensor) -> torch.Tensor:
         sine_waves, uv = self.sine_gen(f0_upsampled)
-        return self.tanh(self.merge(sine_waves))
+        return self.tanh(self.l_linear(sine_waves))
 
 
 class CosyVoiceV1F0Predictor(nn.Module):
@@ -715,7 +767,10 @@ class CosyVoiceV1F0Predictor(nn.Module):
         layers = []
         channels = config.in_channels
         for _ in range(config.f0_predictor_num_layers):
-            layers += [nn.Conv1d(channels, config.base_channels, 3, padding=1), nn.ELU()]
+            layers += [
+                nn.utils.parametrizations.weight_norm(nn.Conv1d(channels, config.base_channels, 3, padding=1)),
+                nn.ELU(),
+            ]
             channels = config.base_channels
         self.condnet = nn.Sequential(*layers)
         self.classifier = nn.Linear(config.base_channels, 1)
@@ -723,6 +778,18 @@ class CosyVoiceV1F0Predictor(nn.Module):
     def forward(self, mel: torch.Tensor) -> torch.Tensor:
         x = self.condnet(mel).transpose(1, 2)
         return torch.abs(self.classifier(x).squeeze(-1))
+
+
+class CosyVoiceV1Snake(nn.Module):
+    """Learnable Snake activation `x + (1/alpha) * sin(alpha * x)^2`, one `alpha` per channel."""
+
+    def __init__(self, channels: int):
+        super().__init__()
+        self.alpha = nn.Parameter(torch.ones(channels))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        alpha = self.alpha.view(1, -1, 1)
+        return x + (alpha + 1e-9).reciprocal() * torch.sin(alpha * x).pow(2)
 
 
 class CosyVoiceV1ResBlock(nn.Module):
@@ -734,11 +801,13 @@ class CosyVoiceV1ResBlock(nn.Module):
         self.convs2 = nn.ModuleList(
             [nn.utils.parametrizations.weight_norm(nn.Conv1d(channels, channels, kernel_size, dilation=1, padding=(kernel_size - 1) // 2)) for _ in dilations]
         )
+        self.activations1 = nn.ModuleList([CosyVoiceV1Snake(channels) for _ in dilations])
+        self.activations2 = nn.ModuleList([CosyVoiceV1Snake(channels) for _ in dilations])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for conv1, conv2 in zip(self.convs1, self.convs2):
-            xt = conv1(F.leaky_relu(x, 0.1))
-            xt = conv2(F.leaky_relu(xt, 0.1))
+        for conv1, conv2, act1, act2 in zip(self.convs1, self.convs2, self.activations1, self.activations2):
+            xt = conv1(act1(x))
+            xt = conv2(act2(xt))
             x = x + xt
         return x
 

@@ -1,4 +1,5 @@
 from transformers import AutoConfig, AutoProcessor
+from transformers.conversion_mapping import register_checkpoint_conversion_mapping
 from transformers.models.auto.modeling_auto import AutoModel
 
 from .configuration_cosyvoice_v1 import (
@@ -23,11 +24,25 @@ from .modeling_cosyvoice_v1 import (
     CosyVoiceV1TextEncoder,
 )
 from .processing_cosyvoice_v1 import CosyVoiceV1Processor
+from .weight_conversion import (
+    build_flow_weight_conversion_mapping,
+    build_hift_weight_conversion_mapping,
+    build_llm_weight_conversion_mapping,
+)
 
 
 AutoConfig.register("cosyvoice_v1", CosyVoiceV1Config)
 AutoModel.register(CosyVoiceV1Config, CosyVoiceV1ForConditionalGeneration)
 AutoProcessor.register(CosyVoiceV1Config, CosyVoiceV1Processor)
+register_checkpoint_conversion_mapping(
+    "CosyVoiceV1LLM", build_llm_weight_conversion_mapping(), overwrite=True
+)
+register_checkpoint_conversion_mapping(
+    "CosyVoiceV1FlowMatchingModel", build_flow_weight_conversion_mapping(), overwrite=True
+)
+register_checkpoint_conversion_mapping(
+    "CosyVoiceV1HiFTGenerator", build_hift_weight_conversion_mapping(), overwrite=True
+)
 
 
 __all__ = [
