@@ -3223,7 +3223,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
             # expand input_ids with `num_return_sequences` additional sequences per batch
             delayed_input_ids, model_kwargs = self._expand_inputs_for_generation(
                 input_ids=delayed_input_ids,
-                expand_size=generation_config.num_return_sequences,
+                expand_size=generation_config.num_return_sequences or 1,
                 is_encoder_decoder=self.config.is_encoder_decoder,
                 **model_kwargs,
             )
