@@ -2,9 +2,12 @@
 
 from typing import Literal, Union
 
-from transformers import AutoConfig, AutoModel
+from transformers import AutoConfig
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.qwen3_tts.processing_qwen3_tts import Qwen3TTSProcessor as _Qwen3TTSProcessor
+from transformers.models.qwen3_tts_tokenizer_multi_codebook.modeling_qwen3_tts_tokenizer_multi_codebook import (
+    Qwen3TTSTokenizerMultiCodebookModel,
+)
 
 
 # Maps the task implied by a call's arguments to the `tts_model_type` value a
@@ -51,7 +54,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
     ):
         processor = super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
         if getattr(processor, "audio_tokenizer", None) is None:
-            processor.audio_tokenizer = AutoModel.from_pretrained(
+            processor.audio_tokenizer = Qwen3TTSTokenizerMultiCodebookModel.from_pretrained(
                 pretrained_model_name_or_path, subfolder=audio_tokenizer_subfolder, **kwargs
             )
         if task is None:
