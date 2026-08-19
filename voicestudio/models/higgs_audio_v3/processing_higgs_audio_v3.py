@@ -6,7 +6,11 @@ from transformers.audio_utils import AudioInput, make_list_of_audio
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.processing_utils import ProcessingKwargs, ProcessorMixin, Unpack
 from transformers.tokenization_utils_base import PreTokenizedInput, TextInput
+from transformers.utils import logging
 from transformers.utils.import_utils import requires
+
+
+logger = logging.get_logger(__name__)
 
 
 class HiggsAudioV3ProcessorKwargs(ProcessingKwargs, total=False):
@@ -51,9 +55,9 @@ class HiggsAudioV3Processor(ProcessorMixin):
 
     def __init__(
         self,
-        feature_extractor,
-        tokenizer,
-        audio_tokenizer,
+        feature_extractor=None,
+        tokenizer=None,
+        audio_tokenizer=None,
         chat_template=None,
         audio_token_id=-100,
         audio_stream_bos_id=1024,
@@ -69,6 +73,28 @@ class HiggsAudioV3Processor(ProcessorMixin):
             audio_tokenizer=audio_tokenizer,
             chat_template=chat_template,
         )
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+        r"""
+        Some `bosonai/higgs-tts-3-*` checkpoints ship only the text tokenizer (no
+        `preprocessor_config.json` for the `DacFeatureExtractor`, and no bundled
+        `HiggsAudioV2TokenizerModel`), which makes them usable for text-only generation but not
+        for reference-audio conditioning or decoding. Fall back to a tokenizer-only processor in
+        that case instead of raising, since `feature_extractor`/`audio_tokenizer` are optional.
+        """
+        try:
+            return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
+        except OSError:
+            from transformers import AutoTokenizer
+
+            logger.warning_once(
+                f"'{pretrained_model_name_or_path}' does not ship a feature extractor or audio tokenizer config. "
+                "Loading a tokenizer-only `HiggsAudioV3Processor`; reference-audio conditioning and `decode` will "
+                "be unavailable until `feature_extractor`/`audio_tokenizer` are set."
+            )
+            tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, **kwargs)
+            return cls(tokenizer=tokenizer)
 
     def __call__(
         self,
@@ -109,6 +135,12 @@ class HiggsAudioV3Processor(ProcessorMixin):
         audio_input_ids = None
         audio_input_ids_mask = None
         if reference_audio is not None:
+            if self.feature_extractor is None or self.audio_tokenizer is None:
+                raise ValueError(
+                    "`reference_audio` was provided but this `HiggsAudioV3Processor` has no `feature_extractor`/"
+                    "`audio_tokenizer` (the checkpoint it was loaded from does not ship one). Text-only synthesis "
+                    "is still supported."
+                )
             if len(text) != 1:
                 raise ValueError(
                     "HiggsAudioV3Processor only supports a single prompt at a time when `reference_audio` is given."
@@ -162,6 +194,11 @@ class HiggsAudioV3Processor(ProcessorMixin):
         Returns:
             `torch.Tensor`: A 1D waveform tensor.
         """
+        if self.audio_tokenizer is None:
+            raise ValueError(
+                "This `HiggsAudioV3Processor` has no `audio_tokenizer` (the checkpoint it was loaded from does not "
+                "ship one), so generated audio codes cannot be decoded to a waveform."
+            )
         if audio_input_ids.shape[0] != 1:
             raise ValueError(
                 f"Expecting a single output to be decoded but received {audio_input_ids.shape[0]} samples instead."
