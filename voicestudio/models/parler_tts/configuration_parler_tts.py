@@ -246,8 +246,9 @@ class ParlerTTSConfig(PretrainedConfig):
     has_no_defaults_at_init = True  # set flag to skip default instance creation
                                     # See: https://github.com/huggingface/transformers/blob/main/src/transformers/configuration_utils.py#L842
 
-    def __init__(self, vocab_size=1024, prompt_cross_attention=False, **kwargs):
+    def __init__(self, vocab_size=1024, prompt_cross_attention=False, tie_encoder_decoder=False, **kwargs):
         super().__init__(**kwargs)
+        self.tie_encoder_decoder = tie_encoder_decoder
         if "text_encoder" not in kwargs or "audio_encoder" not in kwargs or "decoder" not in kwargs:
             raise ValueError("Config has to be initialized with text_encoder, audio_encoder and decoder config")
 
