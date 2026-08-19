@@ -12,19 +12,27 @@ import re
 from transformers.core_model_loading import WeightRenaming
 
 
-def _rel_position_encoder_renaming(old_prefix: str, new_prefix: str) -> list[WeightRenaming]:
+def _rel_position_encoder_renaming(
+    old_prefix: str, new_prefix: str, norm_mha_name: str = "norm_mha", norm_ff_name: str = "norm_ff"
+) -> list[WeightRenaming]:
     """
     Renaming rules for one [`CosyVoiceV1RelPositionEncoder`] stack: the original checkpoint's WeNet/ESPnet
-    `TransformerEncoder` names its input projection `embed.out.{0,1}` (`Linear` then `LayerNorm`), its per-layer
-    self-attention pre-norm `norm_mha`, and its single feed-forward `feed_forward.{w_1,w_2}`; the module layout
-    here names those `embed.{0,1}`, `self_attn_layer_norm`, and `feed_forward.{intermediate_dense,output_dense}`
-    respectively (`norm_ff`, `after_norm`, and every `self_attn.*` key are already named identically).
+    `TransformerEncoder` names its input projection `embed.out.{0,1}` (`Linear` then `LayerNorm`) and its single
+    feed-forward `feed_forward.{w_1,w_2}`; the module layout here names those `embed.{0,1}` and
+    `feed_forward.{intermediate_dense,output_dense}` respectively (`after_norm` and every `self_attn.*` key are
+    already named identically). The self-attention pre-norm and feed-forward pre-norm are named `norm_mha`/
+    `norm_ff` in the text encoder and flow encoder checkpoints but `norm1`/`norm2` in the LLM checkpoint;
+    `norm_mha_name`/`norm_ff_name` select which the source checkpoint uses.
 
     Args:
         old_prefix (`str`):
             Dotted prefix under which this encoder stack's weights live in the original checkpoint.
         new_prefix (`str`):
             Dotted prefix under which this encoder stack's weights live in the `transformers` module.
+        norm_mha_name (`str`, *optional*, defaults to `"norm_mha"`):
+            Name of the self-attention pre-norm layer in the original checkpoint (`"norm_mha"` or `"norm1"`).
+        norm_ff_name (`str`, *optional*, defaults to `"norm_ff"`):
+            Name of the feed-forward pre-norm layer in the original checkpoint (`"norm_ff"` or `"norm2"`).
 
     Returns:
         `list[WeightRenaming]`: Rules to pass to the model loader's weight conversion mapping.
@@ -34,9 +42,12 @@ def _rel_position_encoder_renaming(old_prefix: str, new_prefix: str) -> list[Wei
         WeightRenaming(rf"{op}\.embed\.out\.(\d+)\.(weight|bias)", rf"{new_prefix}.embed.\1.\2"),
         WeightRenaming(rf"{op}\.after_norm\.(weight|bias)", rf"{new_prefix}.after_norm.\1"),
         WeightRenaming(
-            rf"{op}\.encoders\.(\d+)\.norm_mha\.(weight|bias)", rf"{new_prefix}.layers.\1.self_attn_layer_norm.\2"
+            rf"{op}\.encoders\.(\d+)\.{norm_mha_name}\.(weight|bias)",
+            rf"{new_prefix}.layers.\1.self_attn_layer_norm.\2",
         ),
-        WeightRenaming(rf"{op}\.encoders\.(\d+)\.norm_ff\.(weight|bias)", rf"{new_prefix}.layers.\1.norm_ff.\2"),
+        WeightRenaming(
+            rf"{op}\.encoders\.(\d+)\.{norm_ff_name}\.(weight|bias)", rf"{new_prefix}.layers.\1.norm_ff.\2"
+        ),
         WeightRenaming(
             rf"{op}\.encoders\.(\d+)\.feed_forward\.w_1\.(weight|bias)",
             rf"{new_prefix}.layers.\1.feed_forward.intermediate_dense.\2",
@@ -65,7 +76,9 @@ def build_llm_weight_conversion_mapping(prefix: str = "") -> list[WeightRenaming
     """
     rules = []
     rules += _rel_position_encoder_renaming(f"{prefix}text_encoder", f"{prefix}text_encoder.encoder")
-    rules += _rel_position_encoder_renaming(f"{prefix}llm", f"{prefix}llm")
+    rules += _rel_position_encoder_renaming(
+        f"{prefix}llm", f"{prefix}llm", norm_mha_name="norm1", norm_ff_name="norm2"
+    )
     return rules
 
 
