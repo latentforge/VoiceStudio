@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 
 from transformers.cache_utils import Cache
+from transformers.conversion_mapping import WeightRenaming, register_checkpoint_conversion_mapping
 from transformers.models.higgs_audio_v2.modeling_higgs_audio_v2 import (
     HiggsAudioV2Embeddings,
     HiggsAudioV2PreTrainedModel,
@@ -30,6 +31,32 @@ from .configuration_higgs_audio_v3 import HiggsAudioV3Config
 
 
 logger = logging.get_logger(__name__)
+
+
+# The upstream `bosonai/higgs-tts-3-4b` checkpoint stores the Qwen3 text backbone under a bare
+# `body.` prefix and keeps the text/audio embedding and (tied) output-head weights under a `tied.`
+# namespace shared with the full neural audio codec (semantic model, acoustic encoder/decoder,
+# quantizer). Only the text backbone and the two embedding tables are relevant to this model; the
+# codec weights are intentionally left unmapped (they surface as harmless UNEXPECTED keys) since
+# they belong to a separate audio tokenizer model, not to `HiggsAudioV3ForConditionalGeneration`.
+register_checkpoint_conversion_mapping(
+    "HiggsAudioV3ForConditionalGeneration",
+    [
+        WeightRenaming(source_patterns=r"^body\.layers\.", target_patterns=r"model.text_model.layers."),
+        WeightRenaming(source_patterns=r"^body\.norm\.weight$", target_patterns=r"model.text_model.norm.weight"),
+        WeightRenaming(
+            source_patterns=r"^tied\.embedding\.text_embedding\.weight$",
+            target_patterns=r"model.text_model.embed_tokens.weight",
+        ),
+        WeightRenaming(
+            source_patterns=r"^tied\.embedding\.modality_embeddings\.0\.embedding\.weight$",
+            target_patterns=r"model.embed_audio_tokens.embed_audio_tokens.weight",
+        ),
+        WeightRenaming(source_patterns=r"^tied\.head\.text_head\.weight$", target_patterns=r"text_lm_head.weight"),
+        WeightRenaming(source_patterns=r"^tied\.head\.modality_heads\.0\.weight$", target_patterns=r"audio_head.weight"),
+    ],
+    overwrite=True,
+)
 
 
 @auto_docstring
