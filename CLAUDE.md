@@ -13,6 +13,20 @@ work progresses instead of tracking migration state only in conversation.
 
 ## Model code conventions
 
+- Never write a submodule (attention block, FFN, normalization, encoder layer, ...) by
+  matching it to a vague architecture category ("this is a conformer", "this looks like a
+  U-Net", "this is roughly a diffusion transformer") and substituting a similarly-labeled
+  existing class. Open the actual upstream source file for that submodule and trace its
+  class definition and forward method line by line: exact attention projections (fused
+  qkv vs separate q/k/v/out), exact FFN shape (single vs macaron/double, GEGLU vs GELU vs
+  SwiGLU), presence or absence of extra submodules (depthwise conv, gating, adapters),
+  and the exact normalization/conditioning scheme (plain LayerNorm vs AdaLN, pre-norm vs
+  post-norm). Two components with the same one-line description can have materially
+  different internals; only a line-by-line reading of the real source catches that.
+  Loading real pretrained weights afterward (clean `from_pretrained` LOAD REPORT, no
+  MISSING/UNEXPECTED keys) is a confirmation step for this, not a substitute for it:
+  passing a dummy-tensor forward/backward smoke test proves nothing about architectural
+  correctness and must never be reported or treated as verification.
 - Every migrated model must be trainable, not inference-only. Its top-level
   `*ForConditionalGeneration`/`*ForCausalLM` `forward()` must accept `labels` and return
   a cross-entropy loss (the standard `transformers` pattern: `ModelOutput` with a `loss`
