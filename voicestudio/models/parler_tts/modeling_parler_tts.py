@@ -2011,6 +2011,12 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
         self.audio_encoder = audio_encoder
         self.decoder = decoder
 
+        # Published checkpoints save the audio encoder's conv/proj weights in weight-normalized
+        # form; the state dict conversion mapping targets that layout, so the live module needs the
+        # same parametrization applied before weights are loaded into it.
+        if hasattr(self.audio_encoder, "apply_weight_norm"):
+            self.audio_encoder.apply_weight_norm()
+
         if self.text_encoder.config.to_dict() != self.config.text_encoder.to_dict():
             logger.warning(
                 f"Config of the text_encoder: {self.text_encoder.__class__} is overwritten by shared text_encoder config:"
