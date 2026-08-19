@@ -39,9 +39,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
             [`~Qwen3TTSProcessor.from_pretrained`] when not given explicitly.
     """
 
-    def __init__(self, *args, task: str | None = None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.task = task
+    task: str | None = None
 
     @classmethod
     def from_pretrained(
