@@ -25,7 +25,8 @@ class PromptTTSppPromptEncoderConfig(PreTrainedConfig):
         mid_channels (`int`, *optional*, defaults to 256):
             Hidden size of the adaptor MLP that maps the pooled BERT embedding to the style embedding space.
         out_channels (`int`, *optional*, defaults to 384):
-            Dimensionality of the produced style embedding. Must match the acoustic model's `speaker_embed_dim`.
+            Dimensionality of the produced style embedding. Must match the acoustic model's `hidden_size`, since the
+            style embedding is added directly onto the phoneme encoder's output.
     """
 
     model_type = "prompt_tts_pp_prompt_encoder"
@@ -106,7 +107,16 @@ class PromptTTSppConfig(PreTrainedConfig):
         elif isinstance(prompt_encoder_config, dict):
             prompt_encoder_config = PromptTTSppPromptEncoderConfig(**prompt_encoder_config)
 
-        model_config.speaker_embed_dim = prompt_encoder_config.out_channels
+        # The style embedding is added directly onto the acoustic model's encoder output (see
+        # `PromptTTSppModel._acoustic_forward_with_style`), not passed through `FastSpeech2ConformerModel`'s own
+        # `speaker_embedding` argument, so `speaker_embed_dim` (which activates that separate concatenation +
+        # projection path) is left unset.
+        if prompt_encoder_config.out_channels != model_config.hidden_size:
+            raise ValueError(
+                f"prompt_encoder_config.out_channels ({prompt_encoder_config.out_channels}) must equal "
+                f"model_config.hidden_size ({model_config.hidden_size}); the style embedding is added directly "
+                "onto the acoustic model's encoder output."
+            )
 
         self.model_config = model_config
         self.vocoder_config = vocoder_config
