@@ -67,12 +67,22 @@ class HiggsAudioV3Processor(ProcessorMixin):
         self.audio_stream_bos_id = audio_stream_bos_id
         self.audio_stream_eos_id = audio_stream_eos_id
 
-        super().__init__(
-            feature_extractor,
-            tokenizer,
-            audio_tokenizer=audio_tokenizer,
-            chat_template=chat_template,
-        )
+        if feature_extractor is not None and audio_tokenizer is not None:
+            super().__init__(
+                feature_extractor,
+                tokenizer,
+                audio_tokenizer=audio_tokenizer,
+                chat_template=chat_template,
+            )
+        else:
+            # `ProcessorMixin.__init__` requires every declared attribute (`feature_extractor`,
+            # `audio_tokenizer`) to be a real instance of the matching class, so it cannot be used
+            # to build a tokenizer-only processor for checkpoints that ship neither. Wire up the
+            # tokenizer-only case by hand instead.
+            self.feature_extractor = feature_extractor
+            self.audio_tokenizer = audio_tokenizer
+            self.tokenizer = tokenizer
+            self.chat_template = chat_template
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
