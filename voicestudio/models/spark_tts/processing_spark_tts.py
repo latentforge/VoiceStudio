@@ -301,6 +301,17 @@ class SparkTTSProcessor(ProcessorMixin):
         Returns:
             `SparkTTSProcessor`: Loaded processor.
         """
+        # The subdirectory loads below need a local checkout; resolve a hub repo id to one.
+        if not Path(pretrained_model_name_or_path).is_dir():
+            from huggingface_hub import snapshot_download
+
+            pretrained_model_name_or_path = snapshot_download(
+                pretrained_model_name_or_path,
+                cache_dir=kwargs.get("cache_dir"),
+                revision=kwargs.get("revision"),
+                token=kwargs.get("token"),
+            )
+
         # Load feature extractor
         wav2vec2_path = Path(pretrained_model_name_or_path) / "wav2vec2-large-xlsr-53"
         feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(wav2vec2_path, **kwargs)
