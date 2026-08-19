@@ -2146,7 +2146,17 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
             )
         kwargs["_fast_init"] = False
 
-        return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+
+        # text_encoder, audio_encoder, and decoder are each built and loaded as their own
+        # PreTrainedModel; the composite from_pretrained above only reliably casts the
+        # component it resolves dtype for last, leaving the others in the checkpoint's saved
+        # dtype. Normalize the whole composite model to the one dtype that was actually asked for.
+        dtype = kwargs.get("dtype", kwargs.get("torch_dtype"))
+        if dtype is not None:
+            model = model.to(dtype)
+
+        return model
 
     @classmethod
     def from_sub_models_pretrained(
