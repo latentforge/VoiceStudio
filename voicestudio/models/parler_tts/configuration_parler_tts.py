@@ -258,6 +258,11 @@ class ParlerTTSConfig(PretrainedConfig):
         audio_encoder_model_type = audio_encoder_config.pop("model_type")
         decoder_config = kwargs.pop("decoder")
 
+        # Older checkpoints (saved against the vendored DAC config) may carry a `frame_rate`
+        # key; DacConfig now computes it as a read-only property instead of an init argument.
+        if audio_encoder_model_type == "dac":
+            audio_encoder_config.pop("frame_rate", None)
+
         self.vocab_size = vocab_size
         self.prompt_cross_attention = prompt_cross_attention
         self.text_encoder = AutoConfig.for_model(text_encoder_model_type, **text_encoder_config)
