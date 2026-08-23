@@ -14,29 +14,18 @@
 # limitations under the License.
 """ Parler-TTS model configuration"""
 
-from transformers import logging
+from transformers import AutoConfig, logging
 from transformers.configuration_utils import PretrainedConfig
-
-try:
-    from ..._parler_tts.configuration_parler_tts import PARLER_TTS_PRETRAINED_CONFIG_ARCHIVE_MAP
-    from ..._parler_tts import (
-        configuration_parler_tts,
-        modeling_parler_tts
-    )
-except ImportError:
-    from voicestudio._parler_tts.configuration_parler_tts import PARLER_TTS_PRETRAINED_CONFIG_ARCHIVE_MAP
-    from voicestudio._parler_tts import (
-        configuration_parler_tts,
-        modeling_parler_tts
-    )
-
-_ParlerTTSDecoderConfig = configuration_parler_tts.ParlerTTSDecoderConfig
-_ParlerTTSConfig = configuration_parler_tts.ParlerTTSConfig
 
 logger = logging.get_logger(__name__)
 
+PARLER_TTS_PRETRAINED_CONFIG_ARCHIVE_MAP = {
+    "parler-tts/parler-tts-mini-v1": "https://huggingface.co/parler-tts/parler-tts-mini-v1/resolve/main/config.json",
+    # See all ParlerTTS models at https://huggingface.co/models?filter=parler_tts
+}
 
-class ParlerTTSDecoderConfig(_ParlerTTSDecoderConfig):
+
+class ParlerTTSDecoderConfig(PretrainedConfig):
     r"""
     This is the configuration class to store the configuration of an [`ParlerTTSDecoder`]. It is used to instantiate a
     Parler-TTS decoder according to the specified arguments, defining the model architecture. Instantiating a
@@ -45,7 +34,6 @@ class ParlerTTSDecoderConfig(_ParlerTTSDecoderConfig):
 
     Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
     documentation from [`PretrainedConfig`] for more information.
-
 
     Args:
         vocab_size (`int`, *optional*, defaults to 2049):
@@ -183,7 +171,7 @@ class ParlerTTSDecoderConfig(_ParlerTTSDecoderConfig):
 
         if codebook_weights is not None and len(codebook_weights) != num_codebooks:
             raise ValueError(f"`codebook_weights` has length {len(codebook_weights)} when it should be of length {num_codebooks}.")
-        super(_ParlerTTSDecoderConfig, self).__init__(
+        super().__init__(
             pad_token_id=pad_token_id,
             bos_token_id=bos_token_id,
             eos_token_id=eos_token_id,
@@ -204,7 +192,93 @@ class ParlerTTSDecoderConfig(_ParlerTTSDecoderConfig):
         self.rope_parameters["rope_theta"] = value
 
 
-class ParlerTTSConfig(_ParlerTTSConfig):
+class ParlerTTSConfig(PretrainedConfig):
+    r"""
+    This is the configuration class to store the configuration of a [`ParlerTTSModel`]. It is used to instantiate a
+    Parler-TTS model according to the specified arguments, defining the text encoder, audio encoder and Parler-TTS decoder
+    configs.
+
+    Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
+    documentation from [`PretrainedConfig`] for more information.
+
+    Args:
+        vocab_size (`int`, *optional*, defaults to 1024):
+            Vocabulary size of the prompt token ids. Defines the number of different tokens that can be
+            represented by the `prompt_inputs_ids`.
+        prompt_cross_attention (`bool`, *optional*, defaults to `False`):
+            Whether to use cross-attention conditioning for the prompt (as well as the description).
+        kwargs (*optional*):
+            Dictionary of keyword arguments. Notably:
+
+                - **text_encoder** ([`PretrainedConfig`], *optional*) -- An instance of a configuration object that
+                  defines the text encoder config.
+                - **audio_encoder** ([`PretrainedConfig`], *optional*) -- An instance of a configuration object that
+                  defines the audio encoder config.
+                - **decoder** ([`PretrainedConfig`], *optional*) -- An instance of a configuration object that defines
+                  the decoder config.
+
+    Example:
+
+    ```python
+    >>> from transformers import (
+    ...     ParlerTTSConfig,
+    ...     ParlerTTSDecoderConfig,
+    ...     T5Config,
+    ...     EncodecConfig,
+    ...     ParlerTTSForConditionalGeneration,
+    ... )
+
+    >>> # Initializing text encoder, audio encoder, and decoder model configurations
+    >>> text_encoder_config = T5Config()
+    >>> audio_encoder_config = EncodecConfig()
+    >>> decoder_config = ParlerTTSDecoderConfig()
+
+    >>> configuration = ParlerTTSConfig.from_sub_models_config(
+    ...     text_encoder_config, audio_encoder_config, decoder_config
+    ... )
+
+    >>> # Initializing a ParlerTTSForConditionalGeneration (with random weights) from the parler-tts/parler-tts-mini-v1 style configuration
+    >>> model = ParlerTTSForConditionalGeneration(configuration)
+
+    >>> # Accessing the model configuration
+    >>> configuration = model.config
+    >>> config_text_encoder = model.config.text_encoder
+    >>> config_audio_encoder = model.config.audio_encoder
+    >>> config_decoder = model.config.decoder
+
+    >>> # Saving the model, including its configuration
+    >>> model.save_pretrained("parler_tts-model")
+
+    >>> # loading model and config from pretrained folder
+    >>> parler_tts_config = ParlerTTSConfig.from_pretrained("parler_tts-model")
+    >>> model = ParlerTTSForConditionalGeneration.from_pretrained("parler_tts-model", config=parler_tts_config)
+    ```"""
+
+    model_type = "parler_tts"
+    is_composition = True
+
+    has_no_defaults_at_init = True  # set flag to skip default instance creation
+                                    # See: https://github.com/huggingface/transformers/blob/main/src/transformers/configuration_utils.py#L842
+
+    def __init__(self, vocab_size=1024, prompt_cross_attention=False, **kwargs):
+        super().__init__(**kwargs)
+        if "text_encoder" not in kwargs or "audio_encoder" not in kwargs or "decoder" not in kwargs:
+            raise ValueError("Config has to be initialized with text_encoder, audio_encoder and decoder config")
+
+        text_encoder_config = kwargs.pop("text_encoder")
+        text_encoder_model_type = text_encoder_config.pop("model_type")
+
+        audio_encoder_config = kwargs.pop("audio_encoder")
+        audio_encoder_model_type = audio_encoder_config.pop("model_type")
+        decoder_config = kwargs.pop("decoder")
+
+        self.vocab_size = vocab_size
+        self.prompt_cross_attention = prompt_cross_attention
+        self.text_encoder = AutoConfig.for_model(text_encoder_model_type, **text_encoder_config)
+        self.audio_encoder = AutoConfig.for_model(audio_encoder_model_type, **audio_encoder_config)
+        self.decoder = ParlerTTSDecoderConfig(**decoder_config)
+        self.is_encoder_decoder = True
+
     @classmethod
     def from_sub_models_config(
         cls,
@@ -246,10 +320,7 @@ class ParlerTTSConfig(_ParlerTTSConfig):
             **kwargs,
         )
 
-
-configuration_parler_tts.ParlerTTSConfig = ParlerTTSConfig
-configuration_parler_tts.ParlerTTSDecoderConfig = ParlerTTSDecoderConfig
-modeling_parler_tts.ParlerTTSConfig = ParlerTTSConfig
-modeling_parler_tts.ParlerTTSDecoderConfig = ParlerTTSDecoderConfig
-modeling_parler_tts.ParlerTTSForConditionalGeneration.config_class = ParlerTTSConfig
-modeling_parler_tts.ParlerTTSPreTrainedModel.config_class = ParlerTTSDecoderConfig
+    @property
+    # This is a property because you might want to change the codec model on the fly
+    def sampling_rate(self):
+        return self.audio_encoder.sampling_rate
