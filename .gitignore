@@ -29,8 +29,8 @@ MANIFEST
 # PyInstaller
 #   Usually these files are written by a python script from a template
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
-#*.manifest
-#*.spec
+*.manifest
+*.spec
 
 # Installer logs
 pip-log.txt
@@ -200,6 +200,8 @@ cython_debug/
 #   and can be added to the global gitignore or merged into this file. However, if you prefer, 
 #   you could uncomment the following to ignore the entire vscode folder
 # .vscode/
+# Temporary file for partial code execution
+tempCodeRunnerFile.py
 
 # Ruff stuff:
 .ruff_cache/
@@ -218,9 +220,11 @@ __marimo__/
 # PyTorch
 data/
 .data/
-*.mp3
-*.wav
-*.csv
 results/
 results-*/
 wandb/
+trainer_output/
+
+# AI Agents
+.claude
+.agents
