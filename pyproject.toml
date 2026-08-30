@@ -4,15 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "voicestudio"
-version = "1.0.1"
-description = "VoiceStudio: A unified toolkit for text-style prompted speech synthesis, voice adaptation, and editing"
+version = "1.1.0"
+description = "VoiceStudio: A unified toolkit for voice cloning, designing and editing"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
     { name = "LatentForge", email = "brew.airesearch@gmail.com" }
 ]
-keywords = [ "text-to-speech", "voice-synthesis", "audio-generation", "lora", "hypernetworks" ]
+keywords = [ "text-to-speech", "voice-synthesis", "audio-generation" ]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

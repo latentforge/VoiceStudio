@@ -1,0 +1,20 @@
+{
+  // Cache locations. `${workspaceFolder}` rather than an absolute path so this
+  // file stays correct if the repo is checked out elsewhere -- it is committed,
+  // unlike .env.
+  //
+  // `python.envFile` covers notebooks and the debugger. The terminal block
+  // covers integrated terminals; UV_ENV_FILE is set there instead of repeating
+  // every variable, so `uv run` reads .env on its own and the two stay in sync.
+  "python.envFile": "${workspaceFolder}/.env",
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+  "terminal.integrated.env.linux": {
+    "HF_HOME": "${workspaceFolder}/.cache/huggingface",
+    "TORCH_HOME": "${workspaceFolder}/.cache/torch",
+    "UV_ENV_FILE": "${workspaceFolder}/.env"
+  },
+  "files.exclude": {
+    "**/.cache": true,
+    "**/torchinductor_*": true
+  }
+}

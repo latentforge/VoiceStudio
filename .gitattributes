@@ -1,0 +1,5 @@
+*.md merge=ours
+
+# The READMEs are the exception
+/README.md -merge
+/README.ko.md -merge
