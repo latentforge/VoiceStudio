@@ -1,10 +1,16 @@
 """Processor class for Qwen3-TTS."""
 
+import json
+import os
 from typing import Literal, Union
 
+from huggingface_hub import snapshot_download
 from transformers import AutoConfig
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.qwen3_tts.processing_qwen3_tts import Qwen3TTSProcessor as _Qwen3TTSProcessor
+from transformers.models.qwen3_tts_tokenizer_multi_codebook.convert_qwen3_tts_tokenizer_multi_codebook_to_hf import (
+    convert as _convert_qwen3_tts_tokenizer_multi_codebook,
+)
 from transformers.models.qwen3_tts_tokenizer_multi_codebook.modeling_qwen3_tts_tokenizer_multi_codebook import (
     Qwen3TTSTokenizerMultiCodebookModel,
 )
@@ -19,6 +25,39 @@ _IMPLIED_TASK_TO_MODEL_TYPE = {
     "custom_voice": "custom_voice",
     "voice_design": "voice_design",
 }
+
+
+def _load_audio_tokenizer(
+    pretrained_model_name_or_path, subfolder: str, **kwargs
+) -> Qwen3TTSTokenizerMultiCodebookModel:
+    """
+    Loads the `speech_tokenizer` subfolder as a [`Qwen3TTSTokenizerMultiCodebookModel`], converting it
+    first if it is still in the original Qwen3-TTS-Tokenizer-12Hz checkpoint format (`model_type`
+    `"qwen3_tts_tokenizer_12hz"`, not `transformers`'s own `"qwen3_tts_tokenizer_multi_codebook"`).
+    """
+    if os.path.isdir(pretrained_model_name_or_path):
+        source_dir = os.path.join(pretrained_model_name_or_path, subfolder)
+    else:
+        snapshot_kwargs = {k: v for k, v in kwargs.items() if k in ("revision", "token", "cache_dir")}
+        source_dir = os.path.join(
+            snapshot_download(
+                pretrained_model_name_or_path, allow_patterns=f"{subfolder}/*", **snapshot_kwargs
+            ),
+            subfolder,
+        )
+
+    with open(os.path.join(source_dir, "config.json")) as f:
+        model_type = json.load(f).get("model_type")
+
+    if model_type == Qwen3TTSTokenizerMultiCodebookModel.config_class.model_type:
+        return Qwen3TTSTokenizerMultiCodebookModel.from_pretrained(source_dir, **kwargs)
+
+    converted_dir = source_dir.rstrip("/") + "_converted"
+    if not os.path.isfile(os.path.join(converted_dir, "config.json")):
+        _convert_qwen3_tts_tokenizer_multi_codebook(
+            source_dir, converted_dir, push_to_hub=None, bfloat16=False, max_shard_size="5GB"
+        )
+    return Qwen3TTSTokenizerMultiCodebookModel.from_pretrained(converted_dir, **kwargs)
 
 
 class Qwen3TTSProcessor(_Qwen3TTSProcessor):
@@ -52,8 +91,8 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
     ):
         processor = super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
         if getattr(processor, "audio_tokenizer", None) is None:
-            processor.audio_tokenizer = Qwen3TTSTokenizerMultiCodebookModel.from_pretrained(
-                pretrained_model_name_or_path, subfolder=audio_tokenizer_subfolder, **kwargs
+            processor.audio_tokenizer = _load_audio_tokenizer(
+                pretrained_model_name_or_path, audio_tokenizer_subfolder, **kwargs
             )
         if task is None:
             try:
