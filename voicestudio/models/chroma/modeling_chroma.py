@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2025 The FlashLabs team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+"""PyTorch Chroma model."""
 
 import torch
 import torch.nn as nn
@@ -144,7 +143,9 @@ class ChromaAudioEmbedding(nn.Module):
         audio_frames = input_ids + (
             self.audio_vocab_size * torch.arange(num_codebooks, device=input_ids.device)
         )
-        embeddings = self.embed_audio_tokens(audio_frames.view(-1)).reshape(audio_frames.shape + (2048,))
+        embeddings = self.embed_audio_tokens(audio_frames.view(-1)).reshape(
+            audio_frames.shape + (self.embed_audio_tokens.embedding_dim,)
+        )
         return embeddings
 
 
