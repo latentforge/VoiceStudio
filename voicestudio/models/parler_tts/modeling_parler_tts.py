@@ -1084,7 +1084,7 @@ class ParlerTTSPreTrainedModel(PreTrainedModel):
     config_class = ParlerTTSDecoderConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _supports_flash_attn_2 = True
+    _supports_flash_attn = True
     _supports_sdpa = True
     _no_split_modules = ["ParlerTTSDecoderLayer", "ParlerTTSAttention"]
     _supports_cache_class = True
@@ -1439,20 +1439,13 @@ class ParlerTTSDecoder(ParlerTTSPreTrainedModel):
             prepended_sequence_length = prompt_hidden_states.shape[-2]
             inputs_embeds = torch.cat([prompt_hidden_states, inputs_embeds], dim=1)
 
-        return_legacy_cache = False
         return_self_attention_cache = False
         if use_cache or past_key_values is not None:
             if isinstance(past_key_values, Cache) and not isinstance(past_key_values, EncoderDecoderCache):
                 return_self_attention_cache = True
                 past_key_values = EncoderDecoderCache(past_key_values, DynamicCache())
-            elif not isinstance(past_key_values, EncoderDecoderCache):
-                return_legacy_cache = True
-                logger.warning_once(
-                    "Passing a tuple of `past_key_values` is deprecated and will be removed in Transformers v4.43.0. "
-                    "You should pass an instance of `EncoderDecoderCache` instead, e.g. "
-                    "`past_key_values=EncoderDecoderCache.from_legacy_cache(past_key_values)`."
-                )
-                past_key_values = EncoderDecoderCache.from_legacy_cache(past_key_values)
+            elif past_key_values is None:
+                past_key_values = EncoderDecoderCache(DynamicCache(), DynamicCache())
 
         past_key_values_length = 0
         if cache_position is not None:
@@ -1639,8 +1632,6 @@ class ParlerTTSDecoder(ParlerTTSPreTrainedModel):
         next_cache = past_key_values if use_cache else None
         if return_self_attention_cache:
             next_cache = past_key_values.self_attention_cache
-        if return_legacy_cache:
-            next_cache = past_key_values.to_legacy_cache()
         if not return_dict:
             return tuple(
                 v
@@ -2310,7 +2301,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
     base_model_prefix = "encoder_decoder"
     main_input_name = "input_ids"
     supports_gradient_checkpointing = True
-    _supports_flash_attn_2 = True
+    _supports_flash_attn = True
     _supports_sdpa = True
     _supports_cache_class = True
     _supports_static_cache = True
@@ -2439,18 +2430,6 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
             module.weight.data.normal_(mean=0.0, std=std)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
-
-    def tie_weights(self, *args, **kwargs):
-        """Tie the weights between the input embeddings and the output embeddings."""
-        super().tie_weights(*args, **kwargs)
-
-        # tie text encoder & decoder if needed
-        if self.config.tie_encoder_decoder:
-            # tie text encoder and decoder base model
-            decoder_base_model_prefix = self.decoder.base_model_prefix
-            self._tie_encoder_decoder_weights(
-                self.text_encoder, self.decoder._modules[decoder_base_model_prefix], self.decoder.base_model_prefix
-            )
 
     def get_audio_encoder(self):
         return self.audio_encoder
@@ -3520,8 +3499,6 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
                     "This model does not support the quantized cache. If you want your model to support quantized "
                     "cache, please open an issue on the Parler-TTS repository https://github.com/huggingface/parler-tts"
                 )
-        # Use DynamicCache() instance by default. This will avoid back and forth from legacy format that
-        # keeps copying the cache thus using much more memory
         elif generation_config.cache_implementation is None and self._supports_default_dynamic_cache():
             past = model_kwargs.get("past_key_values", None)
             requires_cross_attention_cache = (
@@ -3532,12 +3509,6 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
                     DynamicCache()
                     if not requires_cross_attention_cache
                     else EncoderDecoderCache(DynamicCache(), DynamicCache())
-                )
-            elif isinstance(past, tuple):
-                model_kwargs["past_key_values"] = (
-                    DynamicCache.from_legacy_cache(past)
-                    if not requires_cross_attention_cache
-                    else EncoderDecoderCache.from_legacy_cache(past)
                 )
 
         # build the delay pattern mask for offsetting each codebook prediction by 1 (this behaviour is specific to Parler-TTS)
