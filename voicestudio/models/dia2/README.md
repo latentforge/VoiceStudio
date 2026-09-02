@@ -1,12 +1,84 @@
 # Dia2
 
-Dia2 is a streaming dialogue text-to-speech model: a main transformer predicts the first Mimi codec codebook autoregressively while a Depformer submodule predicts the remaining codebooks per step, allowing generation to begin before the full input text is available and supporting audio-conditioned, realtime multi-speaker dialogue.
+Dia2 is a streaming dialogue text-to-speech model. Every frame it consumes carries two text stream channels plus one channel per Mimi codebook, and the decoder-only backbone predicts two things from it: a binary word-advance action, which drives a state machine that decides which script word feeds the text streams on the next frame, and the first codebook of the next frame. A depth decoder then predicts that frame's remaining 31 codebooks one position at a time, conditioned on the backbone hidden state and on the codebook it just produced. Because the text streams advance one word at a time under the model's own control, generation can start before the whole script is known, and conditioning audio can be pushed through the backbone first to clone a voice.
 
 Original model and code: [nari-labs/dia2](https://github.com/nari-labs/dia2)
 
 
 ## Usage
 
-```python
+The published `nari-labs/Dia2-*` checkpoints ship a bespoke config and weight layout, so they need a one-time conversion before they load:
 
+```python
+from voicestudio.models.dia2.weight_conversion import convert
+
+convert("nari-labs/Dia2-2B", "dia2-2b-converted")
 ```
+
+```python
+import torch
+from voicestudio.models.dia2 import Dia2ForConditionalGeneration, Dia2Processor
+
+model_id = "dia2-2b-converted"
+
+processor = Dia2Processor.from_pretrained(model_id)
+model = Dia2ForConditionalGeneration.from_pretrained(model_id, dtype=torch.float32).to("cuda")
+processor.audio_tokenizer.to(model.device)
+```
+
+```python
+import soundfile as sf
+
+inputs = processor(text="[S1] Hello Dia2! [S2] How are you doing today?").to(model.device)
+
+audio_codes = model.generate(**inputs)
+waveform = processor.decode(audio_codes)
+sf.write("output.wav", waveform.squeeze().cpu().numpy(), processor.sampling_rate)
+```
+
+To condition on previous conversational context, pass one waveform per speaker together with its word-level alignment. Dia2 needs the alignment to place the conditioning words on the frame grid; the upstream project obtains it by running Whisper over each file, which is left to the caller here:
+
+```python
+inputs = processor(
+    text="[S1] I think so too. [S2] Then let's do it.",
+    audio=[speaker_1_waveform, speaker_2_waveform],
+    transcript=[
+        [{"text": "What", "start": 0.0, "end": 0.3}, {"text": "do", "start": 0.3, "end": 0.45}],
+        [{"text": "you", "start": 0.0, "end": 0.2}, {"text": "think", "start": 0.2, "end": 0.6}],
+    ],
+).to(model.device)
+
+audio_codes = model.generate(**inputs)
+```
+
+`generate` decodes one script at a time. Classifier-free guidance runs the conditional and unconditional branches as a batch of two, so `guidance_scale=1.0` halves the compute at the cost of guidance.
+
+
+## Training
+
+Training uses the standard `forward`: pass `labels` of shape `(batch_size, sequence_length, num_codebooks)` for the delayed codebook grid and `action_labels` of shape `(batch_size, sequence_length)` for the word-advance stream. Both are shifted internally, and the returned `loss` sums the codebook-0, action and depth decoder cross-entropies, each also reported on its own in `Dia2OutputWithPast`.
+
+Upstream ships no training, loss, collator or evaluation code, so the objective above is derived from the three heads the released checkpoints carry and from the targets the upstream decode loop feeds each of them: `transformer.action_head` over `action_vocab_size` actions, `transformer.cb0_head` over the first codebook, and `depformer.logits.{i}` over codebook `i + 1` conditioned on the backbone hidden state of the preceding frame and on codebooks `0 .. i` of the current one. Nothing upstream freezes any module, and no weighting between the three terms is recorded anywhere in the released code or model cards, so they are summed unweighted. See the section below.
+
+
+## Not carried over from upstream
+
+Recorded per CLAUDE.md section 2.6. None of these is resolved here.
+
+- **Term weights and masking of the training loss.** No upstream trainer, loss module, collator or evaluation script exists (the `nari-labs/dia2` GitHub tree is inference only), and no paper or technical report has been published. The three cross-entropy terms are therefore summed with weight 1.0 each, and no term is masked beyond the caller's own `-100` labels. If the real recipe weights the depth decoder term per codebook, or masks padding frames, this diverges from it.
+- **Codebook logit width during training.** At generation time the upstream depth decoder slices its logits to `[..., :min(audio_pad_token_id, audio_bos_token_id)]`, which the migration reproduces by masking those two ids in `generate`. The training path leaves the full `vocab_size` head width in the cross-entropy, so the two beginning-of-stream and padding classes stay in the softmax denominator.
+- **Automatic transcription of conditioning audio.** Upstream `dia2/runtime/voice_clone.py` ran `whisper_timestamped` over each prefix file to obtain the word alignment. `Dia2Processor` takes that alignment as its `transcript` argument instead, so a caller has to produce it. Restoring the upstream behaviour would mean adding `whisper-timestamped` as a dependency.
+- **CUDA graph capture and `torch.compile` paths.** Upstream `dia2/runtime/generator.py` could capture the backbone step and each depth stage into CUDA graphs and compile them. `generate` runs eagerly.
+- **Word timestamps in the generation result.** Upstream carried each consumed word's text and frame through the state machine and returned `(word, seconds)` pairs. `Dia2TextStreamState.word_start_frames` keeps the frames, but `generate` returns only the codes.
+- **Audio file I/O, CLI, Gradio app and progress logger.** `dia2/runtime/audio_io.py`, `dia2/audio/grid.py:write_wav`, `dia2/cli.py`, `gradio_app.py` and `dia2/runtime/logger.py` are dropped along with `sphn`, `soundfile` and `gradio`.
+- **Unused upstream config fields.** `data.first_word_min_start`, `data.max_pad`, `data.tokenizer_path`, `model.dropout` and the `assets` block are read by upstream `load_config` but never used by any upstream code path, and have no counterpart in `Dia2Config`. `model.rope_min_timescale` is likewise absent; `weight_conversion.build_config` raises when a checkpoint sets it to anything but `1`, which is the only value the two published checkpoints use.
+
+
+## Repository integration
+
+Two things outside this folder are still needed and were deliberately not touched:
+
+- `voicestudio/models/__init__.py` needs a `from .dia2 import *` line.
+- `PROJECT.md` needs a Dia2 status entry carrying the gaps listed above.
+
+No new dependency is required. The migration removes `numpy`, `sphn`, `soundfile`, `whisper-timestamped` and `gradio` from what this model needs, leaving `torch`, `transformers`, `safetensors` and `huggingface_hub`.
