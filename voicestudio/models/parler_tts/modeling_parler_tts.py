@@ -2412,6 +2412,9 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
         audio_encoder_signature = set(inspect.signature(self.audio_encoder.decode).parameters.keys())
         self.use_audio_scales = "audio_scales" in audio_encoder_signature
 
+        audio_encoder_forward_signature = set(inspect.signature(self.audio_encoder.forward).parameters.keys())
+        self.use_audio_padding_mask = "padding_mask" in audio_encoder_forward_signature
+
         self.use_4dim_audio_codes = False
         audio_type = audio_encoder.config.model_type
         if audio_type == "encodec":
@@ -2810,24 +2813,25 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
             ).transpose(1, 2)
 
         elif decoder_input_ids is None and decoder_inputs_embeds is None:
+            if self.use_audio_padding_mask:
+                kwargs_audio_encoder["padding_mask"] = padding_mask
             audio_encoder_outputs = self.audio_encoder(
                 input_values=input_values,
-                padding_mask=padding_mask,
                 **kwargs_audio_encoder,
             )
             audio_codes = audio_encoder_outputs.audio_codes
-            frames, bsz, codebooks, seq_len = audio_codes.shape
-            if frames != 1:
-                raise ValueError(
-                    f"Expected 1 frame in the audio code outputs, got {frames} frames. Ensure chunking is "
-                    "disabled by setting `chunk_length=None` in the audio encoder."
-                )
+            if self.use_4dim_audio_codes:
+                frames, bsz, _, seq_len = audio_codes.shape
+                if frames != 1:
+                    raise ValueError(
+                        f"Expected 1 frame in the audio code outputs, got {frames} frames. Ensure chunking is "
+                        "disabled by setting `chunk_length=None` in the audio encoder."
+                    )
+                audio_codes = audio_codes[0]
+            else:
+                bsz, _, seq_len = audio_codes.shape
 
-            if self.config.decoder.audio_channels == 2 and audio_codes.shape[2] == self.decoder.num_codebooks // 2:
-                # mono input through encodec that we convert to stereo
-                audio_codes = audio_codes.repeat_interleave(2, dim=2)
-
-            decoder_input_ids = audio_codes[0, ...].reshape(bsz * self.decoder.num_codebooks, seq_len)
+            decoder_input_ids = audio_codes.reshape(bsz * self.decoder.num_codebooks, seq_len)
 
         # Decode
         decoder_outputs = self.decoder(
