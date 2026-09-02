@@ -126,17 +126,9 @@ https://github.com/huggingface/parler-tts/assets/52246514/251e2488-fe6e-42c1-81c
   <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/> 
 </a>
 
-The [training folder](/training/) contains all the information to train or fine-tune your own Parler-TTS model. It consists of:
-- [1. An introduction to the Parler-TTS architecture](/training/README.md#1-architecture)
-- [2. The first steps to get started](/training/README.md#2-getting-started)
-- [3. A training guide](/training/README.md#3-training)
+`ParlerTTSForConditionalGeneration.forward` accepts `labels` and returns a cross-entropy `loss`, so the model trains through any standard `transformers` training loop.
 
-> [!IMPORTANT]
-> **TL;DR:** After having followed the [installation steps](/training/README.md#requirements), you can reproduce the Parler-TTS Mini v1 training recipe with the following command line:
-
-```sh
-accelerate launch ./training/run_parler_tts_training.py ./helpers/training_configs/starting_point_v1.json
-```
+The original Accelerate-based recipe used to produce the released checkpoints lives in the [training folder](https://github.com/huggingface/parler-tts/tree/main/training) of the upstream repository, together with the [configs](https://github.com/huggingface/parler-tts/tree/main/helpers/training_configs) it reads.
 
 > [!IMPORTANT]
 > You can also follow [this fine-tuning guide](https://github.com/ylacombe/scripts_and_notebooks/blob/main/Finetuning_Parler_TTS_v1_on_a_single_speaker_dataset.ipynb) on a mono-speaker dataset example.
