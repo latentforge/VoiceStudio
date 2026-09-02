@@ -15,14 +15,23 @@ logger = logging.get_logger(__name__)
 
 class HiggsTTS3ProcessorKwargs(ProcessingKwargs, total=False):
     _defaults = {
-        "text_kwargs": {
-            "padding": True,
-        },
         "audio_kwargs": {
             "padding": False,
             "sampling_rate": 24000,
+            "return_tensors": "pt",
         },
     }
+
+
+# Higgs TTS 3 prompts are framed by dedicated specials rather than by the text tokenizer's chat
+# template: `<|tts|>` opens the prompt, an optional `<|ref_text|>`/`<|ref_audio|>` pair carries the
+# voice-cloning reference, `<|text|>` introduces the target text, and `<|audio|>` opens the audio
+# stream the model continues with codebook frames.
+_TTS_TOKEN = "<|tts|>"
+_REF_TEXT_TOKEN = "<|ref_text|>"
+_REF_AUDIO_TOKEN = "<|ref_audio|>"
+_TEXT_TOKEN = "<|text|>"
+_AUDIO_TOKEN = "<|audio|>"
 
 
 @requires(backends=("torch",))
@@ -89,27 +98,71 @@ class HiggsTTS3Processor(ProcessorMixin):
         r"""
         Some `bosonai/higgs-tts-3-*` checkpoints ship only the text tokenizer (no
         `preprocessor_config.json` for the `DacFeatureExtractor`, and no bundled
-        `HiggsAudioV2TokenizerModel`), which makes them usable for text-only generation but not
-        for reference-audio conditioning or decoding. Fall back to a tokenizer-only processor in
-        that case instead of raising, since `feature_extractor`/`audio_tokenizer` are optional.
+        `HiggsAudioV2TokenizerModel`). For those, the feature extractor and audio tokenizer are
+        loaded from the codec repository named by the model config's `audio_tokenizer_id`, and, if
+        that repository is unreachable too, a tokenizer-only processor is returned rather than
+        raising, since `feature_extractor`/`audio_tokenizer` are optional.
         """
         try:
             return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
         except OSError:
-            from transformers import AutoTokenizer
+            from transformers import AutoConfig, AutoTokenizer, DacFeatureExtractor
+            from transformers.models.higgs_audio_v2_tokenizer import HiggsAudioV2TokenizerModel
+
+            tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, **kwargs)
+
+            audio_tokenizer_id = None
+            try:
+                config = AutoConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
+                audio_tokenizer_id = getattr(config, "audio_tokenizer_id", None)
+            except OSError:
+                pass
+
+            if audio_tokenizer_id is not None:
+                try:
+                    return cls(
+                        feature_extractor=DacFeatureExtractor.from_pretrained(audio_tokenizer_id),
+                        tokenizer=tokenizer,
+                        audio_tokenizer=HiggsAudioV2TokenizerModel.from_pretrained(audio_tokenizer_id),
+                    )
+                except OSError:
+                    pass
 
             logger.warning_once(
-                f"'{pretrained_model_name_or_path}' does not ship a feature extractor or audio tokenizer config. "
-                "Loading a tokenizer-only `HiggsTTS3Processor`; reference-audio conditioning and `decode` will "
-                "be unavailable until `feature_extractor`/`audio_tokenizer` are set."
+                f"'{pretrained_model_name_or_path}' does not ship a feature extractor or audio tokenizer config, "
+                "and none could be loaded from its config's `audio_tokenizer_id`. Loading a tokenizer-only "
+                "`HiggsTTS3Processor`; reference-audio conditioning and `decode` will be unavailable until "
+                "`feature_extractor`/`audio_tokenizer` are set."
             )
-            tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, **kwargs)
             return cls(tokenizer=tokenizer)
+
+    def _prompt_token_id(self, token: str) -> int:
+        """
+        Resolve one of Higgs TTS 3's prompt-framing specials to its id.
+
+        Args:
+            token (`str`):
+                The special token to look up.
+
+        Returns:
+            `int`: The token's id in this processor's tokenizer.
+
+        Raises:
+            `ValueError`: If the tokenizer does not define `token`.
+        """
+        token_id = self.tokenizer.convert_tokens_to_ids(token)
+        if token_id is None or token_id == self.tokenizer.unk_token_id:
+            raise ValueError(
+                f"This processor's tokenizer does not define the Higgs TTS 3 special {token!r}, so a "
+                "prompt cannot be built for it."
+            )
+        return token_id
 
     def __call__(
         self,
         text: TextInput | PreTokenizedInput | list[TextInput] | list[PreTokenizedInput],
         reference_audio: AudioInput | None = None,
+        reference_text: str | None = None,
         output_labels: bool = False,
         **kwargs: Unpack[HiggsTTS3ProcessorKwargs],
     ) -> BatchFeature:
@@ -122,6 +175,8 @@ class HiggsTTS3Processor(ProcessorMixin):
                 The text to synthesize.
             reference_audio (`AudioInput`, *optional*):
                 Reference audio clip(s) to condition generation on, one per prompt in `text`.
+            reference_text (`str`, *optional*):
+                Transcript of `reference_audio`, prepended to it under `<|ref_text|>`.
             output_labels (`bool`, *optional*, defaults to `False`):
                 Whether to additionally return `labels` and `audio_labels` for cross-entropy training.
 
@@ -129,12 +184,7 @@ class HiggsTTS3Processor(ProcessorMixin):
             [`BatchFeature`]: Ready to be passed to [`HiggsTTS3ForConditionalGeneration`], with `input_ids`,
             `attention_mask`, and, when `reference_audio` is provided, `audio_input_ids`/`audio_input_ids_mask`.
         """
-        output_kwargs = self._merge_kwargs(
-            HiggsTTS3ProcessorKwargs,
-            tokenizer_init_kwargs=self.tokenizer.init_kwargs,
-            **kwargs,
-        )
-        text_kwargs = output_kwargs["text_kwargs"]
+        output_kwargs = self._merge_kwargs(HiggsTTS3ProcessorKwargs, **kwargs)
         audio_kwargs = output_kwargs["audio_kwargs"]
 
         if isinstance(text, str):
@@ -168,14 +218,29 @@ class HiggsTTS3Processor(ProcessorMixin):
             audio_input_ids = codes.unsqueeze(0)
             audio_input_ids_mask = torch.ones((1, codes.shape[0]), dtype=torch.bool)
 
-        text_data = self.tokenizer(text, **text_kwargs)
-        data = dict(text_data)
+        sequences = []
+        for one_text in text:
+            prompt_ids = [self._prompt_token_id(_TTS_TOKEN)]
+            if audio_input_ids is not None:
+                if reference_text is not None:
+                    prompt_ids.append(self._prompt_token_id(_REF_TEXT_TOKEN))
+                    prompt_ids.extend(self.tokenizer.encode(reference_text, add_special_tokens=False))
+                prompt_ids.append(self._prompt_token_id(_REF_AUDIO_TOKEN))
+                prompt_ids.extend([self.audio_token_id] * audio_input_ids.shape[1])
+            prompt_ids.append(self._prompt_token_id(_TEXT_TOKEN))
+            prompt_ids.extend(self.tokenizer.encode(one_text, add_special_tokens=False))
+            prompt_ids.append(self._prompt_token_id(_AUDIO_TOKEN))
+            sequences.append(prompt_ids)
+
+        max_length = max(len(prompt_ids) for prompt_ids in sequences)
+        input_ids = torch.full((len(sequences), max_length), self.tokenizer.pad_token_id, dtype=torch.long)
+        attention_mask = torch.zeros((len(sequences), max_length), dtype=torch.long)
+        for row, prompt_ids in enumerate(sequences):
+            input_ids[row, : len(prompt_ids)] = torch.tensor(prompt_ids, dtype=torch.long)
+            attention_mask[row, : len(prompt_ids)] = 1
+
+        data = {"input_ids": input_ids, "attention_mask": attention_mask}
         if audio_input_ids is not None:
-            num_frames = audio_input_ids.shape[1]
-            placeholder_ids = data["input_ids"].new_full((1, num_frames), self.audio_token_id)
-            data["input_ids"] = torch.cat([data["input_ids"], placeholder_ids], dim=1)
-            placeholder_mask = data["attention_mask"].new_ones((1, num_frames))
-            data["attention_mask"] = torch.cat([data["attention_mask"], placeholder_mask], dim=1)
             data["audio_input_ids"] = audio_input_ids
             data["audio_input_ids_mask"] = audio_input_ids_mask
 
@@ -214,6 +279,7 @@ class HiggsTTS3Processor(ProcessorMixin):
                 f"Expecting a single output to be decoded but received {audio_input_ids.shape[0]} samples instead."
             )
         codes = self.revert_delay_pattern(audio_input_ids[0]).clip(0, self.audio_stream_bos_id - 1)
+        codes = codes.to(self.audio_tokenizer.device)
         with torch.no_grad():
             return self.audio_tokenizer.decode(codes.transpose(0, 1).unsqueeze(0)).audio_values.cpu().squeeze()
 

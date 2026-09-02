@@ -314,11 +314,13 @@ class HiggsTTS3ForConditionalGeneration(HiggsTTS3PreTrainedModel):
         audio_input_ids_mask: torch.LongTensor | None = None,
         max_new_tokens: int = 2048,
         temperature: float = 1.0,
+        top_k: int | None = None,
         **kwargs,
     ) -> torch.LongTensor:
         """
-        Autoregressively samples audio codebook tokens following Higgs' delay pattern until every codebook emits
-        `config.audio_stream_eos_id` or `max_new_tokens` steps are reached.
+        Autoregressively samples audio codebook tokens in Higgs' delay pattern, until codebook 0 emits
+        `config.audio_stream_eos_id` and the remaining codebooks have caught up, or `max_new_tokens` steps
+        are reached.
 
         Args:
             input_ids (`torch.LongTensor` of shape `(1, sequence_length)`):
@@ -333,6 +335,8 @@ class HiggsTTS3ForConditionalGeneration(HiggsTTS3PreTrainedModel):
                 Maximum number of delayed codebook rows to sample.
             temperature (`float`, *optional*, defaults to 1.0):
                 Sampling temperature. `0` selects the highest-probability code at every step.
+            top_k (`int`, *optional*):
+                Number of highest-probability codes to sample from, per codebook.
 
         Returns:
             `torch.LongTensor` of shape `(1, num_generated_frames, num_codebooks)`: The generated, delayed audio
@@ -342,6 +346,7 @@ class HiggsTTS3ForConditionalGeneration(HiggsTTS3PreTrainedModel):
             raise ValueError("HiggsTTS3ForConditionalGeneration.generate only supports batch_size=1.")
 
         num_codebooks = self.config.num_codebooks
+        bos_id = self.config.audio_stream_bos_id
         eos_id = self.config.audio_stream_eos_id
 
         outputs = self.model(
@@ -356,15 +361,39 @@ class HiggsTTS3ForConditionalGeneration(HiggsTTS3PreTrainedModel):
         position = input_ids.shape[1]
 
         rows = []
+        delay_step = 0
+        eos_countdown = None
         for _ in range(max_new_tokens):
-            logits = self.audio_head(hidden_last).reshape(num_codebooks, self.config.codebook_size)
+            logits = self.audio_head(hidden_last).reshape(num_codebooks, self.config.codebook_size).float()
             if temperature <= 1e-5:
                 codes = logits.argmax(dim=-1)
             else:
-                codes = torch.multinomial((logits / temperature).softmax(dim=-1), num_samples=1).squeeze(-1)
+                probs = (logits / temperature).softmax(dim=-1)
+                if top_k is not None:
+                    top_probs, top_indices = probs.topk(min(top_k, probs.shape[-1]), dim=-1)
+                    codes = top_indices.gather(-1, torch.multinomial(top_probs, num_samples=1)).squeeze(-1)
+                else:
+                    codes = torch.multinomial(probs, num_samples=1).squeeze(-1)
+
+            done = False
+            if delay_step < num_codebooks:
+                # Codebook c only starts carrying real codes at step c, so every codebook above the one
+                # this step opens is pinned to the beginning-of-codebook id instead of its sampled value.
+                codes[delay_step + 1 :] = bos_id
+                delay_step += 1
+            elif eos_countdown is not None:
+                eos_countdown -= 1
+                done = eos_countdown <= 0
+            elif codes[0] == eos_id:
+                # Codebook 0 runs `num_codebooks - 1` frames ahead of the last codebook, and the final
+                # row is emitted below, so `num_codebooks - 2` more rows are needed to flush the tail.
+                if num_codebooks > 2:
+                    eos_countdown = num_codebooks - 2
+                else:
+                    done = True
             rows.append(codes)
 
-            if (codes == eos_id).all():
+            if done:
                 break
 
             cache_position = torch.tensor([position], device=input_ids.device)

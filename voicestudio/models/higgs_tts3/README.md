@@ -17,20 +17,39 @@ model_id = "bosonai/higgs-tts-3-4b"
 processor = AutoProcessor.from_pretrained(model_id)
 model = AutoModelForTextToWaveform.from_pretrained(model_id)
 model.to("cuda")
+processor.audio_tokenizer.to(model.device)
 ```
-
-Zero-shot voice cloning from a reference clip:
 
 ```python
 import soundfile as sf
 
+inputs = processor(text="The sun rises in the east.").to(model.device)
+
+audio_codes = model.generate(**inputs, max_new_tokens=1024, temperature=0.8, top_k=50)
+waveform = processor.decode(audio_codes)
+sf.write("output.wav", waveform.numpy(), model.config.sample_rate)
+```
+
+Zero-shot voice cloning from a reference clip, with its transcript:
+
+```python
 reference_audio, _ = sf.read("reference.wav")
 inputs = processor(
     text="The sun rises in the east.",
     reference_audio=reference_audio,
+    reference_text="Transcript of reference.wav.",
 ).to(model.device)
 
-audio_codes = model.generate(**inputs)
+audio_codes = model.generate(**inputs, max_new_tokens=1024, temperature=0.8, top_k=50)
 waveform = processor.decode(audio_codes)
-sf.write("output.wav", waveform.numpy(), model.config.sample_rate)
 ```
+
+The prompt the processor builds is framed by the checkpoint's own specials, not by its chat
+template: `<|tts|>` opens the prompt, `<|ref_text|>`/`<|ref_audio|>` carry an optional voice-cloning
+reference, `<|text|>` introduces the target text, and a trailing `<|audio|>` opens the audio stream.
+Prompting the model through `tokenizer.apply_chat_template` instead produces degenerate babble that
+never terminates.
+
+`bosonai/higgs-tts-3-4b` ships no `preprocessor_config.json` and no audio tokenizer weights of its
+own, so `HiggsTTS3Processor.from_pretrained` loads both from the codec repository named by
+`config.audio_tokenizer_id`, which is `bosonai/higgs-audio-v2-tokenizer`.
