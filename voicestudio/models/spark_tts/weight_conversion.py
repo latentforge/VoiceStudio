@@ -201,6 +201,15 @@ def convert(checkpoint_path, output_dir):
     repo_config = yaml.safe_load((source / "config.yaml").read_text())
     bicodec_config = yaml.safe_load((source / "BiCodec" / "config.yaml").read_text())["audio_tokenizer"]
 
+    # The repo-level `latent_hop_length`, which rounds the reference excerpt, and the codec's own mel hop size are
+    # two separate knobs upstream that happen to agree. `SparkTTSFeatureExtractor` exposes a single `hop_length`.
+    hop_length = bicodec_config["mel_params"]["hop_length"]
+    if repo_config["latent_hop_length"] != hop_length:
+        raise ValueError(
+            f"This checkpoint sets latent_hop_length={repo_config['latent_hop_length']} but a mel hop size of "
+            f"{hop_length}. SparkTTSFeatureExtractor uses one `hop_length` for both."
+        )
+
     semantic_model = Wav2Vec2Model.from_pretrained(source / "wav2vec2-large-xlsr-53")
     audio_tokenizer_config = _build_bicodec_config(
         bicodec_config, semantic_model.config, repo_config["sample_rate"]
@@ -247,7 +256,7 @@ def convert(checkpoint_path, output_dir):
         sampling_rate=repo_config["sample_rate"],
         volume_normalize=repo_config["volume_normalize"],
         ref_segment_duration=repo_config["ref_segment_duration"],
-        hop_length=bicodec_config["mel_params"]["hop_length"],
+        hop_length=hop_length,
         n_fft=bicodec_config["mel_params"]["n_fft"],
         win_length=bicodec_config["mel_params"]["win_length"],
         num_mel_bins=bicodec_config["mel_params"]["num_mels"],
