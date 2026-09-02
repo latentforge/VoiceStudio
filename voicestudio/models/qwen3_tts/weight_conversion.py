@@ -32,6 +32,7 @@ def convert(checkpoint_path, output_dir, push_to_hub=None, bfloat16=True, max_sh
         for key in original_state_dict
         if (match := _CODE_PREDICTOR_LM_HEAD_PATTERN.match(key)) is not None
     )
+    merged = None
     if lm_head_keys:
         source_patterns = [key for _, key in lm_head_keys]
         merged = Concatenate(dim=0).convert(
@@ -40,6 +41,11 @@ def convert(checkpoint_path, output_dir, push_to_hub=None, bfloat16=True, max_sh
             target_patterns=["code_predictor.lm_head.weight"],
         )
 
+    # The original checkpoint is no longer needed, and holding it while the converted model is
+    # loaded and saved below costs its full size in host memory on top of the model's own.
+    del original_state_dict
+
+    if merged is not None:
         dtype = torch.bfloat16 if bfloat16 else torch.float32
         model = Qwen3TTSForConditionalGeneration.from_pretrained(output_dir, dtype=dtype)
         model.code_predictor.lm_head.weight.data.copy_(
