@@ -1,217 +1,115 @@
-import re
-import torch
+"""Checkpoint conversion for Parler-TTS."""
 
-class ConversionOps:
-    def convert(self, tensors: dict) -> torch.Tensor:
-        raise NotImplementedError
+import json
+import shutil
+from pathlib import Path
 
-class WeightRenaming:
-    def __init__(self, source_pattern: str, target_pattern: str):
-        self.source_pattern = source_pattern
-        self.target_pattern = target_pattern
+from huggingface_hub import snapshot_download
+from safetensors.torch import load_file, save_file
+from transformers import DacConfig, DacModel
+from transformers.models.dac.convert_dac_checkpoint import apply_weight_norm, recursively_load_weights
 
-class WeightConverter:
-    def __init__(self, source_patterns: list, target_patterns: str, operations: list):
-        self.source_patterns = source_patterns
-        self.target_patterns = target_patterns
-        self.operations = operations
 
-def convert_and_load_state_dict_in_model(state_dict: dict, mapping: list) -> dict:
-    new_state_dict = {}
-    used_keys = set()
-    
-    for rule in mapping:
-        if isinstance(rule, WeightRenaming):
-            for k in list(state_dict.keys()):
-                match = re.search(rule.source_pattern, k)
-                if match:
-                    new_k = re.sub(rule.source_pattern, rule.target_pattern, k)
-                    new_state_dict[new_k] = state_dict[k]
-                    used_keys.add(k)
-        elif isinstance(rule, WeightConverter):
-            if '*' in rule.target_patterns:
-                idx_pattern = rule.source_patterns[0].replace('*', r'(\d+)')
-                for k in list(state_dict.keys()):
-                    m = re.match(idx_pattern, k)
-                    if m:
-                        idx = m.group(1)
-                        tensors = {}
-                        for sp in rule.source_patterns:
-                            sp_k = sp.replace('*', idx)
-                            tensors[sp_k] = state_dict.get(sp_k)
-                            used_keys.add(sp_k)
-                        
-                        tg_k = rule.target_patterns.replace('*', idx)
-                        new_state_dict[tg_k] = rule.operations[0].convert(tensors)
-            else:
-                tensors = {}
-                for sp in rule.source_patterns:
-                    if sp in state_dict:
-                        tensors[sp] = state_dict[sp]
-                        used_keys.add(sp)
-                if len(tensors) == len(rule.source_patterns):
-                    new_state_dict[rule.target_patterns] = rule.operations[0].convert(tensors)
+# The published Parler-TTS checkpoints store the audio codec as the original
+# `descript-audio-codec` module under an `audio_encoder.model.` prefix: weight-normalized
+# convolutions kept as separate `weight_g`/`weight_v` tensors, and block indices numbered
+# the way the upstream `DAC` module nests them. `transformers`'s `DacModel` uses flattened
+# `encoder.block.<i>.res_unit<j>` names with the weight norm already folded in.
+_DAC_PREFIX = "audio_encoder.model."
 
-    for k, v in state_dict.items():
-        if k not in used_keys:
-            new_state_dict[k] = v
+_COPIED_FILES = (
+    "generation_config.json",
+    "preprocessor_config.json",
+    "special_tokens_map.json",
+    "spiece.model",
+    "tokenizer.json",
+    "tokenizer_config.json",
+)
 
-    return new_state_dict
 
-class WeightNormToWeight(ConversionOps):
+def _build_dac_config(legacy_config: dict) -> DacConfig:
     """
-    PyTorch weight_norm parametrize된 두 텐서로부터 실제 weight를 복원합니다.
-    weight = weight_g * (weight_v / ‖weight_v‖)
+    Builds a `transformers` [`DacConfig`] from a vendored Parler-TTS `DACConfig` dict, which
+    carries `num_codebooks`, `latent_dim`, `model_bitrate` and `frame_rate` and omits every
+    architecture hyperparameter. `frame_rate` is a read-only property on [`DacConfig`], so the
+    legacy dict cannot be passed through to it directly.
+
+    Args:
+        legacy_config (`dict`):
+            The `audio_encoder` entry of a published Parler-TTS `config.json`.
+
+    Returns:
+        [`DacConfig`]: The equivalent `transformers` codec configuration.
+
+    Raises:
+        ValueError: If the resulting latent width disagrees with the checkpoint's `latent_dim`.
     """
-
-    def convert(self, tensors: dict) -> torch.Tensor:
-        g = next(v for k, v in tensors.items() if k.endswith("weight_g"))
-        v = next(v for k, v in tensors.items() if k.endswith("weight_v"))
-        norm = v.norm(p=2, dim=list(range(1, v.dim())), keepdim=True)
-        return g.view(-1, *([1] * (v.dim() - 1))) * (v / norm.clamp(min=1e-12))
-
-
-_WN_OP = [WeightNormToWeight()]
-
-
-def _wn(src_g: str, src_v: str, tgt: str) -> WeightConverter:
-    """weight_norm → weight 변환 헬퍼."""
-    return WeightConverter(
-        source_patterns=[src_g, src_v],
-        target_patterns=tgt,
-        operations=_WN_OP,
+    config = DacConfig(
+        n_codebooks=legacy_config["num_codebooks"],
+        codebook_size=legacy_config["codebook_size"],
+        sampling_rate=legacy_config["sampling_rate"],
     )
+    if config.hidden_size != legacy_config["latent_dim"]:
+        raise ValueError(
+            f"Derived a latent width of {config.hidden_size} from the default DAC encoder shape, but the "
+            f"checkpoint declares latent_dim={legacy_config['latent_dim']}."
+        )
+    return config
 
 
-def build_dac_conversion_mapping() -> list:
-    rules = []
-
-    # 1. 헬퍼 (Encoder / Decoder 공통 블록 추출)
-    def _add_residual_units(old_pfx, new_pfx, offset=0):
-        for j in range(3):
-            old_ru = f"{old_pfx}.{j + offset}.block"
-            new_ru = f"{new_pfx}.res_unit{j + 1}"
-            
-            # Conv1d
-            rules.append(_wn(f"{old_ru}.1.parametrizations.weight.0.weight_g",
-                             f"{old_ru}.1.parametrizations.weight.0.weight_v",
-                             f"{new_ru}.conv1.weight"))
-            rules.append(_wn(f"{old_ru}.3.parametrizations.weight.0.weight_g",
-                             f"{old_ru}.3.parametrizations.weight.0.weight_v",
-                             f"{new_ru}.conv2.weight"))
-
-            # Snake1d alpha
-            for k, sn in [(0, 1), (2, 2)]:
-                rules.append(WeightRenaming(
-                    re.escape(f"{old_ru}.{k}.alpha"),
-                    f"{new_ru}.snake{sn}.alpha"
-                ))
-
-    # Encoder
-    rules.append(_wn("model.encoder.block.0.parametrizations.weight.0.weight_g",
-                     "model.encoder.block.0.parametrizations.weight.0.weight_v",
-                     "encoder.conv1.weight"))
-
-    rules.append(WeightRenaming(re.escape("model.encoder.block.5.alpha"), "encoder.snake1.alpha"))
-    
-    rules.append(_wn("model.encoder.block.6.parametrizations.weight.0.weight_g",
-                     "model.encoder.block.6.parametrizations.weight.0.weight_v",
-                     "encoder.conv2.weight"))
-
-    for i in range(4):
-        old_eb = f"model.encoder.block.{i+1}.block"
-        new_eb = f"encoder.block.{i}"
-        
-        _add_residual_units(old_eb, new_eb, offset=0)
-        
-        rules.append(WeightRenaming(re.escape(f"{old_eb}.3.alpha"), f"{new_eb}.snake1.alpha"))
-        rules.append(_wn(f"{old_eb}.4.parametrizations.weight.0.weight_g",
-                         f"{old_eb}.4.parametrizations.weight.0.weight_v",
-                         f"{new_eb}.conv1.weight"))
-
-    # Decoder
-    rules.append(_wn("model.decoder.model.0.parametrizations.weight.0.weight_g",
-                     "model.decoder.model.0.parametrizations.weight.0.weight_v",
-                     "decoder.conv1.weight"))
-
-    rules.append(WeightRenaming(re.escape("model.decoder.model.5.alpha"), "decoder.snake1.alpha"))
-    
-    rules.append(_wn("model.decoder.model.6.parametrizations.weight.0.weight_g",
-                     "model.decoder.model.6.parametrizations.weight.0.weight_v",
-                     "decoder.conv2.weight"))
-
-    for i in range(4):
-        old_db = f"model.decoder.model.{i+1}.block"
-        new_db = f"decoder.block.{i}"
-        
-        rules.append(WeightRenaming(re.escape(f"{old_db}.0.alpha"), f"{new_db}.snake1.alpha"))
-        rules.append(_wn(f"{old_db}.1.parametrizations.weight.0.weight_g",
-                         f"{old_db}.1.parametrizations.weight.0.weight_v",
-                         f"{new_db}.conv_t1.weight"))
-        
-        _add_residual_units(old_db, new_db, offset=2)
-
-    # Quantizer
-    for proj in ("in_proj", "out_proj"):
-        rules.append(WeightConverter(
-            source_patterns=[
-                f"model.quantizer.quantizers.*.{proj}.parametrizations.weight.0.weight_g",
-                f"model.quantizer.quantizers.*.{proj}.parametrizations.weight.0.weight_v",
-            ],
-            target_patterns=f"quantizer.quantizers.*.{proj}.weight",
-            operations=_WN_OP,
-        ))
-
-    # Codebook
-    rules.append(WeightRenaming(
-        r"model\.quantizer\.quantizers\.(\d+)\.codebook\.weight",
-        r"quantizer.quantizers.\1.codebook.weight",
-    ))
-
-    return rules
-
-def apply_dac_weight_conversion_if_needed(state_dict):
+def convert(checkpoint_path, output_dir):
     """
-    Check if the state_dict contains old-style DAC weights and convert them to the new style
-    expected by the transformers DAC model natively.
+    Converts a published Parler-TTS checkpoint into one that loads directly with
+    [`ParlerTTSForConditionalGeneration`], rewriting the vendored DAC audio codec into
+    `transformers`'s own [`DacModel`] configuration and weight layout.
+
+    Args:
+        checkpoint_path (`str`):
+            A Hugging Face repo id or a local directory holding the published checkpoint.
+        output_dir (`str`):
+            Directory the converted checkpoint is written to.
+
+    Returns:
+        `str`: The `output_dir` that was written.
     """
-    # Custom `convert_and_load_state_dict_in_model` is defined at the module level
-    
-    # Check if the state dict has the old weights format (with 'weight_g' and 'model.encoder.block')
-    has_old_weights = any('weight_g' in k or k.startswith('model.encoder.block.0') for k in state_dict.keys())
-    
-    # If the prefix 'audio_encoder.' is heavily used in state_dict (as it's a submodel of ParlerTTS)
-    # we need to ensure the conversion rules apply. `build_dac_conversion_mapping` expects keys without prefix,
-    # or if they are prefixed, we need to adapt it. Wait, the mapping explicitly maps 'model.encoder...' to 'encoder...'.
-    # In a typical state_dict from ParlerTTS, the audio encoder's keys are prefixed with 'audio_encoder.'
-    
-    # Check if 'audio_encoder.model.encoder.block.0...' exists
-    is_prefixed = any(k.startswith('audio_encoder.model.encoder') for k in state_dict.keys())
-    
-    if has_old_weights:
-        # We temporarily strip the 'audio_encoder.' prefix for DAC weights, convert, and re-add.
-        dac_sd = {}
-        rest_sd = {}
-        prefix = 'audio_encoder.' if is_prefixed else ''
-        
-        for k, v in state_dict.items():
-            if k.startswith(prefix + 'model.encoder') or k.startswith(prefix + 'model.decoder') or k.startswith(prefix + 'model.quantizer'):
-                dac_sd[k[len(prefix):]] = v
-            elif k.startswith(prefix + 'encoder') and 'conv1' in k: 
-                # Already converted
-                dac_sd[k[len(prefix):]] = v
-            else:
-                rest_sd[k] = v
+    source = Path(checkpoint_path)
+    if not source.is_dir():
+        source = Path(snapshot_download(checkpoint_path))
+    target = Path(output_dir)
+    target.mkdir(parents=True, exist_ok=True)
 
-        if dac_sd:
-            mapping = build_dac_conversion_mapping()
-            # `convert_and_load_state_dict_in_model` actually returns a converted dict
-            new_dac_sd = convert_and_load_state_dict_in_model(dac_sd, mapping)
-            
-            # Put back with prefix
-            for k, v in new_dac_sd.items():
-                rest_sd[prefix + k] = v
-                
-            return rest_sd
+    config = json.loads((source / "config.json").read_text())
+    dac_config = _build_dac_config(config["audio_encoder"])
 
-    return state_dict
+    state_dict = load_file(source / "model.safetensors")
+    dac_state_dict = {
+        key[len(_DAC_PREFIX) :]: value for key, value in state_dict.items() if key.startswith(_DAC_PREFIX)
+    }
+    if not dac_state_dict:
+        raise ValueError(f"No `{_DAC_PREFIX}` weights found in {source / 'model.safetensors'}.")
+
+    dac_model = DacModel(dac_config)
+    apply_weight_norm(dac_model)
+    recursively_load_weights(dac_state_dict, dac_model, "dac_44khz")
+    dac_model.remove_weight_norm()
+
+    converted = {key: value for key, value in state_dict.items() if not key.startswith("audio_encoder.")}
+    converted.update({f"audio_encoder.{key}": value for key, value in dac_model.state_dict().items()})
+
+    config["audio_encoder"] = dac_config.to_dict()
+    config["audio_encoder"]["model_type"] = DacConfig.model_type
+
+    save_file(
+        {key: value.contiguous() for key, value in converted.items()},
+        target / "model.safetensors",
+        metadata={"format": "pt"},
+    )
+    (target / "config.json").write_text(json.dumps(config, indent=2))
+    for name in _COPIED_FILES:
+        if (source / name).is_file():
+            shutil.copy(source / name, target / name)
+
+    return str(target)
+
+
+__all__ = ["convert"]

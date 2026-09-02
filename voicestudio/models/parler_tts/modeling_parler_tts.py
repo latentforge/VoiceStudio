@@ -3392,13 +3392,17 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
                     - [`~generation.GenerateBeamEncoderDecoderOutput`]
         """
         # 1. Handle `generation_config` and kwargs that might update it, and validate the resulting objects
-        if generation_config is None:
-            generation_config = self.generation_config
+        generation_mode_kwargs = self._extract_generation_mode_kwargs(None, kwargs, synced_gpus, None, streamer)
+        generation_config, model_kwargs = self._prepare_generation_config(generation_config, **kwargs)
+        generation_mode = generation_config.get_generation_mode()
+        if generation_mode not in (GenerationMode.SAMPLE, GenerationMode.GREEDY_SEARCH):
+            raise ValueError(
+                "Got incompatible mode for generation, should be one of greedy or sampling. "
+                "Ensure that beam search is de-activated by setting `num_beams=1` and `num_beam_groups=1`."
+            )
 
-        generation_config = copy.deepcopy(generation_config)
-        model_kwargs = generation_config.update(**kwargs)  # All unused kwargs must be model kwargs
-        generation_config.validate()
         self._validate_model_kwargs(model_kwargs.copy())
+        self._validate_generation_mode(generation_mode, generation_config, generation_mode_kwargs)
 
         if model_kwargs.get("encoder_outputs") is not None and type(model_kwargs["encoder_outputs"]) == tuple:
             # wrap the unconditional outputs as a BaseModelOutput for compatibility with the rest of generate
@@ -3525,10 +3529,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
         if streamer is not None:
             streamer.put(delayed_input_ids.cpu())
 
-        # 7. determine generation mode
-        generation_mode = generation_config.get_generation_mode()
-
-        # 8. prepare distribution pre_processing samplers
+        # 7. prepare distribution pre_processing samplers
         logits_processor = self._get_logits_processor(
             generation_config=generation_config,
             input_ids_seq_length=input_ids_length,
@@ -3538,36 +3539,28 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
             device=delayed_input_ids.device,
         )
 
-        # 9. prepare stopping criteria
+        # 8. prepare stopping criteria
         stopping_criteria = self._get_stopping_criteria(
             generation_config=generation_config, stopping_criteria=stopping_criteria
         )
 
-        if generation_mode in (GenerationMode.SAMPLE, GenerationMode.GREEDY_SEARCH):
-            # expand input_ids with `num_return_sequences` additional sequences per batch
-            delayed_input_ids, model_kwargs = self._expand_inputs_for_generation(
-                input_ids=delayed_input_ids,
-                expand_size=generation_config.num_return_sequences,
-                is_encoder_decoder=self.config.is_encoder_decoder,
-                **model_kwargs,
-            )
+        # expand input_ids with `num_return_sequences` additional sequences per batch
+        delayed_input_ids, model_kwargs = self._expand_inputs_for_generation(
+            input_ids=delayed_input_ids,
+            expand_size=generation_config.num_return_sequences,
+            is_encoder_decoder=self.config.is_encoder_decoder,
+            **model_kwargs,
+        )
 
-            # 10. run sample
-            outputs = self._sample(
-                delayed_input_ids,
-                logits_processor=logits_processor,
-                stopping_criteria=stopping_criteria,
-                generation_config=generation_config,
-                synced_gpus=synced_gpus,
-                streamer=streamer,
-                **model_kwargs,
-            )
-
-        else:
-            raise ValueError(
-                "Got incompatible mode for generation, should be one of greedy or sampling. "
-                "Ensure that beam search is de-activated by setting `num_beams=1` and `num_beam_groups=1`."
-            )
+        # 9. run sample
+        outputs = self._sample(
+            delayed_input_ids,
+            logits_processor=logits_processor,
+            stopping_criteria=stopping_criteria,
+            generation_config=generation_config,
+            **generation_mode_kwargs,
+            **model_kwargs,
+        )
 
         if generation_config.return_dict_in_generate:
             output_ids = outputs.sequences
