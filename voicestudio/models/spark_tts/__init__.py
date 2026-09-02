@@ -1,57 +1,38 @@
-import transformers
-from transformers import (
-    AutoConfig,
-    AutoFeatureExtractor,
-    AutoModel,
-    AutoModelForAudioTokenization,
-    AutoModelForCausalLM,
-    AutoModelForTextToWaveform,
-    AutoProcessor,
-)
-from transformers.utils.auto_docstring import HARDCODED_CONFIG_FOR_MODELS
+# Copyright (c) 2025 SparkAudio
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-# `@auto_docstring` derives the model name from a decorated class's `.../models/<name>/` source
-# path and looks it up in `CONFIG_MAPPING_NAMES`/`HARDCODED_CONFIG_FOR_MODELS` at decoration time
-# (i.e. while `.modeling_spark_tts` below is being imported), neither of which knows about
-# voicestudio-only models; must run before that import or its "Config not found" fallback warning
-# already fired.
-HARDCODED_CONFIG_FOR_MODELS["spark-tts"] = "SparkTTSConfig"
+"""SparkTTS model package."""
 
-from .configuration_spark_tts import SparkTTSBiCodecConfig, SparkTTSConfig
-from .feature_extraction_spark_tts import SparkTTSFeatureExtractor
+from .configuration_spark_tts import SparkTTSConfig
 from .modeling_spark_tts import (
-    SparkTTSBiCodecModel,
-    SparkTTSBiCodecPreTrainedModel,
+    BiCodecModel,
+    BiCodecOutput,
+    BiCodecPreTrainedModel,
     SparkTTSForConditionalGeneration,
+    SparkTTSOutput,
     SparkTTSPreTrainedModel,
 )
 from .processing_spark_tts import SparkTTSProcessor
 
 
-AutoConfig.register(SparkTTSBiCodecConfig.model_type, SparkTTSBiCodecConfig, exist_ok=True)
-AutoConfig.register(SparkTTSConfig.model_type, SparkTTSConfig, exist_ok=True)
-AutoModelForAudioTokenization.register(SparkTTSBiCodecConfig, SparkTTSBiCodecModel, exist_ok=True)
-AutoModel.register(SparkTTSConfig, SparkTTSForConditionalGeneration, exist_ok=True)
-AutoModelForCausalLM.register(SparkTTSConfig, SparkTTSForConditionalGeneration, exist_ok=True)
-AutoModelForTextToWaveform.register(SparkTTSConfig, SparkTTSForConditionalGeneration, exist_ok=True)
-AutoFeatureExtractor.register(SparkTTSConfig, SparkTTSFeatureExtractor, exist_ok=True)
-AutoProcessor.register(SparkTTSConfig, SparkTTSProcessor, exist_ok=True)
-
-# `ProcessorMixin.get_possibly_dynamic_module` resolves the `audio_tokenizer_class` recorded in
-# `processor_config.json` by first looking the name up on the `transformers` module and only then
-# walking the `AutoClass` registries. That walk raises before it reaches
-# `MODEL_FOR_AUDIO_TOKENIZATION_MAPPING`, because `transformers.IMAGE_PROCESSOR_MAPPING` is a
-# placeholder object with no `_extra_content`, so the name has to be resolvable by the first lookup.
-transformers.SparkTTSBiCodecModel = SparkTTSBiCodecModel
-
-
 __all__ = [
-    "SparkTTSBiCodecConfig",
-    "SparkTTSBiCodecModel",
-    "SparkTTSBiCodecPreTrainedModel",
     "SparkTTSConfig",
-    "SparkTTSFeatureExtractor",
+    "BiCodecModel",
+    "BiCodecOutput",
+    "BiCodecPreTrainedModel",
     "SparkTTSForConditionalGeneration",
+    "SparkTTSOutput",
     "SparkTTSPreTrainedModel",
     "SparkTTSProcessor",
 ]
