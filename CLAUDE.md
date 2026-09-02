@@ -25,6 +25,7 @@ ask instead of proceeding.
 | H9 | Only `modeling_<model>.py` gets a license header. Import-relay files get no module docstring at all (§8). |
 | H10 | Never write a migration as new files added beside an untouched vendored tree, and never delete that tree to make room. `git mv` the real upstream file and edit it in place (§2.4). |
 | H11 | Never add a third-party dependency to make a migration work, and never `pip install` one into the environment to get past a blocker. Removing the upstream model's dependencies is part of the migration; if one cannot be removed, report it and let a human decide (§9.1). |
+| H12 | Never rewrite shared history. No `git reset`, `rebase`, `commit --amend`, or force push, and never move the branch. Undo your own work with `git revert` only, and never touch a commit you did not create. Other agents commit to this branch concurrently (§1.3). |
 
 ---
 
@@ -45,6 +46,19 @@ ask instead of proceeding.
   `Merge: Parler TTS`.
 - A longer body explaining what changed and why is fine below the subject line when
   the change needs it; the format constraint applies to the subject line only.
+
+### 1.3 Working on a shared branch
+
+Several agents commit to this branch at the same time, so treat its history as
+append-only. Undo your own work with `git revert`, which adds a commit; never with
+`git reset`, `rebase`, `commit --amend`, or a force push, all of which drop other
+people's commits along with yours. Do not move the branch, and do not check content
+out of another branch into this one.
+
+This is not hypothetical. A `git reset` meant to undo one agent's own migration
+silently discarded four commits from three other authors, including a CLAUDE.md
+update and a revert that had removed code from an abandoned branch, which the reset
+brought back.
 
 ---
 
