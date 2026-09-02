@@ -25,10 +25,19 @@ conversation = [
     {"role": "user", "content": [{"type": "text", "text": "The sun rises in the east."}]},
 ]
 inputs = processor.apply_chat_template(
-    conversation, return_dict=True, tokenize=True, sampling_rate=24000, return_tensors="pt"
+    conversation,
+    return_dict=True,
+    tokenize=True,
+    add_generation_prompt=True,
+    sampling_rate=24000,
+    return_tensors="pt",
 ).to(model.device)
 
 audio_codes = model.generate(**inputs)
 waveform = processor.decode(audio_codes)
 sf.write("output.wav", waveform.numpy(), processor.audio_tokenizer.config.sample_rate)
 ```
+
+`add_generation_prompt=True` is required: it appends the `<|audio_out_bos|>` token that opens the
+audio stream. Without it `generate` emits an end-of-stream frame almost immediately and the decoded
+waveform is a fraction of a second of noise, with no error raised.
