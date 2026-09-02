@@ -15,6 +15,7 @@ model_id = "bosonai/higgs-tts-2-3b-base"
 processor = AutoProcessor.from_pretrained(model_id)
 model = AutoModelForTextToWaveform.from_pretrained(model_id)
 model.to("cuda")
+processor.audio_tokenizer.to(model.device)
 ```
 
 ```python
@@ -33,11 +34,19 @@ inputs = processor.apply_chat_template(
     return_tensors="pt",
 ).to(model.device)
 
-audio_codes = model.generate(**inputs)
+audio_codes = model.generate(**inputs, max_new_tokens=1024)
 waveform = processor.decode(audio_codes)
 sf.write("output.wav", waveform.numpy(), processor.audio_tokenizer.config.sample_rate)
 ```
 
-`add_generation_prompt=True` is required: it appends the `<|audio_out_bos|>` token that opens the
-audio stream. Without it `generate` emits an end-of-stream frame almost immediately and the decoded
-waveform is a fraction of a second of noise, with no error raised.
+Three arguments above are load-bearing:
+
+- `add_generation_prompt=True` appends the `<|audio_out_bos|>` token that opens the audio stream.
+  Without it `generate` emits an end-of-stream frame almost immediately and the decoded waveform is
+  a fraction of a second of noise, with no error raised.
+- `max_new_tokens` bounds the audio stream. The checkpoint's `generation_config` sets no length, so
+  without it `generate` falls back to the model-agnostic `max_length=53` default, which for a 33
+  token prompt is 20 audio frames, about half a second of speech cut off mid-word.
+- `processor.audio_tokenizer.to(model.device)` puts the codec on the same device as the generated
+  codes. `HiggsAudioV2Processor.decode` does not move them itself, so a CUDA-resident model with a
+  CPU-resident audio tokenizer raises a device mismatch in the codec's first linear layer.
