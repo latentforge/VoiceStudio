@@ -23,6 +23,8 @@ ask instead of proceeding.
 | H7 | Never hand-edit a generated file behind `modular_<model>.py`, and never edit inside a `# Copied from ...` block. Edit the source it copies from. |
 | H8 | Comments must never narrate history, diffs, or rationale ("instead of X", "previously did Y", "see PROJECT.md"). See §6.1 for what's allowed. |
 | H9 | Only `modeling_<model>.py` gets a license header. Import-relay files get no module docstring at all (§8). |
+| H10 | Never write a migration as new files added beside an untouched vendored tree, and never delete that tree to make room. `git mv` the real upstream file and edit it in place (§2.4). |
+| H11 | Never add a third-party dependency to make a migration work, and never `pip install` one into the environment to get past a blocker. Removing the upstream model's dependencies is part of the migration; if one cannot be removed, report it and let a human decide (§9.1). |
 
 ---
 
@@ -59,6 +61,14 @@ resort, not a default.
 If a model already ships in `transformers` itself, add an import relay only (§8) —
 never a reimplementation.
 
+Inheritance is not limited to `transformers`. When a model already migrated under
+`voicestudio/models/` is structurally close, inherit from that too rather than
+writing a parallel copy. Models sharing a codec family are the usual case: several
+models here decode Mimi codebooks, and several are multi-codebook codec LMs with
+the same backbone-plus-depth-decoder shape. Check the sibling folders before
+writing a class, and say in the migration report which lineage was chosen and why
+the alternatives were rejected.
+
 ### 2.2 Step 2 — Trace the real upstream source, line by line
 Never match a submodule (attention block, FFN, normalization, encoder layer, ...) to
 a vague architecture category ("this is a conformer", "this looks like a U-Net",
@@ -94,6 +104,24 @@ omitting submodules on the mistaken belief nothing will ever catch the divergenc
 - Inherit from the lineage found in Step 1.
 - Follow the trainability requirement (§4).
 - Follow file/module conventions (§5).
+
+Implement by **transforming the vendored upstream source in place**, not by writing
+new files next to it. Every model folder here already contains the real upstream
+code, merged in with its git history; that code is the starting material, not a
+reference to read once and set aside.
+
+Concretely: `git mv` the upstream file that holds a component to its
+`<kind>_<model>.py` name, then edit it into shape. Do not author a fresh
+`modeling_<model>.py` alongside an untouched upstream tree, and do not delete the
+upstream tree to make room for one. A migration whose diff is "N files added, M
+files deleted" is wrong on its face; the diff should show the upstream files being
+renamed and modified.
+
+Two reasons this is a rule and not a preference. History: a rename keeps
+`git log --follow` working back into the original author's commits, which is the
+whole point of having merged that history. Fidelity: editing the real code makes
+divergence from it visible in the diff, while writing alongside makes it invisible,
+which is exactly how §2.7 happened.
 
 ### 2.5 Step 5 — Verify
 A clean `from_pretrained` LOAD REPORT (no MISSING/UNEXPECTED keys) with real
@@ -138,6 +166,21 @@ Every migrated model must be trainable, not inference-only. Its top-level
   field
 
 A `forward()` that only supports `generate()`/inference is not a valid migration.
+
+Derive the loss from the upstream repo's own training and evaluation code, not from
+guesswork about what a model of this shape usually optimizes. Nearly every vendored
+repo here ships a trainer, a loss module, a data collator or an eval script, and
+those files are the authority on what the real objective is: which terms it sums,
+how each is weighted or masked, which inputs are teacher-forced, what is frozen,
+and which targets come from the codec rather than the raw waveform. Read them the
+same way §2.2 requires the modeling code to be read.
+
+Two of those details are the usual source of silent error, so state both explicitly
+in the migration report: what the upstream loss actually computes term by term, and
+which modules upstream freezes during training. A migration that runs `backward()`
+without crashing but optimizes a different objective than upstream is a failed
+migration, and nothing about a finite loss or a nonzero gradient norm will reveal
+it.
 
 ---
 
@@ -269,7 +312,30 @@ step outside the processor.
 
 - Target `transformers` 5.0 conventions for anything newly written.
 - Checkpoint conversions go through `WeightConvert`.
-- The `transformers` dependency in `pyproject.toml` points at the
-  `latentforge/transformers-tts` fork, not upstream `transformers`.
+- The `transformers` dependency in `pyproject.toml` points at
+  `latentforge/transformers-tts`, not upstream `transformers`.
 - Flash attention support goes through the `kernels` package, not
   vendored/prebuilt `flash-attn` wheels.
+
+### 9.1 Removing a model's external dependencies
+
+A migration removes the upstream model's third-party dependencies; it never adds
+them. If the vendored source imports a library to do its work, the migration's job
+is to end that import, in this order of preference:
+
+1. **Use what `transformers-tts` already ships.** Codecs, vocoders and encoders are
+   usually already there (`dac`, `encodec`, `mimi`, `xcodec`, `xcodec2`, `hubert`,
+   `wav2vec2`, and others). An upstream import of a standalone codec package is
+   almost always replaceable by the native class.
+2. **Inline the part actually used.** Where the dependency supplies a small piece of
+   math rather than a model, port that piece into the model file. A fixed-step ODE
+   solver, a beta schedule, or a base class the upstream inherits for a handful of
+   methods are all a few dozen lines, and inlining them costs less than carrying a
+   package.
+3. **Ask before keeping one.** If a dependency genuinely cannot be removed, do not
+   add it to `pyproject.toml` on your own judgement. Report what it is, what needs
+   it, and what removing it would cost, and let a human decide.
+
+Never `pip install` a package into the environment to make a migration work without
+raising it first. Discovering mid-task that a model wants a new library is a finding
+to report, not a step to take.
