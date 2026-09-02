@@ -18,10 +18,12 @@ from transformers import AutoModel, AutoProcessor
 
 model_id = "FunAudioLLM/CosyVoice2-0.5B"
 
-processor = AutoProcessor.from_pretrained(model_id)
+processor = AutoProcessor.from_pretrained(model_id, speech_tokenizer_filename="speech_tokenizer_v2.onnx")
 model = AutoModel.from_pretrained(model_id)
 model.to("cuda")
 ```
+
+`speech_tokenizer_filename` has to be passed explicitly: `CosyVoiceV2Processor` inherits `CosyVoiceV1Processor.from_pretrained`, whose default names the v1 tokenizer.
 
 Zero-shot voice cloning from a reference clip:
 

@@ -20,10 +20,12 @@ from transformers import AutoModel, AutoProcessor
 
 model_id = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
 
-processor = AutoProcessor.from_pretrained(model_id)
+processor = AutoProcessor.from_pretrained(model_id, speech_tokenizer_filename="speech_tokenizer_v3.onnx")
 model = AutoModel.from_pretrained(model_id)
 model.to("cuda")
 ```
+
+`speech_tokenizer_filename` has to be passed explicitly: `CosyVoiceV3Processor` inherits `CosyVoiceV1Processor.from_pretrained`, whose default names the v1 tokenizer.
 
 Zero-shot voice cloning from a reference clip. CosyVoice v3 expects the tokenized text to contain an `<|endofprompt|>` marker separating the instruction span from the text to synthesize:
 
