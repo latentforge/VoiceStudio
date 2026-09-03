@@ -212,21 +212,32 @@ Upstream pins more than forty packages. What each turned into:
 | `inflect` | Lazily imported. See below. |
 | `pyworld` | Lazily imported. See below. |
 | `wetext`, `ttsfrd` | Text normalizers. See "Not carried over from upstream". |
-| `onnxruntime` | **Not removed.** See below. |
+| `onnxruntime` | Removed. See below. |
 | `tensorrt`, `vllm`, `modelscope`, `gradio`, `fastapi`, `grpcio` | Serving paths, not part of the model. |
 | `transformers==4.51.3` | Replaced by the `transformers-tts` 5.x fork this repository targets. |
 
-`onnxruntime` is the one that could not be removed. CosyVoice v1's speech tokenizer
-(`speech_tokenizer_v1.onnx`, 522 MB) and speaker encoder (`campplus.onnx`, 28 MB) are published as
-ONNX graphs only. The section 2.3 search found no PyTorch release of the v1 speech tokenizer
-anywhere: `xingchensong/S3Tokenizer` is a reimplementation that downloads the same ONNX file and
-converts it at load time, and the PyTorch tokenizer repositories that do exist
-(`ResembleAI/s3tokenizer-v2`, `mlx-community/S3TokenizerV2`, `mlx-community/S3TokenizerV3`) are
-v2 and v3 only. The speaker encoder does have a PyTorch release, `campplus_cn_common.bin` on
-`funasr/campplus` and on ModelScope `iic/speech_campplus_sv_zh-cn_16k-common`. Nothing was added to
-`pyproject.toml`; `CosyVoiceV1Processor` imports `onnxruntime` lazily and raises with an
-explanation if it is missing, so every other path works without it. Converting both graphs to
-PyTorch is the work this leaves open.
+`onnxruntime` was the last one, and it is gone. CosyVoice v1's speech tokenizer
+(`speech_tokenizer_v1.onnx`, 522 MB) and speaker encoder (`campplus.onnx`, 28 MB) are the two
+components upstream publishes as ONNX graphs, and both are now PyTorch modules.
+
+The speaker encoder is `CosyVoiceV1SpeakerEncoder`, the CAM++ network, and it reads its authors'
+own PyTorch release rather than the graph: `campplus_cn_common.bin` on `funasr/campplus`, which is
+also on ModelScope as `iic/speech_campplus_sv_zh-cn_16k-common`. The graph is byte identical at
+28,303,423 bytes across the v1, v2 and v3 directories, so one port covers all three.
+
+The speech tokenizer has no PyTorch release at all. The section 2.3 search found
+`xingchensong/S3Tokenizer` to be a reimplementation that downloads this same ONNX file and converts
+it at load time, and the PyTorch tokenizer repositories that do exist (`ResembleAI/s3tokenizer-v2`,
+`mlx-community/S3TokenizerV2`, `mlx-community/S3TokenizerV3`) are v2 and v3 only. So
+`CosyVoiceV1SpeechTokenizer` reads its weights out of the graph itself, and
+`weight_conversion.convert_speech_tokenizer` does that with about a hundred lines of protocol
+buffer reading rather than a dependency on `onnx`: three fields of `TensorProto`, three of
+`NodeProto`, and the initializer and node lists of `GraphProto`. Only the initializers that the
+exporter could not fold kept a readable name; the rest became `onnx::MatMul_1532` and the like. They
+are recovered from the graph, because every node that consumes an initializer names its output after
+the module it was traced inside, so the module path and the operator together say which parameter an
+initializer is. All 96 of v1's initializers map to exactly one parameter each and load with
+`strict=True`.
 
 Two more are imported lazily rather than depended on, the same way, and neither was added to
 `pyproject.toml`. `CosyVoiceV1Processor.compute_f0` needs `pyworld`, because the target of the
@@ -371,13 +382,34 @@ last timestamp `<|30.00|>` at 60514, which is upstream's ordering. `save_pretrai
 `from_pretrained` reproduces every one of those encodings. This ran locally rather than on Colab,
 because it touches no checkpoint.
 
-**Not verified.** The speech tokenizer and speaker encoder paths of the processor were not run,
-because `onnxruntime` is not installed and must not be installed to make a migration work. That
-leaves two things unchecked: whether `WhisperFeatureExtractor(feature_size=128)` with
-`padding=False` reproduces `whisper.log_mel_spectrogram(speech, n_mels=128)` frame for frame, and
-whether `WhisperTokenizer.from_pretrained("openai/whisper-large-v3")` produces the same ids as
+**The two ported ONNX components, against the graphs they replace.** Three LibriSpeech clips of
+2.9, 2.5 and 6.5 seconds went through `onnxruntime` and through the PyTorch port, on the same
+features. The speaker embedding, 192 dimensions reaching 2.83 in magnitude, differs by at most
+8.106e-06. The speech tokenizer produced 1158 token ids over the three clips and every one is
+identical; its encoder output, reaching 19.0 in magnitude, differs by at most 4.339e-05. That
+residual is float32 reassociation, not a difference in the computation: the graph scales the query
+and the key by the fourth root of the head dimension apiece and folds each `Linear` into a `MatMul`
+and an `Add`, and a PyTorch `Linear` accumulates its bias differently.
+
+**Zero shot voice cloning, end to end.** The port makes this path runnable for the first time, so it
+was run. A 5.86 s LibriSpeech clip, which `facebook/wav2vec2-base-960h` transcribes as
+`MISTER QUILTER IS THE APOSTLE OF THE MIDDLE CLASSES AND WE ARE GLAD TO WELCOME HIS GOSPEL`, became
+293 speech tokens and a 192 dimensional speaker embedding, and both were passed to the language model
+and to the flow matching model together with the prompt mel spectrogram and the clip's transcript.
+
+| Asked | Heard back | Waveform |
+|---|---|---|
+| `The quick brown fox jumps over the lazy dog.` | `THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG` | 2.97 s at 22050 Hz, RMS 0.0570, peak 0.3715 |
+| `She sells seashells by the seashore.` | `SHE SELLS SEASHELLS BY THE SEASHORE` | 1.89 s at 22050 Hz, RMS 0.0497, peak 0.3081 |
+
+Both are word for word.
+
+**Still unverified.** Whether `WhisperFeatureExtractor(feature_size=128)` with `padding=False`
+reproduces `whisper.log_mel_spectrogram(speech, n_mels=128)` frame for frame, and whether
+`WhisperTokenizer.from_pretrained("openai/whisper-large-v3")` produces the same ids as
 openai-whisper's `get_tokenizer(multilingual=True, num_languages=100).encode(text,
-allowed_special="all")`. The generation above exercises the second one indirectly.
+allowed_special="all")`. The generation above exercises the second one indirectly. Both need
+`openai-whisper` installed, which is the dependency this migration removed.
 
 `normalize_text` was checked against upstream's `frontend_utils.py`, recovered from this
 repository's history and executed side by side, on eleven strings covering both language branches,
@@ -419,9 +451,6 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
   runs are spelled out with `inflect` as upstream does.
 - **`ttsfrd`.** Upstream ships it as a wheel in `FunAudioLLM/CosyVoice-ttsfrd` with a 339 MB
   resource pack. It is not on PyPI and has no source release.
-- **The speech tokenizer and the speaker encoder.** Both are still ONNX graphs, so the processor
-  still depends on `onnxruntime` for the paths that derive a prompt from a waveform. See
-  "Dependencies".
 - **Streaming input text.** Upstream's `inference_bistream` accepts a text generator and
   interleaves text and speech tokens. It exists only on `Qwen2LM`, that is CosyVoice 2 and 3, and
   is not part of v1.
@@ -531,12 +560,12 @@ rewrote 199 of that file's 327 lines and only the language table survived intact
 Nothing outside this folder was touched. What is worth knowing about the rest of the repository:
 
 - `voicestudio/models/__init__.py` already carries `from .cosyvoice_v1 import *`.
-- `pyproject.toml` needs no change. `pyworld` is already declared under the `eval` extra;
-  `onnxruntime`, `inflect`, `tiktoken` and `ttsfrd` are deliberately absent and every path that
-  would want one imports it lazily and raises with an explanation.
+- `pyproject.toml` still declares an `onnx` extra holding `onnxruntime`, `onnxruntime-gpu` and
+  `onnx`. Nothing in these three folders imports any of them any more, and no other model folder
+  does either, so that extra and its entry in `all` can go. `pyworld` is already declared under the
+  `eval` extra; `inflect`, `tiktoken` and `ttsfrd` are deliberately absent and every path that would
+  want one imports it lazily and raises with an explanation.
 - `voicestudio/models/cosyvoice_v2/` inherits `CosyVoiceV1HiFTGenerator`, so it inherits
-  `compute_loss` and `mel_loss` too, but not the right constants: its own recipe sets the loss mel
-  to `n_fft` 1920, hop 480 and window 1920 at 24 kHz, where `CosyVoiceV1Config` defaults to 1024,
-  256 and 1024. `CosyVoiceV2Config` needs `vocoder_mel_loss_n_fft=1920`,
-  `vocoder_mel_loss_hop_length=480` and `vocoder_mel_loss_win_length=1920` before that inherited
-  method means anything for v2. Nothing in v2 or v3 calls it today, and neither folder was edited.
+  `compute_loss` and `mel_loss` too. It now also sets the constants its own recipe uses, `n_fft`
+  1920, hop 480 and window 1920 at 24 kHz, where `CosyVoiceV1Config` defaults to 1024, 256 and 1024.
+  The bin count, the two frequency bounds and the weight of 45 are the same in both recipes.

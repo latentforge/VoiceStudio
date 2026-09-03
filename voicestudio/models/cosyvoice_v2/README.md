@@ -140,20 +140,31 @@ Everything v1 removed stays removed. What v2 adds on top, and what each turned i
 |---|---|
 | `transformers.Qwen2ForCausalLM` inside `Qwen2Encoder` | Native `Qwen2Model`, already in `transformers-tts`. |
 | `diffusers`, `matcha-tts`, `einops`, `omegaconf`, `hyperpyyaml`, `torchdiffeq` | Removed the same way v1 removed them. |
-| `onnxruntime` | **Not removed.** See below. |
+| `onnxruntime` | Removed. See below. |
 
-`onnxruntime` is the one that could not be removed. CosyVoice v2's speech tokenizer
-(`speech_tokenizer_v2.onnx`, 496 MB) and speaker encoder (`campplus.onnx`, 28 MB) are published as
-ONNX graphs only. Unlike v1 there is now a PyTorch route: `xingchensong/S3Tokenizer` reimplements the
-tokenizer in pure PyTorch and initialises it from this same ONNX file through its own `onnx2torch`,
-covering both the v2 and the v3 tokenizers. Taking that route means porting the reimplementation and
-running a one time weight conversion that reads the ONNX graph, which is a section 9.1 preference two
-decision and needs a human; nothing was added to `pyproject.toml` and neither `onnx` nor
-`onnxruntime` nor `s3tokenizer` is installed. `CosyVoiceV2Processor` inherits v1's lazy import and
-raises with an explanation if `onnxruntime` is missing, so every other path works without it. The
-speaker encoder has a PyTorch release, `campplus_cn_common.bin` on `funasr/campplus`, and the
-`campplus.onnx` shipped with v1, v2 and v3 is byte identical at 28,303,423 bytes, so one port covers
-all three.
+`onnxruntime` was the last one, and it is gone. CosyVoice v2's speech tokenizer
+(`speech_tokenizer_v2.onnx`, 496 MB) and speaker encoder (`campplus.onnx`, 28 MB) are both PyTorch
+modules now. The speaker encoder is `CosyVoiceV1SpeakerEncoder` reading its authors' own PyTorch
+release, `campplus_cn_common.bin` on `funasr/campplus`; `campplus.onnx` is byte identical at
+28,303,423 bytes across v1, v2 and v3, so one port covers all three.
+
+The speech tokenizer is `CosyVoiceV2SpeechTokenizer`, and it is not a port of
+`xingchensong/S3Tokenizer`; that project is itself a reimplementation and the graph is the real
+upstream source, so the graph is what was traced. Its weights are read out of the graph by
+`cosyvoice_v1/weight_conversion.py`, which parses the six protocol buffer fields it needs rather than
+depending on `onnx`. All 102 initializers map to exactly one parameter each and load with
+`strict=True`.
+
+The v2 tokenizer differs from v1's in five ways, each read off the graph rather than assumed. Its
+first convolution strides by two as well as its second, so it runs at 25 Hz where v1 runs at 50 Hz.
+It has no position table; each attention applies a rotary embedding of base 10000 built for 2048
+positions, which `Qwen2RotaryEmbedding` reproduces bit for bit. Each attention adds a memory block
+to its output, a depthwise convolution of kernel 31 over the value projection masked to the valid
+frames, which is a scalar attention memory network. It leaves the attention scores unmasked and
+zeroes the padded rows of the attention output instead, which is only correct at batch one, and is
+why upstream ships a separate `speech_tokenizer_v2.batch.onnx`. And it closes with a finite scalar
+quantizer over eight ternary dimensions, whose 3 to the 8th is the 6561 entry vocabulary, rather than
+with v1's euclidean codebook.
 
 ## Upstream does not run correctly on transformers 5
 
@@ -286,9 +297,31 @@ exercises the language model, the flow matching model and the vocoder end to end
 meaningful test of all three precisely because the v2 language model does not read the speaker
 embedding at all, so every word in these transcripts came out of the text path.
 
-It does **not** exercise zero shot voice cloning from a reference clip. That path needs speech tokens
-and a mel spectrogram derived from a waveform, which needs the ONNX speech tokenizer, and it is
-therefore **unverified**. The transcripts above say nothing about whether cloning a voice works.
+That run predates the ONNX port and used upstream's sft mode only. Zero shot voice cloning from a
+reference clip, which is the path that derives speech tokens, a mel spectrogram and a speaker
+embedding from a waveform, is exercised by the run recorded under "The ported ONNX components"
+below.
+
+**The ported ONNX components, against the graphs they replace.** Three LibriSpeech clips of 2.9, 2.5
+and 6.5 seconds went through `onnxruntime` and through the PyTorch port, on the same features. The
+speaker embedding, 192 dimensions reaching 2.83 in magnitude, differs by at most 8.106e-06. The
+speech tokenizer produced 580 token ids over the three clips and every one is identical; its encoder
+output, reaching 3.49 in magnitude, differs by at most 7.272e-06. That residual is float32
+reassociation, not a difference in the computation.
+
+**Zero shot voice cloning, end to end.** The port makes this path runnable, so it was run. A 5.86 s
+LibriSpeech clip, which `facebook/wav2vec2-base-960h` transcribes as `MISTER QUILTER IS THE APOSTLE
+OF THE MIDDLE CLASSES AND WE ARE GLAD TO WELCOME HIS GOSPEL`, became 146 speech tokens and a 192
+dimensional speaker embedding, and both were passed to the language model and to the flow matching
+model together with the prompt mel spectrogram and the clip's transcript.
+
+| Asked | Heard back | Waveform |
+|---|---|---|
+| `The quick brown fox jumps over the lazy dog.` | `THE QUIT BROWN FOX JUMPS OVER THE LAZY DOG` | 3.08 s at 24000 Hz, RMS 0.0712, peak 0.5708 |
+| `She sells seashells by the seashore.` | `SHE SELLS SEA SHELLS BY THE SEASHORE` | 2.40 s at 24000 Hz, RMS 0.0846, peak 0.5706 |
+
+Every word is there. The first loses the `CK` of `QUICK` and the second splits `SEASHELLS`, both
+decoder edges rather than missing words, and neither waveform is truncated.
 
 ## Not carried over from upstream
 
@@ -318,15 +351,13 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
   long text into sentences with `split_paragraph`, using `inflect` for English number expansion.
   `CosyVoiceV2Processor` tokenizes the text as given, so digits, abbreviations and multi sentence
   input do not behave the way upstream does.
-- **The speech tokenizer and the speaker encoder.** Both are still ONNX graphs. See "Dependencies".
-  This is what stops a prompt being derived from a waveform, and no precomputed table fills the gap:
-  the released v2 directory ships no `spk2info.pt`, ModelScope's `iic/CosyVoice2-0.5B` ships none,
-  and the one mirror that does, `lucyknada/CosyVoice2-0.5B`, turns out to hold a **v1** table. Its
-  seven speakers top out at speech token id 4085 against v2's 6561 vocabulary and carry about 1.72
-  mel frames per token against v2's exactly 2, which is the 50 Hz, 22050 Hz, 256 hop geometry of v1.
-  Only the 192 dimensional speaker embeddings transfer, since `campplus.onnx` is byte identical at
-  28,303,423 bytes across v1, v2 and v3. That is what upstream's sft mode needs and nothing more, so
-  it is the conditioning the verification above uses.
+- **A speaker table.** The released v2 directory ships no `spk2info.pt`, ModelScope's
+  `iic/CosyVoice2-0.5B` ships none, and the one mirror that does, `lucyknada/CosyVoice2-0.5B`, turns
+  out to hold a **v1** table. Its seven speakers top out at speech token id 4085 against v2's 6561
+  vocabulary and carry about 1.72 mel frames per token against v2's exactly 2, which is the 50 Hz,
+  22050 Hz, 256 hop geometry of v1. Only the 192 dimensional speaker embeddings transfer, since
+  `campplus.onnx` is byte identical across v1, v2 and v3, and that is what upstream's sft mode needs
+  and nothing more. Zero shot cloning from a reference clip needs no table.
 - **Streaming input text.** Upstream's `inference_bistream` accepts a text generator and interleaves
   text and speech tokens using the same `mix_ratio` the bistream training layout uses. The training
   layout is implemented, the inference path is not.
@@ -344,5 +375,6 @@ Three things outside this folder are still needed and were deliberately not touc
 - `voicestudio/models/__init__.py` needs a `from .cosyvoice_v2 import *` line in its alphabetical
   list, after `cosyvoice_v1`.
 - `PROJECT.md`'s status table still records this model as not started.
-- `pyproject.toml` needs no change. Nothing new is imported; `onnxruntime` is deliberately absent and
-  the processor raises rather than depending on it.
+- `pyproject.toml` still declares an `onnx` extra holding `onnxruntime`, `onnxruntime-gpu` and
+  `onnx`. Nothing in these three folders imports any of them any more, and no other model folder does
+  either, so that extra and its entry in `all` can go.
