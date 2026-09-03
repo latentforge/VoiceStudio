@@ -1081,7 +1081,7 @@ class ParlerTTSPreTrainedModel(PreTrainedModel):
     models.
     """
 
-    config_class = ParlerTTSDecoderConfig
+    config: ParlerTTSDecoderConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _supports_flash_attn = True
@@ -2297,7 +2297,7 @@ class ParlerTTSForCausalLM(ParlerTTSPreTrainedModel, GenerationMixin):
     MUSICGEN_START_DOCSTRING,
 )
 class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
-    config_class = ParlerTTSConfig
+    config: ParlerTTSConfig
     base_model_prefix = "encoder_decoder"
     main_input_name = "input_ids"
     supports_gradient_checkpointing = True

@@ -960,7 +960,6 @@ class SparkTTSSpeakerEncoder(nn.Module):
 @auto_docstring
 class SparkTTSBiCodecPreTrainedModel(PreTrainedAudioTokenizerBase):
     config: SparkTTSBiCodecConfig
-    config_class = SparkTTSBiCodecConfig
     base_model_prefix = "bicodec"
     main_input_name = "input_values"
     input_modalities = ("audio",)

@@ -22,7 +22,6 @@ from .configuration_spark_tts import SparkTTSConfig
 @auto_docstring
 class SparkTTSPreTrainedModel(Qwen2PreTrainedModel):
     config: SparkTTSConfig
-    config_class = SparkTTSConfig
 
 
 @auto_docstring(

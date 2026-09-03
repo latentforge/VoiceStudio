@@ -2185,7 +2185,6 @@ class PromptTTSPPSourceModule(nn.Module):
 )
 class PromptTTSPPBigVGan(BigVGANModel):
     config: PromptTTSPPBigVGanConfig
-    config_class = PromptTTSPPBigVGanConfig
     base_model_prefix = "vocoder"
     main_input_name = "spectrogram"
     supports_gradient_checkpointing = False
