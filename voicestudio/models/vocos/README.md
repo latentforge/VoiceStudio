@@ -67,8 +67,11 @@ Two arguments above are load-bearing:
   backbone is fully convolutional and the head's overlap add runs over the whole frame axis, so padded frames
   become padded samples that the caller has to trim.
 
-`weight_conversion.convert` still writes a converted directory, for a checkpoint that has to be materialized
-once and loaded many times or shipped elsewhere. It takes either key of `PUBLISHED_CHECKPOINTS` (`"mel"`,
+A first load converts the published layout into a directory under `HF_HOME`, keyed on the repository and the commit it
+resolved to, and later loads read that directory through the ordinary loading path instead of converting again.
+
+`weight_conversion.convert` writes that same conversion to a directory of the caller's choosing, for a checkpoint
+that is shipped elsewhere or kept outside the cache. It takes either key of `PUBLISHED_CHECKPOINTS` (`"mel"`,
 `"encodec"`), a repository id, or a local directory holding the two published files, and both `from_pretrained`
 calls above read the directory it writes as readily as the published repository:
 

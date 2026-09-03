@@ -53,8 +53,11 @@ processor = F5TTSProcessor.from_pretrained(model_id, subfolder=subfolder)
 model = F5TTSForConditionalGeneration.from_pretrained(model_id, subfolder=subfolder, dtype=torch.float32)
 ```
 
-`weight_conversion.convert` writes a checkpoint, its processor and its vocoder into a directory of its own, which
-both classes also load and which reaches the hub for nothing:
+A first load converts the published layout into a directory under `HF_HOME`, keyed on the repository and the commit it
+resolved to, and later loads read that directory through the ordinary loading path instead of converting again.
+
+`weight_conversion.convert` writes a checkpoint, its processor and its vocoder into a directory of the caller's
+choosing, which both classes also load and which reaches the hub for nothing:
 
 ```python
 from voicestudio.models.f5_tts.weight_conversion import convert

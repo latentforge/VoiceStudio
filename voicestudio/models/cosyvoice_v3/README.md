@@ -38,9 +38,10 @@ upstream's sft mode, the only one that needs no reference waveform.
 
 The released directory holds one `.pt` file per network rather than a single checkpoint, beside the
 `CosyVoice-BlankEN` directory the language model is built from. `from_pretrained` reads that layout
-directly: it merges the three files under the name of the submodule each belongs to, and the
-`WeightRenaming` rules registered in `modeling_cosyvoice_v3.py` turn upstream's module names into
-this model's as the checkpoint loads. The processor takes the same repository id and picks up the
+directly: it merges the three files under the name of the submodule each belongs to into a directory
+under `HF_HOME`, keyed on the repository and the commit it resolved to, and the `WeightRenaming` rules
+registered in `modeling_cosyvoice_v3.py` turn upstream's module names into this model's as that
+directory loads. Later loads reuse it. The processor takes the same repository id and picks up the
 text tokenizer, the speech tokenizer and the speaker encoder.
 
 ## Training

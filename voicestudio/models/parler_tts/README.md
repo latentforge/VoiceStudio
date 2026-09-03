@@ -57,8 +57,11 @@ with `from_sub_models_config`/`from_sub_models_pretrained`, is why `audio_encode
 itself, sharing one checkpoint with `text_encoder` and `decoder`, rather than moving out to the processor
 entirely.
 
-`weight_conversion.convert` still writes a converted directory, for a checkpoint that has to be materialized once
-and loaded many times or shipped elsewhere. It also saves the codec standalone under an `audio_encoder`
+A first load converts the published layout into a directory under `HF_HOME`, keyed on the repository and the commit it
+resolved to, and later loads read that directory through the ordinary loading path instead of converting again.
+
+`weight_conversion.convert` writes that same conversion to a directory of the caller's choosing, for a checkpoint
+that is shipped elsewhere or kept outside the cache. It also saves the codec standalone under an `audio_encoder`
 subfolder, and both classes load the result without converting anything again:
 
 ```python

@@ -51,8 +51,11 @@ Three things about loading and the front end are load-bearing:
 - `attention_mask`, which the extractor returns for a padded batch, is not a model argument. The stack is fully
   convolutional, so padded frames become padded samples that the caller has to trim.
 
-`weight_conversion.convert` still writes a converted directory, for a checkpoint that has to be materialized once
-and loaded many times or shipped elsewhere:
+A first load converts the published layout into a directory under `HF_HOME`, keyed on the repository and the commit it
+resolved to, and later loads read that directory through the ordinary loading path instead of converting again.
+
+`weight_conversion.convert` writes that same conversion to a directory of the caller's choosing, for a checkpoint
+that is shipped elsewhere or kept outside the cache:
 
 ```python
 from voicestudio.models.bigvgan.weight_conversion import convert

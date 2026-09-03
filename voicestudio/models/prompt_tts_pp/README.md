@@ -89,10 +89,13 @@ inputs = processor(text="The quick brown fox jumps over the lazy dog.", audio=re
 `use_max_style=False` samples a mixture component instead of taking the most probable one. Both only apply to the
 style prompt path.
 
-`weight_conversion.convert` still writes a converted directory, for a checkpoint that has to be materialized once
-and loaded many times or shipped elsewhere. The acoustic model, the tokenizers and the feature extractor land in
-the output directory and the vocoder in its `vocoder` subdirectory, and all three classes load the result without
-reaching the Space again:
+A first load converts the published layout into a directory under `HF_HOME`, keyed on the repository and the commit it
+resolved to, and later loads read that directory through the ordinary loading path instead of converting again.
+
+`weight_conversion.convert` writes that same conversion to a directory of the caller's choosing, for a checkpoint
+that is shipped elsewhere or kept outside the cache. The acoustic model, the tokenizers and the feature extractor
+land in the output directory and the vocoder in its `vocoder` subdirectory, and all three classes load the result
+without reaching the Space again:
 
 ```python
 from voicestudio.models.prompt_tts_pp.weight_conversion import convert
