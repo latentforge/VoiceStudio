@@ -6,10 +6,10 @@ from pathlib import Path
 import torch
 import yaml
 from huggingface_hub import hf_hub_download
-from safetensors.torch import save_file
 from transformers.utils import CONFIG_NAME
 from transformers.utils.hub import cached_file
 
+from ...utils.checkpoint_cache import CheckpointWriter, cached_conversion, source_identity
 from .configuration_vocos import VocosConfig
 from .feature_extraction_vocos import VocosFeatureExtractor
 
@@ -159,6 +159,23 @@ def convert_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.T
     return {key: value.contiguous() for key, value in state_dict.items() if not key.startswith(_DISCARDED_PREFIXES)}
 
 
+def resolve_file(source: str, filename: str) -> str:
+    r"""
+    Args:
+        source (`str`):
+            Repository id, or local directory holding `filename`.
+        filename (`str`):
+            Name of the file inside the repository or directory.
+
+    Returns:
+        `str`: Local path of the file, downloading it if `source` is a repository id.
+    """
+    path = Path(source) / filename
+    if path.is_file():
+        return str(path)
+    return hf_hub_download(source, filename)
+
+
 def load_hyperparameters(source: str) -> dict:
     r"""
     Reads the `config.yaml` of a Vocos repository or local directory.
@@ -170,12 +187,7 @@ def load_hyperparameters(source: str) -> dict:
     Returns:
         `dict`: The parsed configuration.
     """
-    source = PUBLISHED_CHECKPOINTS.get(source, source)
-    if Path(source).is_dir():
-        config_file = str(Path(source) / "config.yaml")
-    else:
-        config_file = hf_hub_download(source, "config.yaml")
-
+    config_file = resolve_file(PUBLISHED_CHECKPOINTS.get(source, source), "config.yaml")
     with open(config_file, "r", encoding="utf-8") as handle:
         return yaml.safe_load(handle)
 
@@ -192,11 +204,7 @@ def load_hyperparameters_and_weights(source: str) -> tuple[dict, dict[str, torch
         `tuple[dict, dict[str, torch.Tensor]]`: The parsed configuration and the checkpoint's tensors.
     """
     hyperparameters = load_hyperparameters(source)
-    source = PUBLISHED_CHECKPOINTS.get(source, source)
-    if Path(source).is_dir():
-        weights_file = str(Path(source) / "pytorch_model.bin")
-    else:
-        weights_file = hf_hub_download(source, "pytorch_model.bin")
+    weights_file = resolve_file(PUBLISHED_CHECKPOINTS.get(source, source), "pytorch_model.bin")
     return hyperparameters, torch.load(weights_file, map_location="cpu", weights_only=True)
 
 
@@ -227,9 +235,57 @@ def build_model_files(
     return build_config(hyperparameters, num_quantizers=num_quantizers), converted
 
 
+def write_checkpoint(
+    source: str = "mel", directory: str = "vocos-converted", dtype: torch.dtype = torch.float32
+) -> VocosConfig:
+    r"""
+    Reads a published Vocos repository and writes what [`VocosModel.from_pretrained`] reads into `directory`.
+
+    Args:
+        source (`str`, *optional*, defaults to `"mel"`):
+            Key of [`PUBLISHED_CHECKPOINTS`], repository id, or local directory holding a `config.yaml` and a
+            `pytorch_model.bin`.
+        directory (`str`, *optional*, defaults to `"vocos-converted"`):
+            Directory the converted config and weights are written to.
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+
+    Returns:
+        [`VocosConfig`]: The configuration that was written.
+    """
+    config, converted = build_model_files(source, dtype=dtype)
+    with CheckpointWriter(directory) as writer:
+        for key in list(converted):
+            writer.add(key, converted.pop(key))
+    config.save_pretrained(directory)
+    return config
+
+
+def converted_checkpoint(source: str = "mel", dtype: torch.dtype = torch.float32) -> Path:
+    r"""
+    Returns a directory holding the converted form of a published Vocos repository, which
+    [`~PreTrainedModel.from_pretrained`] reads the ordinary way, converting it the first time it is asked for
+    and reusing that conversion afterwards.
+
+    Args:
+        source (`str`, *optional*, defaults to `"mel"`):
+            Key of [`PUBLISHED_CHECKPOINTS`], repository id, or local directory holding a `config.yaml` and a
+            `pytorch_model.bin`.
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+
+    Returns:
+        `Path`: The directory holding the converted checkpoint.
+    """
+    repository = PUBLISHED_CHECKPOINTS.get(source, source)
+    parts = [str(source), str(dtype), source_identity(repository, resolve_file(repository, "config.yaml"))]
+    return cached_conversion("vocos", parts, lambda directory: write_checkpoint(source, directory, dtype=dtype))
+
+
 def convert(source: str = "mel", output_dir: str = "vocos-converted", dtype: torch.dtype = torch.float32) -> None:
     r"""
-    Converts a published Vocos repository into a directory [`VocosModel.from_pretrained`] can load.
+    Converts a published Vocos repository into a directory [`VocosModel.from_pretrained`] can load, for a
+    checkpoint that is shipped elsewhere or kept outside the conversion cache [`converted_checkpoint`] holds.
 
     Args:
         source (`str`, *optional*, defaults to `"mel"`):
@@ -240,15 +296,9 @@ def convert(source: str = "mel", output_dir: str = "vocos-converted", dtype: tor
         dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
             Dtype the converted weights are cast to.
     """
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    config, converted = build_model_files(source, dtype=dtype)
-    config.save_pretrained(output_path)
-    save_file(converted, str(output_path / "model.safetensors"), metadata={"format": "pt"})
-
+    config = write_checkpoint(source, output_dir, dtype=dtype)
     if config.feature_extractor_type == "mel":
-        build_feature_extractor(config).save_pretrained(output_path)
+        build_feature_extractor(config).save_pretrained(output_dir)
 
 
 __all__ = [
@@ -258,7 +308,10 @@ __all__ = [
     "build_model_files",
     "convert",
     "convert_state_dict",
+    "converted_checkpoint",
     "is_published_layout",
     "load_hyperparameters",
     "load_hyperparameters_and_weights",
+    "resolve_file",
+    "write_checkpoint",
 ]

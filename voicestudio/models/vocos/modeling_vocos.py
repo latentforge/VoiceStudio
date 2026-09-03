@@ -382,7 +382,7 @@ class VocosModel(VocosPreTrainedModel):
         Returns:
             [`VocosModel`]: The loaded model.
         """
-        from .weight_conversion import build_model_files, is_published_layout
+        from .weight_conversion import converted_checkpoint, is_published_layout
 
         if (
             pretrained_model_name_or_path is not None
@@ -390,8 +390,7 @@ class VocosModel(VocosPreTrainedModel):
             and kwargs.get("state_dict") is None
             and is_published_layout(pretrained_model_name_or_path)
         ):
-            config, state_dict = build_model_files(pretrained_model_name_or_path)
-            return super().from_pretrained(None, *model_args, config=config, state_dict=state_dict, **kwargs)
+            pretrained_model_name_or_path = converted_checkpoint(pretrained_model_name_or_path)
         return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
 
     def codes_to_features(self, audio_codes: torch.Tensor) -> torch.Tensor:
