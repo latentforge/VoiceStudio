@@ -158,6 +158,29 @@ class Dia2Processor(ProcessorMixin):
         self.refine_whisper_precision = refine_whisper_precision
         super().__init__(feature_extractor, tokenizer, chat_template=chat_template)
 
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+        r"""
+        Loads a Dia2 processor, from a published repository as it stands or from a directory
+        [`~weight_conversion.convert`] wrote.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                A `nari-labs/Dia2-*` repository id, or any repository id or directory holding one of the two
+                layouts.
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~ProcessorMixin.from_pretrained`].
+
+        Returns:
+            [`Dia2Processor`]: The processor.
+        """
+        from .weight_conversion import build_pretrained_config, build_processor, is_published_layout
+
+        if pretrained_model_name_or_path is not None and is_published_layout(pretrained_model_name_or_path):
+            config = build_pretrained_config(pretrained_model_name_or_path)
+            return build_processor(pretrained_model_name_or_path, config)
+        return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
+
     @property
     def frame_rate(self) -> float:
         return self._require_audio_tokenizer().config.frame_rate

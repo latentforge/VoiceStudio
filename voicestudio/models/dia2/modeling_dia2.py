@@ -21,6 +21,15 @@ from torch import nn
 
 from transformers import initialization as init
 from transformers.cache_utils import Cache, DynamicCache
+from transformers.conversion_mapping import (
+    Chunk,
+    Concatenate,
+    MergeModulelist,
+    Transpose,
+    WeightConverter,
+    WeightRenaming,
+    register_checkpoint_conversion_mapping,
+)
 from transformers.masking_utils import create_causal_mask
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
@@ -43,6 +52,86 @@ from .generation_dia2 import Dia2GenerationMixin
 
 
 logger = logging.get_logger(__name__)
+
+
+# The published `nari-labs/Dia2-*` checkpoints hold the backbone under `transformer.` and the depth decoder under
+# `depformer.`, keep one embedding table and one output head per codebook, and fuse each MLP's two input branches
+# into a single `wi` projection and the depth decoder's query, key and value into a single `in_proj`.
+register_checkpoint_conversion_mapping(
+    "Dia2ForConditionalGeneration",
+    [
+        WeightRenaming(
+            source_patterns=r"^transformer\.text_embed\.embedding\.weight$",
+            target_patterns=r"backbone_model.embed_tokens.embed_text_tokens.weight",
+        ),
+        WeightRenaming(
+            source_patterns=r"^transformer\.text_embed\.main_proj\.weight$",
+            target_patterns=r"backbone_model.embed_tokens.text_stream_proj.weight",
+        ),
+        WeightRenaming(
+            source_patterns=r"^transformer\.text_embed\.second_proj\.weight$",
+            target_patterns=r"backbone_model.embed_tokens.second_text_stream_proj.weight",
+        ),
+        WeightRenaming(source_patterns=r"^transformer\.norm\.weight$", target_patterns=r"backbone_model.norm.weight"),
+        WeightRenaming(source_patterns=r"^transformer\.action_head\.weight$", target_patterns=r"action_head.weight"),
+        WeightRenaming(source_patterns=r"^transformer\.cb0_head\.weight$", target_patterns=r"lm_head.weight"),
+        WeightRenaming(source_patterns=r"^transformer\.layers\.", target_patterns=r"backbone_model.layers."),
+        WeightRenaming(
+            source_patterns=r"^depformer\.text_embed\.embedding\.weight$",
+            target_patterns=r"depth_decoder.model.embed_text_tokens.weight",
+        ),
+        WeightRenaming(
+            source_patterns=r"^depformer\.text_embed\.main_proj\.weight$",
+            target_patterns=r"depth_decoder.model.text_stream_proj.weight",
+        ),
+        WeightRenaming(
+            source_patterns=r"^depformer\.text_embed\.second_proj\.weight$",
+            target_patterns=r"depth_decoder.model.second_text_stream_proj.weight",
+        ),
+        WeightRenaming(
+            source_patterns=r"^depformer\.norm\.weight$",
+            target_patterns=r"depth_decoder.model.norm.weight",
+        ),
+        WeightRenaming(
+            source_patterns=r"^depformer\.depformer_in\.",
+            target_patterns=r"depth_decoder.model.inputs_embeds_projector.",
+        ),
+        WeightRenaming(source_patterns=r"^depformer\.layers\.", target_patterns=r"depth_decoder.model.layers."),
+        WeightRenaming(source_patterns=r"\.pre_norm\.", target_patterns=r".input_layernorm."),
+        WeightRenaming(source_patterns=r"\.post_norm\.", target_patterns=r".post_attention_layernorm."),
+        WeightRenaming(source_patterns=r"\.attn\.", target_patterns=r".self_attn."),
+        WeightRenaming(source_patterns=r"\.self_attention\.out_proj\.", target_patterns=r".self_attn.o_proj."),
+        WeightRenaming(source_patterns=r"\.self_attention\.q_norm\.", target_patterns=r".self_attn.q_norm."),
+        WeightRenaming(source_patterns=r"\.self_attention\.k_norm\.", target_patterns=r".self_attn.k_norm."),
+        WeightRenaming(source_patterns=r"\.mlp\.wo\.", target_patterns=r".mlp.down_proj."),
+        WeightConverter(
+            source_patterns=r"^transformer\.audio_embeds.*.weight$",
+            target_patterns=r"backbone_model.embed_tokens.embed_audio_tokens.weight",
+            operations=[Concatenate(dim=0)],
+        ),
+        WeightConverter(
+            source_patterns=r"^depformer\.audio_embeds.*.weight$",
+            target_patterns=r"depth_decoder.model.embed_tokens.weight",
+            operations=[Concatenate(dim=0)],
+        ),
+        WeightConverter(
+            source_patterns=r"^depformer\.logits.*.weight$",
+            target_patterns=r"depth_decoder.codebooks_head.weight",
+            operations=[MergeModulelist(dim=0), Transpose(dim0=1, dim1=2)],
+        ),
+        WeightConverter(
+            source_patterns=r"\.mlp\.wi\.",
+            target_patterns=[r".mlp.gate_proj.", r".mlp.up_proj."],
+            operations=[Chunk(dim=0)],
+        ),
+        WeightConverter(
+            source_patterns=r"\.self_attention\.in_proj\.",
+            target_patterns=[r".self_attn.q_proj.", r".self_attn.k_proj.", r".self_attn.v_proj."],
+            operations=[Chunk(dim=0)],
+        ),
+    ],
+    overwrite=True,
+)
 
 
 class Dia2RMSNorm(LlamaRMSNorm):
@@ -634,6 +723,34 @@ class Dia2ForConditionalGeneration(Dia2PreTrainedModel, Dia2GenerationMixin):
         self.action_head = nn.Linear(config.hidden_size, config.action_vocab_size, bias=False)
 
         self.post_init()
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        r"""
+        Loads a Dia2 checkpoint, from a published repository as it stands or from a directory
+        [`~weight_conversion.convert`] wrote.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                A `nari-labs/Dia2-*` repository id, or any repository id or directory holding one of the two
+                layouts.
+            model_args (`tuple`, *optional*):
+                Positional arguments of [`~PreTrainedModel.from_pretrained`].
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~PreTrainedModel.from_pretrained`].
+
+        Returns:
+            [`Dia2ForConditionalGeneration`]: The loaded model.
+        """
+        from .weight_conversion import build_pretrained_config, is_published_layout
+
+        if (
+            pretrained_model_name_or_path is not None
+            and kwargs.get("config") is None
+            and is_published_layout(pretrained_model_name_or_path)
+        ):
+            kwargs["config"] = build_pretrained_config(pretrained_model_name_or_path)
+        return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
 
     def get_input_embeddings(self):
         return self.backbone_model.embed_tokens

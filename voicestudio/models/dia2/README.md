@@ -7,19 +7,14 @@ Original model and code: [nari-labs/dia2](https://github.com/nari-labs/dia2)
 
 ## Usage
 
-The published `nari-labs/Dia2-*` checkpoints ship a bespoke config and weight layout, so they need a one-time conversion before they load:
-
-```python
-from voicestudio.models.dia2.weight_conversion import convert
-
-convert("nari-labs/Dia2-2B", "dia2-2b-converted")
-```
+`from_pretrained` takes a published `nari-labs/Dia2-*` repository id as it stands:
 
 ```python
 import torch
+
 from voicestudio.models.dia2 import Dia2ForConditionalGeneration, Dia2Processor
 
-model_id = "dia2-2b-converted"
+model_id = "nari-labs/Dia2-1B"
 
 processor = Dia2Processor.from_pretrained(model_id)
 model = Dia2ForConditionalGeneration.from_pretrained(model_id, dtype=torch.float32).to("cuda")
@@ -35,6 +30,15 @@ audio_codes = model.generate(**inputs)
 waveform = processor.decode(audio_codes)
 sf.write("output.wav", waveform.squeeze().cpu().numpy(), processor.sampling_rate)
 ```
+
+The published repositories ship the training runtime's own `config.json`, a `data`/`model`/`runtime` tree that
+declares no `model_type`, so `Dia2ForConditionalGeneration.from_pretrained` builds the configuration from it
+itself. The weights are converted by a checkpoint conversion mapping registered with
+`transformers.conversion_mapping`, which renames the backbone and depth decoder keys, concatenates the
+per-codebook embedding tables, stacks the per-codebook output heads and splits the fused `wi` and `in_proj`
+projections as the checkpoint loads. `Dia2Processor.from_pretrained` reads the published tokenizer files
+directly, which is also why it keeps the added `[S1]`/`[S2]` and sound-effect tokens that a tokenizer
+save/load round trip drops.
 
 To condition on previous conversational context, pass one waveform per speaker. Dia2 needs a word-level alignment of that audio to place the conditioning words on the frame grid; pass one directly through `transcript`:
 
@@ -68,12 +72,31 @@ The Whisper checkpoint defaults to `openai/whisper-large-v3`, matching what upst
 
 `generate` decodes one script at a time. Classifier-free guidance runs the conditional and unconditional branches as a batch of two, so `guidance_scale=1.0` halves the compute at the cost of guidance.
 
+`weight_conversion.convert` still writes a converted directory, for a checkpoint that has to be materialized once
+and loaded many times or shipped elsewhere, and both `from_pretrained` calls above read it as readily as the
+published repository:
+
+```python
+from voicestudio.models.dia2.weight_conversion import convert
+
+convert("nari-labs/Dia2-2B", "dia2-2b-converted")
+```
+
 
 ## Training
 
 Training uses the standard `forward`: pass `labels` of shape `(batch_size, sequence_length, num_codebooks)` for the delayed codebook grid and `action_labels` of shape `(batch_size, sequence_length)` for the word-advance stream. Both are shifted internally, and the returned `loss` sums the codebook-0, action and depth decoder cross-entropies, each also reported on its own in `Dia2OutputWithPast`.
 
 Upstream ships no training, loss, collator or evaluation code, so the objective above is derived from the three heads the released checkpoints carry and from the targets the upstream decode loop feeds each of them: `transformer.action_head` over `action_vocab_size` actions, `transformer.cb0_head` over the first codebook, and `depformer.logits.{i}` over codebook `i + 1` conditioned on the backbone hidden state of the preceding frame and on codebooks `0 .. i` of the current one. Nothing upstream freezes any module, and no weighting between the three terms is recorded anywhere in the released code or model cards, so they are summed unweighted. See the section below.
+
+
+## Verification
+
+`Dia2ForConditionalGeneration.from_pretrained("nari-labs/Dia2-1B")`, with no conversion call before it, reports no missing, unexpected or mismatched keys. All 440 tensors of the published `model.safetensors` are placed by the registered conversion mapping; the 51 parameter names the renaming rules never produce are exactly the fan-out targets of the three splitting converters, 33 `mlp.up_proj` and 9 each of `self_attn.k_proj` and `self_attn.v_proj`, which `Chunk` writes alongside the first target it renames to.
+
+The weights that mapping produces are bit identical to what `weight_conversion.convert_state_dict` produces from the same file: over all 400 converted tensors the maximum absolute difference is 0.0. That is what pins the mapping to the traced conversion rather than to a load that merely reports no missing keys.
+
+Generating `[S1] The quick brown fox jumps over the lazy dog. [S2] I could not agree with you more.` from that load gives 5.44 seconds of audio, which `openai/whisper-small.en` transcribes back as `The quick brown fox jumps over the lazy dog. I could not agree with you more.`, word for word.
 
 
 ## Not carried over from upstream

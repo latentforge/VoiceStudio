@@ -10,6 +10,8 @@ from safetensors.torch import load_file, save_file
 from transformers.models.auto.tokenization_auto import AutoTokenizer
 from transformers.models.encodec.feature_extraction_encodec import EncodecFeatureExtractor
 from transformers.models.mimi.modeling_mimi import MimiModel
+from transformers.utils import CONFIG_NAME
+from transformers.utils.hub import cached_file
 
 from .configuration_dia2 import Dia2Config, Dia2DepthDecoderConfig
 from .processing_dia2 import Dia2Processor
@@ -43,6 +45,74 @@ _DEPTH_LAYER_RENAMES = {
     "self_attention.q_norm.weight": "self_attn.q_norm.weight",
     "self_attention.k_norm.weight": "self_attn.k_norm.weight",
 }
+
+
+def is_published_layout(source: str) -> bool:
+    r"""
+    Returns whether `source` is a published Dia2 repository rather than a directory [`convert`] wrote.
+
+    The published repositories carry the training runtime's own `config.json`, a `data`/`model`/`runtime` tree
+    that declares no `model_type`, so the discriminator is a `config.json` declaring this model's `model_type`.
+    `PreTrainedConfig.from_pretrained` draws no such distinction of its own: the three sections are kept as extra
+    attributes and every field this model reads silently falls back to its default.
+
+    Args:
+        source (`str`):
+            Repository id or local directory.
+
+    Returns:
+        `bool`: Whether `source` holds the published layout.
+    """
+    config_file = cached_file(
+        source,
+        CONFIG_NAME,
+        _raise_exceptions_for_missing_entries=False,
+        _raise_exceptions_for_connection_errors=False,
+    )
+    if config_file is None:
+        return True
+    return json.loads(Path(config_file).read_text()).get("model_type") != Dia2Config.model_type
+
+
+def build_pretrained_config(source: str) -> Dia2Config:
+    r"""
+    Builds the [`Dia2Config`] of a published Dia2 repository.
+
+    Args:
+        source (`str`):
+            A `nari-labs/Dia2-*` repository id, or a local directory holding the published `config.json` and
+            tokenizer files.
+
+    Returns:
+        [`Dia2Config`]: The equivalent VoiceStudio configuration.
+    """
+    if Path(source).is_dir():
+        config_file = Path(source) / "config.json"
+    else:
+        config_file = Path(hf_hub_download(source, "config.json"))
+    tokenizer = AutoTokenizer.from_pretrained(source)
+    # `0` is the id of this tokenizer's `bos_token`, which Dia2's runtime falls back to `1` on.
+    return build_config(json.loads(config_file.read_text()), text_bos_token_id=tokenizer.bos_token_id or 1)
+
+
+def build_processor(source: str, config: Dia2Config) -> Dia2Processor:
+    r"""
+    Builds the [`Dia2Processor`] of a published Dia2 repository.
+
+    Args:
+        source (`str`):
+            A `nari-labs/Dia2-*` repository id, or a local directory holding the published tokenizer files.
+        config ([`Dia2Config`]):
+            Configuration naming the codec the processor tokenizes audio with.
+
+    Returns:
+        [`Dia2Processor`]: The processor.
+    """
+    return Dia2Processor(
+        feature_extractor=EncodecFeatureExtractor.from_pretrained(config.codec_model_id),
+        tokenizer=AutoTokenizer.from_pretrained(source),
+        audio_tokenizer=MimiModel.from_pretrained(config.codec_model_id),
+    )
 
 
 def build_config(upstream_config: dict, text_bos_token_id: int = 1) -> Dia2Config:
@@ -264,11 +334,9 @@ def convert(checkpoint_path: str, output_dir: str, dtype: torch.dtype = torch.fl
     source = Path(checkpoint_path)
 
     if source.is_dir():
-        config_file = source / "config.json"
         weights_file = source / "model.safetensors"
         tokenizer_files = {name: source / name for name in _TOKENIZER_FILES if (source / name).exists()}
     else:
-        config_file = Path(hf_hub_download(checkpoint_path, "config.json"))
         weights_file = Path(hf_hub_download(checkpoint_path, "model.safetensors"))
         tokenizer_files = {}
         for name in _TOKENIZER_FILES:
@@ -277,18 +345,11 @@ def convert(checkpoint_path: str, output_dir: str, dtype: torch.dtype = torch.fl
             except Exception:
                 continue
 
-    tokenizer = AutoTokenizer.from_pretrained(checkpoint_path)
-    # `0` is the id of this tokenizer's `bos_token`, which Dia2's runtime falls back to `1` on.
-    config = build_config(json.loads(config_file.read_text()), text_bos_token_id=tokenizer.bos_token_id or 1)
+    config = build_pretrained_config(checkpoint_path)
     converted = convert_state_dict(load_file(str(weights_file)), config)
     converted = {key: value.to(dtype) for key, value in converted.items()}
 
-    processor = Dia2Processor(
-        feature_extractor=EncodecFeatureExtractor.from_pretrained(config.codec_model_id),
-        tokenizer=tokenizer,
-        audio_tokenizer=MimiModel.from_pretrained(config.codec_model_id),
-    )
-    processor.save_pretrained(output_path)
+    build_processor(checkpoint_path, config).save_pretrained(output_path)
     # A tokenizer save/load round trip drops this tokenizer's added `[S1]`/`[S2]` and sound-effect tokens, so
     # the published files are copied over the ones `save_pretrained` just wrote.
     for name, path in tokenizer_files.items():
@@ -298,4 +359,11 @@ def convert(checkpoint_path: str, output_dir: str, dtype: torch.dtype = torch.fl
     save_file(converted, str(output_path / "model.safetensors"), metadata={"format": "pt"})
 
 
-__all__ = ["build_config", "convert", "convert_state_dict"]
+__all__ = [
+    "build_config",
+    "build_pretrained_config",
+    "build_processor",
+    "convert",
+    "convert_state_dict",
+    "is_published_layout",
+]
