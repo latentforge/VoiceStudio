@@ -212,8 +212,10 @@ irreproducibility.
 
 ## Verification
 
-Everything below ran on CPU in float32 in the project venv, against the real
-`FunAudioLLM/Fun-CosyVoice3-0.5B-2512` weights. Nothing ran on a GPU.
+Everything below ran on CPU in float32 against the real
+`FunAudioLLM/Fun-CosyVoice3-0.5B-2512` weights, in the project venv except the two runs that close
+this section, which needed `onnxruntime` and ran on a Colab T4 through the `colab` CLI with the model
+on CPU.
 
 **Checkpoint coverage.** 951 source tensors convert to 949 over **859,185,455 parameters**,
 506,148,480 under `llm`, 332,257,088 under `flow` and 20,779,887 under `hift`, with zero MISSING and
@@ -374,9 +376,36 @@ That exercises the language model, the flow matching model and the vocoder end t
 meaningful test of all three because the v3 language model does not read the speaker embedding at
 all, so every word came out of the text path.
 
-It does **not** exercise zero shot voice cloning from a reference clip. That path needs speech tokens
-and a mel spectrogram derived from a waveform, which needs the ONNX speech tokenizer, and it is
-therefore **unverified**. The transcripts above say nothing about whether cloning a voice works.
+That run predates the ONNX port and used upstream's sft mode only. Zero shot voice cloning from a
+reference clip, which is the path that derives speech tokens, a mel spectrogram and a speaker
+embedding from a waveform, is exercised by the run recorded under "The ported ONNX components"
+below.
+
+**The ported ONNX components, against the graphs they replace.** Three LibriSpeech clips of 2.9, 2.5
+and 6.5 seconds went through `onnxruntime` and through the PyTorch port, on the same features. The
+speaker embedding, 192 dimensions reaching 2.83 in magnitude, differs by at most 8.106e-06. The
+speech tokenizer produced 580 token ids over the three clips and every one is identical; its encoder
+output, reaching 8.61 in magnitude, differs by at most 1.627e-05. That residual is float32
+reassociation, not a difference in the computation.
+
+**Zero shot voice cloning, end to end.** A 5.86 s LibriSpeech clip, which
+`facebook/wav2vec2-base-960h` transcribes as `MISTER QUILTER IS THE APOSTLE OF THE MIDDLE CLASSES AND
+WE ARE GLAD TO WELCOME HIS GOSPEL`, became 146 speech tokens and a 192 dimensional speaker embedding,
+and both were passed to the language model and to the flow matching model together with the prompt
+mel spectrogram and the clip's transcript, with the end of prompt marker at the front of the text.
+
+| Asked | Heard back | Waveform |
+|---|---|---|
+| `The quick brown fox jumps over the lazy dog.` | `THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG` | 4.00 s at 24000 Hz, RMS 0.0787, peak 0.5275 |
+| `She sells seashells by the seashore.` | `SHE SELLS SEASHELLS BY THE SEASHORE` | 3.00 s at 24000 Hz, RMS 0.0754, peak 0.5809 |
+
+Both are word for word.
+
+The prompt transcript has to be written the way a caller would write it. Passing the same clip's
+LibriSpeech transcript verbatim, upper case and unpunctuated, collapsed the same two calls to a 1.52 s
+`LAZY DOG` and to a second waveform at RMS 0.0025 that transcribes as nothing at all. Lower casing it
+and adding the full stop is the only difference between that and the table above. v1 and v2 generate
+the whole sentence either way, so this sensitivity is v3's.
 
 ## Not carried over from upstream
 
@@ -401,14 +430,6 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
   embedding rows, which upstream notes are randomly initialised in any case, are never reached. Text
   with digits, abbreviations, more than one sentence or phoneme markup does not behave the way
   upstream does.
-- **The speech tokenizer and the speaker encoder.** Both are ONNX graphs;
-  `speech_tokenizer_v3.onnx` is 969 MB. `xingchensong/S3Tokenizer` reimplements the v3 tokenizer in
-  PyTorch and initialises it from this same file, so a port is possible, but it is a section 9.1
-  preference two decision and needs a human. Nothing was added to `pyproject.toml`, and neither
-  `onnx` nor `onnxruntime` nor `s3tokenizer` is installed.
-- **Zero shot voice cloning is unverified.** It needs speech tokens and a mel spectrogram derived
-  from a reference waveform, which needs the speech tokenizer above. The transcripts below are on
-  upstream's sft route and say nothing about whether cloning a voice works.
 - **`inference_bistream`.** The interleaved training layout is implemented; the streaming input text
   inference path is not.
 
@@ -420,5 +441,8 @@ Three things outside this folder are still needed and were deliberately not touc
   list, after `cosyvoice_v2`.
 - `PROJECT.md`'s status table still records this model as not started, and its sibling inheritance
   map still lists the f5_tts entries as gated on this migration rather than resolved by it.
-- `pyproject.toml` needs no change. This folder imports `voicestudio.models.f5_tts`, which is already
-  in the repository, and nothing new from outside it.
+- `pyproject.toml` still declares an `onnx` extra holding `onnxruntime`, `onnxruntime-gpu` and
+  `onnx`. Nothing in these three folders imports any of them any more, and no other model folder does
+  either, so that extra and its entry in `all` can go. Otherwise this folder needs nothing: it
+  imports `voicestudio.models.f5_tts`, which is already in the repository, and nothing new from
+  outside it.

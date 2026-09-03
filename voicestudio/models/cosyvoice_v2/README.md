@@ -317,11 +317,10 @@ model together with the prompt mel spectrogram and the clip's transcript.
 
 | Asked | Heard back | Waveform |
 |---|---|---|
-| `The quick brown fox jumps over the lazy dog.` | `THE QUIT BROWN FOX JUMPS OVER THE LAZY DOG` | 3.08 s at 24000 Hz, RMS 0.0712, peak 0.5708 |
-| `She sells seashells by the seashore.` | `SHE SELLS SEA SHELLS BY THE SEASHORE` | 2.40 s at 24000 Hz, RMS 0.0846, peak 0.5706 |
+| `The quick brown fox jumps over the lazy dog.` | `THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG` | 4.56 s at 24000 Hz, RMS 0.0654, peak 0.7251 |
+| `She sells seashells by the seashore.` | `SHE SELLS SEA SHELLS BY THE SEASHORE` | 4.40 s at 24000 Hz, RMS 0.0544, peak 0.4214 |
 
-Every word is there. The first loses the `CK` of `QUICK` and the second splits `SEASHELLS`, both
-decoder edges rather than missing words, and neither waveform is truncated.
+Every word is there; the second splits `SEASHELLS`, a decoder edge rather than a missing word.
 
 ## Not carried over from upstream
 

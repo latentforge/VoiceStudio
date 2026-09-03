@@ -399,10 +399,11 @@ and to the flow matching model together with the prompt mel spectrogram and the 
 
 | Asked | Heard back | Waveform |
 |---|---|---|
-| `The quick brown fox jumps over the lazy dog.` | `THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG` | 2.97 s at 22050 Hz, RMS 0.0570, peak 0.3715 |
-| `She sells seashells by the seashore.` | `SHE SELLS SEASHELLS BY THE SEASHORE` | 1.89 s at 22050 Hz, RMS 0.0497, peak 0.3081 |
+| `The quick brown fox jumps over the lazy dog.` | `THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG` | 2.83 s at 22050 Hz, RMS 0.0693, peak 0.5756 |
+| `She sells seashells by the seashore.` | `SHE SELLS SEASHILLS BY THE SEASHORE` | 2.28 s at 22050 Hz, RMS 0.0550, peak 0.3028 |
 
-Both are word for word.
+Every word is there; the second turns the vowel of `SEASHELLS` into an `I`, a decoder edge rather
+than a missing word.
 
 **Still unverified.** Whether `WhisperFeatureExtractor(feature_size=128)` with `padding=False`
 reproduces `whisper.log_mel_spectrogram(speech, n_mels=128)` frame for frame, and whether
