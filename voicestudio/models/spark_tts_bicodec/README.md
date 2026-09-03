@@ -16,16 +16,6 @@ Original model and code: [SparkAudio/Spark-TTS](https://github.com/SparkAudio/Sp
 
 ## Usage
 
-The published `SparkAudio/Spark-TTS-0.5B` repo needs the one-time conversion in
-[`voicestudio/models/spark_tts/weight_conversion.py`](../spark_tts/weight_conversion.py), which writes BiCodec and
-the self-supervised model it reads features from to the `audio_tokenizer` subfolder of its output:
-
-```python
-from voicestudio.models.spark_tts.weight_conversion import convert
-
-convert("SparkAudio/Spark-TTS-0.5B", "spark-tts-converted")
-```
-
 ```python
 import soundfile as sf
 import torch
@@ -33,10 +23,10 @@ import torch
 from voicestudio.models.spark_tts import SparkTTSFeatureExtractor
 from voicestudio.models.spark_tts_bicodec import SparkTTSBiCodecModel
 
-model_id = "spark-tts-converted"
+model_id = "SparkAudio/Spark-TTS-0.5B"
 
 feature_extractor = SparkTTSFeatureExtractor.from_pretrained(model_id)
-model = SparkTTSBiCodecModel.from_pretrained(model_id, subfolder="audio_tokenizer").to("cuda")
+model = SparkTTSBiCodecModel.from_pretrained(model_id).to("cuda")
 
 audio, sampling_rate = sf.read("speech.wav")
 inputs = feature_extractor(audio, sampling_rate=sampling_rate).to(model.device)
@@ -45,6 +35,12 @@ codes = model.encode(**inputs)
 audio_values = model.decode(codes.audio_codes, codes.global_codes).audio_values
 sf.write("reconstruction.wav", audio_values.reshape(-1).cpu().numpy(), feature_extractor.sampling_rate)
 ```
+
+BiCodec and the self-supervised model it reads features from sit in two separate subfolders of the published repo,
+which `from_pretrained` cannot read on its own, so a first load converts the repo and writes the result beside the
+downloaded snapshot inside the Hugging Face cache. The conversion is the one in
+[`voicestudio/models/spark_tts/weight_conversion.py`](../spark_tts/weight_conversion.py), which puts the codec in
+the `audio_tokenizer` subfolder of its output; later loads of the same checkpoint find it and reuse it.
 
 `encode` returns `audio_codes` of shape `(batch_size, num_frames)`, the semantic stream, and `global_codes` of shape
 `(batch_size, num_quantizers, num_speaker_tokens)`, the speaker stream. Those are exactly the two token families

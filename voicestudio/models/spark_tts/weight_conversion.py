@@ -1,5 +1,6 @@
 """Checkpoint conversion for Spark-TTS."""
 
+import os
 import re
 import shutil
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 import torch
 import yaml
 from huggingface_hub import snapshot_download
+from huggingface_hub.errors import HFValidationError, RepositoryNotFoundError
 from safetensors.torch import load_file, save_file
 from transformers import AutoTokenizer, Qwen2Config, Wav2Vec2Model
 
@@ -63,6 +65,24 @@ _TOKENIZER_FILES = (
     "tokenizer_config.json",
     "vocab.json",
 )
+
+# The files `convert` reads, and the ones whose presence together identify a repository as a published Spark-TTS
+# checkpoint rather than a converted one. The published repo also carries figures and logos under `src/`, which
+# nothing here reads.
+_PUBLISHED_PATTERNS = ("config.yaml", "BiCodec/*", "LLM/*", "wav2vec2-large-xlsr-53/*")
+
+_PUBLISHED_FILES = (
+    "config.yaml",
+    "BiCodec/config.yaml",
+    "BiCodec/model.safetensors",
+    "LLM/config.json",
+    "LLM/model.safetensors",
+    "wav2vec2-large-xlsr-53/config.json",
+)
+
+# Written by the `SparkTTSProcessor.save_pretrained` that closes `convert`, so a directory holding it is one whose
+# conversion ran to completion rather than one an interrupted run left half written.
+_CONVERSION_COMPLETE = "processor_config.json"
 
 
 def _rename_bicodec_key(key: str) -> str:
@@ -206,7 +226,7 @@ def convert(checkpoint_path, output_dir):
     """
     source = Path(checkpoint_path)
     if not source.is_dir():
-        source = Path(snapshot_download(checkpoint_path))
+        source = Path(snapshot_download(checkpoint_path, allow_patterns=list(_PUBLISHED_PATTERNS)))
     target = Path(output_dir)
     audio_tokenizer_target = target / "audio_tokenizer"
     audio_tokenizer_target.mkdir(parents=True, exist_ok=True)
@@ -287,4 +307,46 @@ def convert(checkpoint_path, output_dir):
     return str(target)
 
 
-__all__ = ["convert"]
+def convert_published_checkpoint(pretrained_model_name_or_path, **kwargs):
+    """
+    Convert `pretrained_model_name_or_path` if it is a published Spark-TTS checkpoint, reusing an earlier conversion
+    of the same checkpoint when one is already there.
+
+    The converted checkpoint is written beside the downloaded snapshot, inside the Hugging Face cache, so it is found
+    again on the next call and removed with the snapshot it came from.
+
+    Args:
+        pretrained_model_name_or_path (`str` or `os.PathLike`):
+            A Hugging Face repo id or a local directory.
+        kwargs (`dict[str, Any]`, *optional*):
+            Forwarded to [`~huggingface_hub.snapshot_download`], of which `revision`, `token` and `cache_dir` are
+            used.
+
+    Returns:
+        `str` or `None`: The converted checkpoint's directory, or `None` if the given checkpoint is neither a
+        repository nor in the published Spark-TTS layout, in which case its caller's own load error is the one
+        worth reporting.
+    """
+    if os.path.isdir(pretrained_model_name_or_path):
+        source = Path(pretrained_model_name_or_path)
+    else:
+        download_kwargs = {key: value for key, value in kwargs.items() if key in ("revision", "token", "cache_dir")}
+        try:
+            source = Path(
+                snapshot_download(
+                    pretrained_model_name_or_path, allow_patterns=list(_PUBLISHED_PATTERNS), **download_kwargs
+                )
+            )
+        except (HFValidationError, RepositoryNotFoundError):
+            return None
+
+    if not all((source / name).is_file() for name in _PUBLISHED_FILES):
+        return None
+
+    target = source.with_name(f"{source.name}_converted")
+    if not (target / _CONVERSION_COMPLETE).is_file():
+        convert(source, target)
+    return str(target)
+
+
+__all__ = ["convert", "convert_published_checkpoint"]

@@ -14,27 +14,23 @@ Original model and code: [SparkAudio/Spark-TTS](https://github.com/SparkAudio/Sp
 
 ## Usage
 
-The published `SparkAudio/Spark-TTS-0.5B` repo is three independently saved models in three subfolders plus two YAML
-files, so it needs a one-time conversion before it loads:
-
-```python
-from voicestudio.models.spark_tts.weight_conversion import convert
-
-convert("SparkAudio/Spark-TTS-0.5B", "spark-tts-converted")
-```
-
 ```python
 import soundfile as sf
 import torch
 
 from voicestudio.models.spark_tts import SparkTTSForConditionalGeneration, SparkTTSProcessor
 
-model_id = "spark-tts-converted"
+model_id = "SparkAudio/Spark-TTS-0.5B"
 
 processor = SparkTTSProcessor.from_pretrained(model_id)
 model = SparkTTSForConditionalGeneration.from_pretrained(model_id, dtype=torch.float32).to("cuda")
 processor.audio_tokenizer.to(model.device)
 ```
+
+The published repo is three independently saved models in three subfolders plus two YAML files, none of which
+`from_pretrained` can read on its own, so a first load converts it and writes the result beside the downloaded
+snapshot inside the Hugging Face cache. Later loads of the same checkpoint find that conversion and reuse it.
+`weight_conversion.convert` is the same conversion under a name that takes an explicit output directory.
 
 Passing `reference_audio` clones the voice of that clip by prefixing its global tokens to the prompt:
 

@@ -24,6 +24,8 @@ from transformers.tokenization_utils_base import PreTokenizedInput, TextInput
 from transformers.utils import logging
 from transformers.utils.import_utils import requires
 
+from .weight_conversion import convert_published_checkpoint
+
 
 logger = logging.get_logger(__name__)
 
@@ -93,6 +95,36 @@ class SparkTTSProcessor(ProcessorMixin):
         # classes that ship in `transformers`, so a codec defined outside it has to be attached afterwards. Every
         # other code path only needs the class to be registered in `AutoModelForAudioTokenization`.
         self.audio_tokenizer = audio_tokenizer
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        r"""
+        Load a Spark-TTS processor, from either a converted checkpoint or the published
+        `SparkAudio/Spark-TTS-0.5B` layout, which holds the tokenizer, the mel settings and BiCodec in three
+        separate subfolders and which is converted on first use.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                A Hugging Face repo id or a local directory.
+            args (`tuple`, *optional*):
+                Forwarded to [`~ProcessorMixin.from_pretrained`].
+            kwargs (`dict[str, Any]`, *optional*):
+                Forwarded to [`~ProcessorMixin.from_pretrained`].
+
+        Returns:
+            [`SparkTTSProcessor`]: The loaded processor, with BiCodec attached as its `audio_tokenizer`.
+
+        Raises:
+            OSError: If the checkpoint holds neither the files [`~ProcessorMixin.from_pretrained`] expects nor the
+                published Spark-TTS layout.
+        """
+        try:
+            return super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+        except OSError:
+            converted = convert_published_checkpoint(pretrained_model_name_or_path, **kwargs)
+            if converted is None:
+                raise
+        return super().from_pretrained(converted, *args, **kwargs)
 
     @staticmethod
     def _global_tokens(codes: torch.Tensor) -> str:

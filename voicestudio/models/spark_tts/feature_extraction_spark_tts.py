@@ -128,6 +128,38 @@ class SparkTTSFeatureExtractor(SequenceFeatureExtractor):
             mel_scale="slaney",
         )
 
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        r"""
+        Load a Spark-TTS feature extractor, from either a converted checkpoint or the published
+        `SparkAudio/Spark-TTS-0.5B` layout, whose mel settings live in the `BiCodec/config.yaml` of the original
+        codec and which is converted on first use.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                A Hugging Face repo id or a local directory.
+            args (`tuple`, *optional*):
+                Forwarded to [`~FeatureExtractionMixin.from_pretrained`].
+            kwargs (`dict[str, Any]`, *optional*):
+                Forwarded to [`~FeatureExtractionMixin.from_pretrained`].
+
+        Returns:
+            [`SparkTTSFeatureExtractor`]: The loaded feature extractor.
+
+        Raises:
+            OSError: If the checkpoint holds neither the files [`~FeatureExtractionMixin.from_pretrained`] expects
+                nor the published Spark-TTS layout.
+        """
+        from .weight_conversion import convert_published_checkpoint
+
+        try:
+            return super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+        except OSError:
+            converted = convert_published_checkpoint(pretrained_model_name_or_path, **kwargs)
+            if converted is None:
+                raise
+        return super().from_pretrained(converted, *args, **kwargs)
+
     @property
     def ref_segment_length(self) -> int:
         """Length, in samples, of the reference excerpt, rounded down to a whole number of mel frames."""

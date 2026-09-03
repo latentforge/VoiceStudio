@@ -13,6 +13,7 @@
 # limitations under the License.
 """PyTorch Spark-TTS BiCodec model."""
 
+import os
 from dataclasses import dataclass
 
 import torch
@@ -1030,19 +1031,37 @@ class SparkTTSBiCodecModel(SparkTTSBiCodecPreTrainedModel):
         self.freeze_semantic_model()
 
     @classmethod
-    def from_pretrained(cls, *args, **kwargs):
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
         """
+        Load BiCodec, from either a converted checkpoint or the published `SparkAudio/Spark-TTS-0.5B` layout, which
+        keeps the codec and the self-supervised model it reads features from in two separate subfolders and which is
+        converted on first use.
+
         Args:
-            args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                A Hugging Face repo id or a local directory.
+            model_args (`tuple`, *optional*):
                 Forwarded to [`~PreTrainedModel.from_pretrained`].
-            kwargs:
+            kwargs (`dict[str, Any]`, *optional*):
                 Forwarded to [`~PreTrainedModel.from_pretrained`].
 
         Returns:
             [`SparkTTSBiCodecModel`]: The loaded model, with the self-supervised model frozen again after loading
             replaced the parameters created by `__init__`.
+
+        Raises:
+            OSError: If the checkpoint holds neither the weights [`~PreTrainedModel.from_pretrained`] expects nor
+                the published Spark-TTS layout.
         """
-        outputs = super().from_pretrained(*args, **kwargs)
+        from ..spark_tts.weight_conversion import convert_published_checkpoint
+
+        try:
+            outputs = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        except OSError:
+            converted = convert_published_checkpoint(pretrained_model_name_or_path, **kwargs)
+            if converted is None:
+                raise
+            outputs = super().from_pretrained(os.path.join(converted, "audio_tokenizer"), *model_args, **kwargs)
         model = outputs[0] if isinstance(outputs, tuple) else outputs
         model.freeze_semantic_model()
         return outputs
