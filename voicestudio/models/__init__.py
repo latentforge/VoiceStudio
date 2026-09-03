@@ -1,4 +1,5 @@
 from .breeze_tts import *
+from .chroma import *
 from .dia import *
 from .dia2 import *
 from .higgs_tts2 import *
