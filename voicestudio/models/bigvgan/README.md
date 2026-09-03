@@ -209,28 +209,6 @@ architectures, of which `PolyAI/BigVGAN-L`, `amphion/BigVGAN_singing_bigdata` an
 examples. Hugging Face Spaces holds `nvidia/BigVGAN`, which bundles the source but downloads the weights from
 those model repositories, and `Arrcttacsrks/BigVGAN-main`. No Zenodo record or paper appendix was needed.
 
-**Independently re-verified**, on a remote GPU session per CLAUDE.md section 2.5 rather than the local machine.
-`convert` then `from_pretrained` on the real `nvidia/bigvgan_v2_24khz_100band_256x` weights again reports zero
-missing, unexpected or mismatched keys across all 449 tensors and 112414512 parameters. Enumerating the 783
-source tensors directly, rather than trusting that a clean load implies full coverage, shows 565 consumed (449
-destination tensors plus the 116 `weight_v` halves each paired `weight_g` reads) and 218 discarded by design,
-the resampling filters the model rebuilds from its configuration, with zero left over.
-
-Copy synthesis of the F5-TTS demo reference clip (`basic_ref_en.wav`, 5.33 seconds) reproduces its own log mel
-spectrogram to an L1 of 0.0887 and an SNR of 5.70 dB against the loudness normalized reference waveform, against
-the 0.0886 the f5_tts path measured in `d35f867f`. As a negative control, re-randomizing `conv_post` alone
-collapses that to an L1 of 3.13 and an SNR of -15.5 dB, and re-randomizing every convolution of `resblocks[0]`
-collapses it to 4.35 and -16.9 dB, confirming the metric actually responds to a broken conversion rather than
-passing regardless of what the weights are. wav2vec2 transcribes the copy synthesized clip as SOME CALL ME
-NATURE OTHERS CALL ME MOTHER NATURE, word for word against the source recording.
-
-Both consumers were re-checked against the current state of this folder rather than assumed from the commits
-that wired them up. `f5_tts`'s `F5TTS_Base_bigvgan` converts and loads clean at 812 tensors and 449511316
-parameters with the composed `BigVGANModel` frozen, and generating the upstream demo text in the upstream demo
-reference voice transcribes verbatim under wav2vec2. `prompt_tts_pp` converts and loads clean at 669 tensors
-(181696350 parameters) for the acoustic model and 239 tensors (13269867 parameters) for its `PromptTTSPPBigVGan`
-vocoder, and both CMUdict test prompts transcribe verbatim.
-
 
 ## Not carried over from upstream
 
