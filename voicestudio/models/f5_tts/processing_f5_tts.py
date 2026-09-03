@@ -10,13 +10,8 @@ from transformers.feature_extraction_utils import BatchFeature
 from transformers.processing_utils import ProcessorMixin
 from transformers.utils import logging
 
-from .modeling_f5_tts import F5TTSVocosModel
-
 
 logger = logging.get_logger(__name__)
-
-# `SWivid/F5-TTS` ships no vocoder of its own, so a converted checkpoint keeps one in a subfolder.
-VOCODER_SUBFOLDER = "vocoder"
 
 
 class F5TTSProcessor(ProcessorMixin):
@@ -26,16 +21,15 @@ class F5TTSProcessor(ProcessorMixin):
 
     It turns a reference clip and its transcription, together with the text to speak, into the reference log mel
     spectrogram, the character ids of the reference transcription followed by the text, and the number of mel frames
-    to generate. It also owns the inverse steps, vocoding the generated spectrogram, undoing the loudness
-    normalization of the reference clip and cross fading the waveforms of consecutive text chunks back together.
+    to generate. It also owns the inverse steps, vocoding the generated spectrogram through the model's vocoder,
+    undoing the loudness normalization of the reference clip and cross fading the waveforms of consecutive text
+    chunks back together.
 
     Args:
         feature_extractor ([`F5TTSFeatureExtractor`]):
             Feature extractor computing the log mel spectrogram.
         tokenizer ([`F5TTSTokenizer`]):
             Tokenizer mapping characters onto vocabulary ids.
-        vocoder ([`F5TTSVocosModel`], *optional*):
-            Vocoder turning a generated log mel spectrogram back into a waveform.
         target_rms (`float`, *optional*, defaults to 0.1):
             Loudness the reference clip is scaled to when it is quieter than this.
         speed (`float`, *optional*, defaults to 1.0):
@@ -44,53 +38,19 @@ class F5TTSProcessor(ProcessorMixin):
             Length in seconds of the overlap two consecutive chunk waveforms are cross faded over.
     """
 
-    # `ProcessorMixin` only accepts a model argument whose class is registered for audio tokenization, which a
-    # mel to waveform vocoder is not, so it is held outside the sub-processor machinery. Its class-level default
-    # keeps it out of `__dict__`, and therefore out of `to_dict`, while it is unset.
-    vocoder = None
-
     def __init__(
         self,
         feature_extractor=None,
         tokenizer=None,
-        vocoder=None,
         target_rms: float = 0.1,
         speed: float = 1.0,
         cross_fade_duration: float = 0.15,
         **kwargs,
     ):
-        if vocoder is not None:
-            self.vocoder = vocoder
         self.target_rms = target_rms
         self.speed = speed
         self.cross_fade_duration = cross_fade_duration
         super().__init__(feature_extractor, tokenizer, **kwargs)
-
-    @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
-        r"""
-        Loads a processor and, when the checkpoint bundles one, the vocoder held in its `vocoder` subfolder.
-
-        Args:
-            pretrained_model_name_or_path (`str` or `os.PathLike`):
-                Repository id or directory to load from.
-
-        Returns:
-            [`F5TTSProcessor`]: The loaded processor. Its `vocoder` is `None` when the checkpoint bundles none,
-            in which case one has to be assigned before a generated spectrogram can be decoded.
-        """
-        processor = super().from_pretrained(pretrained_model_name_or_path, **kwargs)
-        if getattr(processor, "vocoder", None) is None:
-            try:
-                processor.vocoder = F5TTSVocosModel.from_pretrained(
-                    pretrained_model_name_or_path, subfolder=VOCODER_SUBFOLDER
-                )
-            except OSError:
-                logger.warning(
-                    f"{pretrained_model_name_or_path} holds no `{VOCODER_SUBFOLDER}` subfolder, so this "
-                    f"{cls.__name__} cannot decode a generated spectrogram until its `vocoder` is set."
-                )
-        return processor
 
     @staticmethod
     def chunk_text(text: str, max_chars: int) -> list[str]:
@@ -274,6 +234,7 @@ class F5TTSProcessor(ProcessorMixin):
     def batch_decode(
         self,
         mel_spectrogram: torch.Tensor,
+        vocoder,
         duration: torch.Tensor | None = None,
         reference_length: int = 0,
         reference_rms: float | None = None,
@@ -287,6 +248,9 @@ class F5TTSProcessor(ProcessorMixin):
             mel_spectrogram (`torch.Tensor`):
                 Generated log mel spectrogram of shape `(batch_size, sequence_length, mel_dim)`, one entry per
                 chunk, in order.
+            vocoder ([`VocosModel`]):
+                Vocoder turning a generated log mel spectrogram back into a waveform, which is
+                `F5TTSForConditionalGeneration.vocoder`.
             duration (`torch.Tensor`, *optional*):
                 Number of frames of each entry as returned by [`~F5TTSProcessor.__call__`]. Given, the batch
                 padding past each entry's own duration is cut before vocoding.
@@ -302,19 +266,11 @@ class F5TTSProcessor(ProcessorMixin):
 
         Returns:
             `np.ndarray`: The joined waveform.
-
-        Raises:
-            ValueError: If the processor has no `vocoder`.
         """
-        if self.vocoder is None:
-            raise ValueError(
-                f"This {self.__class__.__name__} has no `vocoder`, so a generated spectrogram cannot be decoded."
-            )
-
         cross_fade_duration = self.cross_fade_duration if cross_fade_duration is None else cross_fade_duration
         sampling_rate = self.feature_extractor.sampling_rate
-        dtype = next(self.vocoder.parameters()).dtype
-        device = next(self.vocoder.parameters()).device
+        dtype = next(vocoder.parameters()).dtype
+        device = next(vocoder.parameters()).device
 
         waveforms = []
         for index, spectrogram in enumerate(mel_spectrogram):
@@ -322,7 +278,7 @@ class F5TTSProcessor(ProcessorMixin):
                 spectrogram = spectrogram[: int(duration[index])]
             spectrogram = spectrogram[reference_length:].permute(1, 0).unsqueeze(0)
             with torch.no_grad():
-                waveform = self.vocoder(spectrogram.to(device=device, dtype=dtype))
+                waveform = vocoder(input_features=spectrogram.to(device=device, dtype=dtype)).audio_values
             waveforms.append(waveform.squeeze(0).to(torch.float32).cpu().numpy())
 
         if reference_rms is not None and 0 < reference_rms < self.target_rms:

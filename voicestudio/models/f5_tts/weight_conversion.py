@@ -4,13 +4,13 @@ import re
 from pathlib import Path
 
 import torch
-import yaml
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file, save_file
 
-from .configuration_f5_tts import F5TTSConfig, F5TTSVocosConfig
+from ..vocos.weight_conversion import build_model_files as build_vocoder_files
+from .configuration_f5_tts import F5TTSConfig
 from .feature_extraction_f5_tts import F5TTSFeatureExtractor
-from .processing_f5_tts import VOCODER_SUBFOLDER, F5TTSProcessor
+from .processing_f5_tts import F5TTSProcessor
 from .tokenization_f5_tts import F5TTSTokenizer
 
 
@@ -114,7 +114,7 @@ PUBLISHED_CHECKPOINTS = {
     "E2TTS_Base": ("SWivid/E2-TTS", "E2TTS_Base/model_1200000.safetensors", "F5TTS_Base/vocab.txt"),
 }
 
-VOCOS_REPO_ID = "charactr/vocos-mel-24khz"
+VOCOS_SOURCE = "charactr/vocos-mel-24khz"
 
 # Buffers the EMA wrapper and the mel front end of a `CFM` module keep in the checkpoint and that no parameter
 # of this model corresponds to.
@@ -172,47 +172,6 @@ def build_config(architecture: str, text_vocab_size: int, **overrides) -> F5TTSC
     return F5TTSConfig(text_vocab_size=text_vocab_size, **fields)
 
 
-def build_vocoder_config(hyperparameters: dict) -> F5TTSVocosConfig:
-    r"""
-    Builds an [`F5TTSVocosConfig`] from a Vocos `config.yaml`.
-
-    Args:
-        hyperparameters (`dict`):
-            Parsed `config.yaml` of a Vocos repository.
-
-    Returns:
-        [`F5TTSVocosConfig`]: The equivalent VoiceStudio configuration.
-
-    Raises:
-        ValueError: If the vocoder is not the mel spectrogram conditioned inverse STFT one F5-TTS uses.
-    """
-    backbone = hyperparameters["backbone"]
-    head = hyperparameters["head"]
-    if not backbone["class_path"].endswith("VocosBackbone") or not head["class_path"].endswith("ISTFTHead"):
-        raise ValueError(
-            "F5-TTS decodes mel spectrograms with a `VocosBackbone` plus `ISTFTHead` vocoder, got "
-            f"{backbone['class_path']} plus {head['class_path']}."
-        )
-    if head["init_args"].get("padding", "center") != "center":
-        raise ValueError(
-            "The inverse STFT of this model pads its frames the way `torch.istft(center=True)` does, which the "
-            f"Vocos `padding` setting {head['init_args']['padding']} does not match."
-        )
-
-    backbone_args = backbone["init_args"]
-    head_args = head["init_args"]
-    return F5TTSVocosConfig(
-        mel_dim=backbone_args["input_channels"],
-        hidden_size=backbone_args["dim"],
-        intermediate_size=backbone_args["intermediate_dim"],
-        num_hidden_layers=backbone_args["num_layers"],
-        layer_scale_init_value=backbone_args.get("layer_scale_init_value"),
-        n_fft=head_args["n_fft"],
-        hop_length=head_args["hop_length"],
-        sampling_rate=hyperparameters["feature_extractor"]["init_args"]["sample_rate"],
-    )
-
-
 def convert_state_dict(state_dict: dict[str, torch.Tensor], config: F5TTSConfig) -> dict[str, torch.Tensor]:
     r"""
     Renames a published F5-TTS state dict onto [`F5TTSForConditionalGeneration`]'s parameter names.
@@ -255,25 +214,6 @@ def convert_state_dict(state_dict: dict[str, torch.Tensor], config: F5TTSConfig)
     return converted
 
 
-def convert_vocoder_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    r"""
-    Renames a published Vocos state dict onto [`F5TTSVocosModel`]'s parameter names.
-
-    Args:
-        state_dict (`dict[str, torch.Tensor]`):
-            Tensors of a Vocos `pytorch_model.bin`.
-
-    Returns:
-        `dict[str, torch.Tensor]`: The renamed tensors, without the mel front end and inverse STFT window
-        buffers, which this model rebuilds from its configuration.
-    """
-    return {
-        key: value.contiguous()
-        for key, value in state_dict.items()
-        if not key.startswith("feature_extractor.") and key != "head.istft.window"
-    }
-
-
 def load_checkpoint(path: str) -> dict[str, torch.Tensor]:
     r"""
     Reads a published F5-TTS checkpoint, preferring its exponential moving average weights, which every released
@@ -307,8 +247,8 @@ def convert(
 ) -> None:
     r"""
     Converts a published F5-TTS or E2-TTS checkpoint into a directory
-    [`F5TTSForConditionalGeneration.from_pretrained`] and [`F5TTSProcessor.from_pretrained`] can load, bundling
-    the Vocos vocoder into its `vocoder` subfolder.
+    [`F5TTSForConditionalGeneration.from_pretrained`] and [`F5TTSProcessor.from_pretrained`] can load, with the
+    Vocos vocoder composed into the model.
 
     Args:
         checkpoint_name (`str`, *optional*, defaults to `"F5TTS_v1_Base"`):
@@ -341,9 +281,14 @@ def convert(
     with open(vocab_file, "r", encoding="utf-8") as vocab_handle:
         text_vocab_size = sum(1 for _ in vocab_handle)
 
-    config = build_config(architecture or checkpoint_name, text_vocab_size=text_vocab_size)
+    vocoder_config, vocoder_state_dict = build_vocoder_files(vocoder_path or VOCOS_SOURCE, dtype=dtype)
+
+    config = build_config(
+        architecture or checkpoint_name, text_vocab_size=text_vocab_size, vocoder_config=vocoder_config
+    )
     converted = convert_state_dict(load_checkpoint(checkpoint_path), config)
     converted = {key: value.to(dtype) for key, value in converted.items()}
+    converted.update({"vocoder." + key: value for key, value in vocoder_state_dict.items()})
 
     feature_extractor = F5TTSFeatureExtractor(
         feature_size=config.mel_dim,
@@ -356,37 +301,13 @@ def convert(
     config.save_pretrained(output_path)
     save_file(converted, str(output_path / "model.safetensors"), metadata={"format": "pt"})
 
-    if vocoder_path is None:
-        vocoder_config_file = hf_hub_download(VOCOS_REPO_ID, "config.yaml")
-        vocoder_weights_file = hf_hub_download(VOCOS_REPO_ID, "pytorch_model.bin")
-    else:
-        vocoder_config_file = str(Path(vocoder_path) / "config.yaml")
-        vocoder_weights_file = str(Path(vocoder_path) / "pytorch_model.bin")
-
-    with open(vocoder_config_file, "r", encoding="utf-8") as config_handle:
-        vocoder_config = build_vocoder_config(yaml.safe_load(config_handle))
-    vocoder_state_dict = convert_vocoder_state_dict(
-        torch.load(vocoder_weights_file, map_location="cpu", weights_only=True)
-    )
-
-    vocoder_path = output_path / VOCODER_SUBFOLDER
-    vocoder_path.mkdir(parents=True, exist_ok=True)
-    vocoder_config.save_pretrained(vocoder_path)
-    save_file(
-        {key: value.to(dtype) for key, value in vocoder_state_dict.items()},
-        str(vocoder_path / "model.safetensors"),
-        metadata={"format": "pt"},
-    )
-
 
 __all__ = [
     "ARCHITECTURES",
     "PUBLISHED_CHECKPOINTS",
     "build_config",
-    "build_vocoder_config",
     "convert",
     "convert_state_dict",
-    "convert_vocoder_state_dict",
     "load_checkpoint",
     "resolve_architecture",
 ]

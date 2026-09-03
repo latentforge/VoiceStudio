@@ -13,7 +13,7 @@ from transformers.utils.auto_docstring import HARDCODED_CONFIG_FOR_MODELS
 # `HARDCODED_CONFIG_FOR_MODELS` at decoration time, i.e. while `.modeling_f5_tts` below is being imported.
 HARDCODED_CONFIG_FOR_MODELS["f5-tts"] = "F5TTSConfig"
 
-from .configuration_f5_tts import F5TTSConfig, F5TTSVocosConfig
+from .configuration_f5_tts import F5TTSConfig
 from .feature_extraction_f5_tts import F5TTSFeatureExtractor
 from .generation_f5_tts import F5TTSFixedStepODESolver, F5TTSGenerationMixin, F5TTSGenerationOutput
 from .modeling_f5_tts import (
@@ -22,16 +22,13 @@ from .modeling_f5_tts import (
     F5TTSOutput,
     F5TTSPreTrainedModel,
     F5TTSUNetModel,
-    F5TTSVocosModel,
 )
 from .processing_f5_tts import F5TTSProcessor
 from .tokenization_f5_tts import F5TTSTokenizer
 
 
 AutoConfig.register(F5TTSConfig.model_type, F5TTSConfig, exist_ok=True)
-AutoConfig.register(F5TTSVocosConfig.model_type, F5TTSVocosConfig, exist_ok=True)
 AutoModel.register(F5TTSConfig, F5TTSForConditionalGeneration, exist_ok=True)
-AutoModel.register(F5TTSVocosConfig, F5TTSVocosModel, exist_ok=True)
 AutoModelForTextToWaveform.register(F5TTSConfig, F5TTSForConditionalGeneration, exist_ok=True)
 AutoFeatureExtractor.register(F5TTSConfig, F5TTSFeatureExtractor, exist_ok=True)
 AutoTokenizer.register(F5TTSConfig, F5TTSTokenizer, exist_ok=True)
@@ -51,6 +48,4 @@ __all__ = [
     "F5TTSProcessor",
     "F5TTSTokenizer",
     "F5TTSUNetModel",
-    "F5TTSVocosConfig",
-    "F5TTSVocosModel",
 ]

@@ -40,7 +40,8 @@ from transformers.models.llama.modeling_llama import (
 from transformers.processing_utils import Unpack
 from transformers.utils import ModelOutput, TransformersKwargs, auto_docstring, logging
 
-from .configuration_f5_tts import F5TTSConfig, F5TTSVocosConfig
+from ..vocos import VocosModel
+from .configuration_f5_tts import F5TTSConfig
 from .generation_f5_tts import F5TTSGenerationMixin
 
 
@@ -1280,11 +1281,49 @@ class F5TTSForConditionalGeneration(F5TTSPreTrainedModel, F5TTSGenerationMixin):
     def __init__(self, config: F5TTSConfig):
         super().__init__(config)
         self.model = F5TTSModel(config) if config.backbone == "dit" else F5TTSUNetModel(config)
+        self.vocoder = VocosModel(config.vocoder_config)
         self.mel_dim = config.mel_dim
         self.post_init()
+        self.freeze_vocoder()
+
+    @classmethod
+    def from_pretrained(cls, *args, **kwargs):
+        r"""
+        Args:
+            args:
+                Forwarded to [`~PreTrainedModel.from_pretrained`].
+            kwargs:
+                Forwarded to [`~PreTrainedModel.from_pretrained`].
+
+        Returns:
+            The loaded model, with the vocoder frozen again after loading replaced the parameters created by
+            `__init__`.
+        """
+        outputs = super().from_pretrained(*args, **kwargs)
+        model = outputs[0] if isinstance(outputs, tuple) else outputs
+        model.freeze_vocoder()
+        return outputs
 
     def get_backbone(self):
         return self.model
+
+    def freeze_vocoder(self):
+        """Freezes the vocoder, which upstream loads pretrained and never optimizes."""
+        for parameter in self.vocoder.parameters():
+            parameter.requires_grad = False
+
+    def vocode(self, mel_spectrogram: torch.Tensor) -> torch.Tensor:
+        r"""
+        Turns a log mel spectrogram into a waveform.
+
+        Args:
+            mel_spectrogram (`torch.FloatTensor` of shape `(batch_size, mel_dim, num_frames)`):
+                Log mel spectrogram to vocode.
+
+        Returns:
+            `torch.Tensor`: Waveform of shape `(batch_size, num_samples)`.
+        """
+        return self.vocoder(input_features=mel_spectrogram).audio_values
 
     def forward(
         self,
@@ -1397,146 +1436,10 @@ class F5TTSForConditionalGeneration(F5TTSPreTrainedModel, F5TTSGenerationMixin):
         )
 
 
-class F5TTSVocosConvNeXtBlock(nn.Module):
-    r"""
-    Constructs a ConvNeXt block of the vocoder backbone.
-
-    Args:
-        config ([`F5TTSVocosConfig`]):
-            Vocoder configuration.
-    """
-
-    def __init__(self, config: F5TTSVocosConfig):
-        super().__init__()
-        dim = config.hidden_size
-        self.layer_scale_init_value = config.layer_scale_init_value or 1 / config.num_hidden_layers
-        self.dwconv = nn.Conv1d(dim, dim, kernel_size=7, padding=3, groups=dim)
-        self.norm = nn.LayerNorm(dim, eps=config.layer_norm_eps)
-        self.pwconv1 = nn.Linear(dim, config.intermediate_size)
-        self.act = nn.GELU()
-        self.pwconv2 = nn.Linear(config.intermediate_size, dim)
-        self.gamma = nn.Parameter(self.layer_scale_init_value * torch.ones(dim))
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        residual = hidden_states
-        hidden_states = self.dwconv(hidden_states)
-        hidden_states = hidden_states.transpose(1, 2)
-        hidden_states = self.norm(hidden_states)
-        hidden_states = self.pwconv1(hidden_states)
-        hidden_states = self.act(hidden_states)
-        hidden_states = self.pwconv2(hidden_states)
-        hidden_states = self.gamma * hidden_states
-        hidden_states = hidden_states.transpose(1, 2)
-        return residual + hidden_states
-
-
-class F5TTSVocosBackbone(nn.Module):
-    r"""
-    Constructs the ConvNeXt backbone of the vocoder.
-
-    Args:
-        config ([`F5TTSVocosConfig`]):
-            Vocoder configuration.
-    """
-
-    def __init__(self, config: F5TTSVocosConfig):
-        super().__init__()
-        self.embed = nn.Conv1d(config.mel_dim, config.hidden_size, kernel_size=7, padding=3)
-        self.norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.convnext = nn.ModuleList(
-            [F5TTSVocosConvNeXtBlock(config) for _ in range(config.num_hidden_layers)]
-        )
-        self.final_layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-
-    def forward(self, mel_spectrogram: torch.Tensor) -> torch.Tensor:
-        hidden_states = self.embed(mel_spectrogram)
-        hidden_states = self.norm(hidden_states.transpose(1, 2)).transpose(1, 2)
-        for block in self.convnext:
-            hidden_states = block(hidden_states)
-        return self.final_layer_norm(hidden_states.transpose(1, 2))
-
-
-class F5TTSVocosISTFTHead(nn.Module):
-    r"""
-    Constructs the head that reads the backbone output as a log magnitude and a phase and inverts the short time
-    Fourier transform.
-
-    Args:
-        config ([`F5TTSVocosConfig`]):
-            Vocoder configuration.
-    """
-
-    def __init__(self, config: F5TTSVocosConfig):
-        super().__init__()
-        self.n_fft = config.n_fft
-        self.hop_length = config.hop_length
-        self.out = nn.Linear(config.hidden_size, config.n_fft + 2)
-        self.window = nn.Buffer(torch.hann_window(config.n_fft), persistent=False)
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        hidden_states = self.out(hidden_states).transpose(1, 2)
-        magnitude, phase = hidden_states.chunk(2, dim=1)
-        # `torch.polar` and `torch.istft` have no half precision complex kernels.
-        magnitude = torch.exp(magnitude.float()).clip(max=1e2)
-        spectrogram = torch.polar(magnitude, phase.float())
-        return torch.istft(
-            spectrogram,
-            self.n_fft,
-            self.hop_length,
-            self.n_fft,
-            self.window.float(),
-            center=True,
-        )
-
-
-@auto_docstring(
-    custom_intro="""
-    The ConvNeXt and inverse short time Fourier transform vocoder F5-TTS decodes its predicted log mel spectrogram
-    with.
-    """
-)
-class F5TTSVocosModel(PreTrainedModel):
-    config: F5TTSVocosConfig
-    config_class = F5TTSVocosConfig
-    base_model_prefix = "vocoder"
-    main_input_name = "mel_spectrogram"
-    _keys_to_ignore_on_load_unexpected = [r"feature_extractor\.", r"head\.istft\.window"]
-
-    def __init__(self, config: F5TTSVocosConfig):
-        super().__init__(config)
-        self.backbone = F5TTSVocosBackbone(config)
-        self.head = F5TTSVocosISTFTHead(config)
-        self.post_init()
-
-    def _init_weights(self, module):
-        if isinstance(module, (nn.Conv1d, nn.Linear)):
-            init.trunc_normal_(module.weight, std=self.config.initializer_range)
-            if module.bias is not None:
-                init.zeros_(module.bias)
-        elif isinstance(module, F5TTSVocosConvNeXtBlock):
-            init.constant_(module.gamma, module.layer_scale_init_value)
-        elif isinstance(module, F5TTSVocosISTFTHead):
-            init.copy_(module.window, torch.hann_window(module.n_fft))
-        else:
-            super()._init_weights(module)
-
-    def forward(self, mel_spectrogram: torch.Tensor) -> torch.Tensor:
-        r"""
-        Args:
-            mel_spectrogram (`torch.FloatTensor` of shape `(batch_size, mel_dim, num_frames)`):
-                Log mel spectrogram to vocode.
-
-        Returns:
-            `torch.Tensor`: Waveform of shape `(batch_size, num_samples)`.
-        """
-        return self.head(self.backbone(mel_spectrogram))
-
-
 __all__ = [
     "F5TTSForConditionalGeneration",
     "F5TTSModel",
     "F5TTSOutput",
     "F5TTSPreTrainedModel",
     "F5TTSUNetModel",
-    "F5TTSVocosModel",
 ]

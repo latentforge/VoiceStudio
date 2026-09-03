@@ -1,69 +1,10 @@
 """Configuration class for F5-TTS."""
 
+from typing import ClassVar
+
 from transformers.configuration_utils import PreTrainedConfig
 
-
-class F5TTSVocosConfig(PreTrainedConfig):
-    r"""
-    This is the configuration class to store the configuration of a [`F5TTSVocosModel`], the ConvNeXt plus inverse
-    STFT vocoder that turns the log-mel spectrogram predicted by [`F5TTSForConditionalGeneration`] into a waveform.
-    Instantiating a configuration with the defaults will yield a configuration matching the
-    [charactr/vocos-mel-24khz](https://huggingface.co/charactr/vocos-mel-24khz) vocoder F5-TTS is released with.
-
-    Configuration objects inherit from [`PreTrainedConfig`] and can be used to control the model outputs. Read the
-    documentation from [`PreTrainedConfig`] for more information.
-
-    Args:
-        mel_dim (`int`, *optional*, defaults to 100):
-            Number of mel filterbank channels the vocoder consumes.
-        hidden_size (`int`, *optional*, defaults to 512):
-            Dimensionality of the ConvNeXt backbone.
-        intermediate_size (`int`, *optional*, defaults to 1536):
-            Dimensionality of the pointwise expansion inside each ConvNeXt block.
-        num_hidden_layers (`int`, *optional*, defaults to 8):
-            Number of ConvNeXt blocks.
-        layer_scale_init_value (`float`, *optional*):
-            Initial value of the per-channel layer scale of each ConvNeXt block. Defaults to
-            `1 / num_hidden_layers`.
-        n_fft (`int`, *optional*, defaults to 1024):
-            Size of the Fourier transform the head inverts.
-        hop_length (`int`, *optional*, defaults to 256):
-            Distance in waveform samples between neighbouring spectrogram frames.
-        sampling_rate (`int`, *optional*, defaults to 24000):
-            Sampling rate, in Hz, of the waveform the vocoder produces.
-        layer_norm_eps (`float`, *optional*, defaults to 1e-06):
-            Epsilon of the layer normalizations.
-        initializer_range (`float`, *optional*, defaults to 0.02):
-            Standard deviation of the truncated normal initializer used for the convolution and linear weights.
-    """
-
-    model_type = "f5_tts_vocos"
-
-    def __init__(
-        self,
-        mel_dim: int = 100,
-        hidden_size: int = 512,
-        intermediate_size: int = 1536,
-        num_hidden_layers: int = 8,
-        layer_scale_init_value: float | None = None,
-        n_fft: int = 1024,
-        hop_length: int = 256,
-        sampling_rate: int = 24000,
-        layer_norm_eps: float = 1e-6,
-        initializer_range: float = 0.02,
-        **kwargs,
-    ):
-        self.mel_dim = mel_dim
-        self.hidden_size = hidden_size
-        self.intermediate_size = intermediate_size
-        self.num_hidden_layers = num_hidden_layers
-        self.layer_scale_init_value = layer_scale_init_value
-        self.n_fft = n_fft
-        self.hop_length = hop_length
-        self.sampling_rate = sampling_rate
-        self.layer_norm_eps = layer_norm_eps
-        self.initializer_range = initializer_range
-        super().__init__(**kwargs)
+from ..vocos import VocosConfig
 
 
 class F5TTSConfig(PreTrainedConfig):
@@ -153,6 +94,10 @@ class F5TTSConfig(PreTrainedConfig):
             Distance in waveform samples between neighbouring mel frames.
         initializer_range (`float`, *optional*, defaults to 0.02):
             Standard deviation of the truncated normal initializer used for the weight matrices.
+        vocoder_config (`Union[dict, `VocosConfig`]`, *optional*):
+            Configuration of the vocoder that turns a predicted log mel spectrogram back into a waveform,
+            [charactr/vocos-mel-24khz](https://huggingface.co/charactr/vocos-mel-24khz) in every released
+            checkpoint.
 
     Example:
 
@@ -167,6 +112,7 @@ class F5TTSConfig(PreTrainedConfig):
     ```"""
 
     model_type = "f5_tts"
+    sub_configs: ClassVar[dict[str, type[PreTrainedConfig]]] = {"vocoder_config": VocosConfig}
 
     def __init__(
         self,
@@ -202,6 +148,7 @@ class F5TTSConfig(PreTrainedConfig):
         sampling_rate: int = 24000,
         hop_length: int = 256,
         initializer_range: float = 0.02,
+        vocoder_config: dict | PreTrainedConfig | None = None,
         **kwargs,
     ):
         if backbone not in ("dit", "unett"):
@@ -250,7 +197,13 @@ class F5TTSConfig(PreTrainedConfig):
         self.hop_length = hop_length
         self.initializer_range = initializer_range
 
+        if isinstance(vocoder_config, dict):
+            vocoder_config = VocosConfig(**vocoder_config)
+        elif vocoder_config is None:
+            vocoder_config = VocosConfig()
+        self.vocoder_config = vocoder_config
+
         super().__init__(**kwargs)
 
 
-__all__ = ["F5TTSConfig", "F5TTSVocosConfig"]
+__all__ = ["F5TTSConfig"]
