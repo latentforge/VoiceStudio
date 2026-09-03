@@ -394,15 +394,20 @@ Worth knowing if a repository ever does publish a root one:
 applied through `adjust_generation_fn`, which is a cheaper fix than parler's post-assignment and
 preserves a model's own `generation_config_class`.
 
-## Auto classes cannot open a published layout
+## Decided: the Auto classes are left alone
 
-`AutoModelForTextToWaveform.from_pretrained("SWivid/F5-TTS")` and its equivalents for `vocos`,
-`bigvgan`, `dia2` and `vox_instruct` do not work, and cannot. An Auto class resolves `config.json`
-to choose a model class before any model class exists to run a probe, while these repositories
-either carry no `config.json` or carry one in a foreign schema. The concrete classes are the
-documented entry point for those five, which is what their READMEs show. Models whose published
-repository does carry a `transformers` config, which is most of them, work through the Auto classes
-as usual.
+Five published repositories cannot be opened through an Auto class: `charactr/vocos-*` ships a
+`config.yaml` and no `config.json` at all, while `nvidia/bigvgan_*` and `nari-labs/Dia2-*` ship a
+`config.json` carrying the upstream project's own schema with no `model_type` key, and PromptTTS++'s
+weights live in a Space. `AutoConfig.from_pretrained` picks a config class from `model_type` alone,
+so it fails before any of this repository's code can run its `is_published_layout` probe.
+
+A fallback is possible: catch that specific failure and ask each registered model whether it claims
+the repository. It is deliberately not built. The concrete classes already load every one of these
+directly, which is what their READMEs document, and a dispatcher that second-guesses
+`AutoConfig` adds a code path that runs only when transformers has already given up. Models whose
+published repository does carry a `transformers` config, which is most of them, work through the
+Auto classes as usual.
 
 ## Decided: GAN discriminators stay unimplemented
 
