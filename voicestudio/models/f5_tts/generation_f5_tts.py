@@ -1,302 +1,289 @@
-"""
-ein notation:
-b - batch
-n - sequence
-nt - text sequence
-nw - raw wave length
-d - dimension
-"""
-# ruff: noqa: F722 F821
+"""Flow matching sampling for F5-TTS."""
 
-from __future__ import annotations
-
-from random import random
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
-from torch import nn
 from torch.nn.utils.rnn import pad_sequence
-from torchdiffeq import odeint
 
-from f5_tts.model.modules import MelSpec
-from f5_tts.model.utils import (
-    default,
-    exists,
-    get_epss_timesteps,
-    lens_to_mask,
-    list_str_to_idx,
-    list_str_to_tensor,
-    mask_from_frac_lengths,
-)
+from transformers.utils import ModelOutput
 
 
-class CFM(nn.Module):
-    def __init__(
-        self,
-        transformer: nn.Module,
-        sigma=0.0,
-        odeint_kwargs: dict = dict(
-            # atol = 1e-5,
-            # rtol = 1e-5,
-            method="euler"  # 'midpoint'
-        ),
-        audio_drop_prob=0.3,
-        cond_drop_prob=0.2,
-        num_channels=None,
-        mel_spec_module: nn.Module | None = None,
-        mel_spec_kwargs: dict = dict(),
-        frac_lengths_mask: tuple[float, float] = (0.7, 1.0),
-        vocab_char_map: dict[str:int] | None = None,
-    ):
-        super().__init__()
+EPSS_TIMESTEPS = {
+    5: [0, 2, 4, 8, 16, 32],
+    6: [0, 2, 4, 6, 8, 16, 32],
+    7: [0, 2, 4, 6, 8, 16, 24, 32],
+    10: [0, 2, 4, 6, 8, 12, 16, 20, 24, 28, 32],
+    12: [0, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32],
+    16: [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 32],
+}
 
-        self.frac_lengths_mask = frac_lengths_mask
 
-        # mel spec
-        self.mel_spec = default(mel_spec_module, MelSpec(**mel_spec_kwargs))
-        num_channels = default(num_channels, self.mel_spec.n_mel_channels)
-        self.num_channels = num_channels
+def get_epss_timesteps(num_steps: int, device, dtype) -> torch.Tensor:
+    r"""
+    Builds the empirically pruned step sampling schedule for a low number of function evaluations.
 
-        # classifier-free guidance
-        self.audio_drop_prob = audio_drop_prob
-        self.cond_drop_prob = cond_drop_prob
+    Args:
+        num_steps (`int`):
+            Number of solver steps. Values without a tabulated schedule fall back to a uniform one.
+        device (`torch.device`):
+            Device the schedule is built on.
+        dtype (`torch.dtype`):
+            Dtype of the schedule.
 
-        # transformer
-        self.transformer = transformer
-        dim = transformer.dim
-        self.dim = dim
+    Returns:
+        `torch.Tensor`: Schedule of shape `(num_steps + 1,)` rising from 0 to 1.
+    """
+    timesteps = EPSS_TIMESTEPS.get(num_steps, [])
+    if not timesteps:
+        return torch.linspace(0, 1, num_steps + 1, device=device, dtype=dtype)
+    return (1 / 32) * torch.tensor(timesteps, device=device, dtype=dtype)
 
-        # conditional flow related
-        self.sigma = sigma
 
-        # sampling related
-        self.odeint_kwargs = odeint_kwargs
+class F5TTSFixedStepODESolver:
+    r"""
+    Fixed step ordinary differential equation solver over an explicit time grid.
 
-        # vocab map for tokenization
-        self.vocab_char_map = vocab_char_map
+    Args:
+        function (`Callable`):
+            Vector field, called as `function(time, value)`.
+        initial_value (`torch.Tensor`):
+            State at the first time point of the grid.
+        method (`str`, *optional*, defaults to `"euler"`):
+            Integration rule, one of `"euler"` or `"midpoint"`.
 
-    @property
-    def device(self):
-        return next(self.parameters()).device
+    Raises:
+        ValueError: If `method` is neither `"euler"` nor `"midpoint"`.
+    """
+
+    def __init__(self, function: Callable, initial_value: torch.Tensor, method: str = "euler"):
+        if method not in ("euler", "midpoint"):
+            raise ValueError(f"`method` must be one of 'euler' or 'midpoint', got {method}.")
+        self.function = function
+        self.initial_value = initial_value
+        self.method = method
+
+    def _compute_step(self, time_start, time_step, value_start):
+        if self.method == "euler":
+            return time_step * self.function(time_start, value_start)
+        half_step = 0.5 * time_step
+        value_mid = value_start + self.function(time_start, value_start) * half_step
+        return time_step * self.function(time_start + half_step, value_mid)
+
+    def _linear_interpolation(self, time_start, time_end, value_start, value_end, time_point):
+        if time_point == time_start:
+            return value_start
+        if time_point == time_end:
+            return value_end
+        weight = (time_point - time_start) / (time_end - time_start)
+        return value_start + weight * (value_end - value_start)
+
+    def integrate(self, time_points: torch.Tensor) -> torch.Tensor:
+        r"""
+        Integrates the vector field over the given time grid.
+
+        Args:
+            time_points (`torch.Tensor`):
+                Strictly increasing grid of shape `(num_points,)`, whose first entry the initial value belongs to.
+
+        Returns:
+            `torch.Tensor`: Trajectory of shape `(num_points, *initial_value.shape)`.
+        """
+        solution = torch.empty(
+            len(time_points),
+            *self.initial_value.shape,
+            dtype=self.initial_value.dtype,
+            device=self.initial_value.device,
+        )
+        solution[0] = self.initial_value
+
+        current_index = 1
+        current_value = self.initial_value
+        for time_start, time_end in zip(time_points[:-1], time_points[1:]):
+            time_step = time_end - time_start
+            next_value = current_value + self._compute_step(time_start, time_step, current_value)
+
+            while current_index < len(time_points) and time_end >= time_points[current_index]:
+                solution[current_index] = self._linear_interpolation(
+                    time_start, time_end, current_value, next_value, time_points[current_index]
+                )
+                current_index += 1
+
+            current_value = next_value
+
+        return solution
+
+
+@dataclass
+class F5TTSGenerationOutput(ModelOutput):
+    r"""
+    Output of [`~F5TTSGenerationMixin.generate`].
+
+    Args:
+        mel_spectrogram (`torch.FloatTensor` of shape `(batch_size, sequence_length, mel_dim)`):
+            Generated log mel spectrogram, carrying the reference speech on the conditioned frames.
+        trajectory (`torch.FloatTensor` of shape `(num_steps + 1, batch_size, sequence_length, mel_dim)`,
+        *optional*):
+            State of the flow at every point of the solver's time grid.
+    """
+
+    mel_spectrogram: torch.FloatTensor | None = None
+    trajectory: torch.FloatTensor | None = None
+
+
+class F5TTSGenerationMixin:
+    r"""
+    Sampling loop of a conditional flow matching text to speech model. Integrates the vector field predicted by the
+    backbone from Gaussian noise up to the data distribution, with classifier free guidance, sway sampling and
+    optional empirically pruned step sampling, and restores the reference speech on the conditioned frames.
+    """
 
     @torch.no_grad()
-    def sample(
+    def generate(
         self,
-        cond: float["b n d"] | float["b nw"],
-        text: int["b nt"] | list[str],
-        duration: int | int["b"],
-        *,
-        lens: int["b"] | None = None,
-        steps=32,
-        cfg_strength=1.0,
-        sway_sampling_coef=None,
-        seed: int | None = None,
-        max_duration=65536,
-        vocoder: Callable[[float["b d n"]], float["b nw"]] | None = None,
-        use_epss=True,
-        no_ref_audio=False,
-        duplicate_test=False,
-        t_inter=0.1,
-        edit_mask=None,
-    ):
+        input_ids: torch.Tensor,
+        conditioning_features: torch.Tensor,
+        duration,
+        attention_mask: torch.Tensor | None = None,
+        num_steps: int = 32,
+        guidance_scale: float = 2.0,
+        sway_sampling_coef: float | None = -1.0,
+        ode_method: str = "euler",
+        use_epss: bool = True,
+        max_duration: int = 65536,
+        no_ref_audio: bool = False,
+        edit_mask: torch.Tensor | None = None,
+        generator: torch.Generator | None = None,
+        return_trajectory: bool = False,
+    ) -> F5TTSGenerationOutput:
+        r"""
+        Args:
+            input_ids (`torch.Tensor` of shape `(batch_size, text_length)`):
+                Character ids of the reference transcription followed by the text to speak, padded with the filler
+                id `0`.
+            conditioning_features (`torch.FloatTensor` of shape `(batch_size, ref_length, mel_dim)`):
+                Log mel spectrogram of the reference speech.
+            duration (`int` or `torch.Tensor` of shape `(batch_size,)`):
+                Total number of mel frames to produce, reference frames included.
+            attention_mask (`torch.BoolTensor` of shape `(batch_size, ref_length)`, *optional*):
+                Mask over the reference frames, `True` on valid frames.
+            num_steps (`int`, *optional*, defaults to 32):
+                Number of solver steps, that is the number of function evaluations of the backbone.
+            guidance_scale (`float`, *optional*, defaults to 2.0):
+                Classifier free guidance scale. Below `1e-5` the unconditional branch is skipped entirely.
+            sway_sampling_coef (`float`, *optional*, defaults to -1.0):
+                Coefficient of the sway reshaping of the time grid. `None` leaves the grid as is.
+            ode_method (`str`, *optional*, defaults to `"euler"`):
+                Integration rule, one of `"euler"` or `"midpoint"`.
+            use_epss (`bool`, *optional*, defaults to `True`):
+                Whether to use the empirically pruned step sampling grid instead of a uniform one.
+            max_duration (`int`, *optional*, defaults to 65536):
+                Upper bound on the number of mel frames produced.
+            no_ref_audio (`bool`, *optional*, defaults to `False`):
+                Whether to zero the reference speech, leaving the text as the only conditioning.
+            edit_mask (`torch.BoolTensor` of shape `(batch_size, ref_length)`, *optional*):
+                Extra mask ANDed onto the reference mask, to keep only part of the reference speech.
+            generator (`torch.Generator`, *optional*):
+                Generator the initial noise is drawn with. It is rewound to the same state for every entry of the
+                batch, so one entry's spectrogram does not depend on how many others it was generated with.
+            return_trajectory (`bool`, *optional*, defaults to `False`):
+                Whether to return the state of the flow at every point of the time grid.
+
+        Returns:
+            [`F5TTSGenerationOutput`]
+        """
         self.eval()
-        # raw wave
+        backbone = self.get_backbone()
 
-        if cond.ndim == 2:
-            cond = self.mel_spec(cond)
-            cond = cond.permute(0, 2, 1)
-            assert cond.shape[-1] == self.num_channels
+        conditioning_features = conditioning_features.to(next(self.parameters()).dtype)
+        batch_size, cond_seq_len = conditioning_features.shape[:2]
+        device, dtype = conditioning_features.device, conditioning_features.dtype
 
-        cond = cond.to(next(self.parameters()).dtype)
+        if attention_mask is None:
+            lengths = torch.full((batch_size,), cond_seq_len, device=device, dtype=torch.long)
+        else:
+            lengths = attention_mask.sum(dim=1).to(torch.long)
 
-        batch, cond_seq_len, device = *cond.shape[:2], cond.device
-        if not exists(lens):
-            lens = torch.full((batch,), cond_seq_len, device=device, dtype=torch.long)
-
-        # text
-
-        if isinstance(text, list):
-            if exists(self.vocab_char_map):
-                text = list_str_to_idx(text, self.vocab_char_map).to(device)
-            else:
-                text = list_str_to_tensor(text).to(device)
-            assert text.shape[0] == batch
-
-        # duration
-
-        cond_mask = lens_to_mask(lens)
+        positions = torch.arange(int(lengths.amax()), device=device)
+        cond_mask = positions[None, :] < lengths[:, None]
         if edit_mask is not None:
             cond_mask = cond_mask & edit_mask
 
         if isinstance(duration, int):
-            duration = torch.full((batch,), duration, device=device, dtype=torch.long)
-
-        duration = torch.maximum(
-            torch.maximum((text != -1).sum(dim=-1), lens) + 1, duration
-        )  # duration at least text/audio prompt length plus one token, so something is generated
+            duration = torch.full((batch_size,), duration, device=device, dtype=torch.long)
+        duration = torch.maximum(torch.maximum((input_ids != 0).sum(dim=-1), lengths) + 1, duration)
         duration = duration.clamp(max=max_duration)
-        max_duration = duration.amax()
+        total_duration = int(duration.amax())
 
-        # duplicate test corner for inner time step oberservation
-        if duplicate_test:
-            test_cond = F.pad(cond, (0, 0, cond_seq_len, max_duration - 2 * cond_seq_len), value=0.0)
-
-        cond = F.pad(cond, (0, 0, 0, max_duration - cond_seq_len), value=0.0)
+        conditioning_features = F.pad(
+            conditioning_features, (0, 0, 0, total_duration - cond_seq_len), value=0.0
+        )
         if no_ref_audio:
-            cond = torch.zeros_like(cond)
+            conditioning_features = torch.zeros_like(conditioning_features)
 
-        cond_mask = F.pad(cond_mask, (0, max_duration - cond_mask.shape[-1]), value=False)
-        cond_mask = cond_mask.unsqueeze(-1)
-        step_cond = torch.where(
-            cond_mask, cond, torch.zeros_like(cond)
-        )  # allow direct control (cut cond audio) with lens passed in
+        cond_mask = F.pad(cond_mask, (0, total_duration - cond_mask.shape[-1]), value=False).unsqueeze(-1)
+        step_cond = torch.where(cond_mask, conditioning_features, torch.zeros_like(conditioning_features))
 
-        if batch > 1:
-            mask = lens_to_mask(duration)
-        else:  # save memory and speed up, as single inference need no mask currently
-            mask = None
+        if batch_size > 1:
+            frame_positions = torch.arange(total_duration, device=device)
+            padding_mask = frame_positions[None, :] < duration[:, None]
+        else:
+            padding_mask = None
 
-        # neural ode
-
-        def fn(t, x):
-            # at each step, conditioning is fixed
-            # step_cond = torch.where(cond_mask, cond, torch.zeros_like(cond))
-
-            # predict flow (cond)
-            if cfg_strength < 1e-5:
-                pred = self.transformer(
-                    x=x,
-                    cond=step_cond,
-                    text=text,
-                    time=t,
-                    mask=mask,
+        def ode_function(time_step, hidden_states):
+            if guidance_scale < 1e-5:
+                return self(
+                    input_ids=input_ids,
+                    input_features=hidden_states,
+                    conditioning_features=step_cond,
+                    timestep=time_step,
+                    attention_mask=padding_mask,
                     drop_audio_cond=False,
                     drop_text=False,
                     cache=True,
-                )
-                return pred
+                ).vector_field
 
-            # predict flow (cond and uncond), for classifier-free guidance
-            pred_cfg = self.transformer(
-                x=x,
-                cond=step_cond,
-                text=text,
-                time=t,
-                mask=mask,
+            vector_field = self(
+                input_ids=input_ids,
+                input_features=hidden_states,
+                conditioning_features=step_cond,
+                timestep=time_step,
+                attention_mask=padding_mask,
                 cfg_infer=True,
                 cache=True,
-            )
-            pred, null_pred = torch.chunk(pred_cfg, 2, dim=0)
-            return pred + (pred - null_pred) * cfg_strength
+            ).vector_field
+            prediction, null_prediction = torch.chunk(vector_field, 2, dim=0)
+            return prediction + (prediction - null_prediction) * guidance_scale
 
-        # noise input
-        # to make sure batch inference result is same with different batch size, and for sure single inference
-        # still some difference maybe due to convolutional layers
-        y0 = []
-        for dur in duration:
-            if exists(seed):
-                torch.manual_seed(seed)
-            y0.append(torch.randn(dur, self.num_channels, device=self.device, dtype=step_cond.dtype))
-        y0 = pad_sequence(y0, padding_value=0, batch_first=True)
+        # Rewinding the generator per entry keeps a batched run bit identical to the same entries run alone.
+        generator_state = generator.get_state() if generator is not None else None
+        samples = []
+        for length in duration:
+            if generator_state is not None:
+                generator.set_state(generator_state)
+            samples.append(torch.randn(int(length), self.mel_dim, device=device, dtype=dtype, generator=generator))
+        noise = pad_sequence(samples, padding_value=0, batch_first=True)
 
-        t_start = 0
-
-        # duplicate test corner for inner time step oberservation
-        if duplicate_test:
-            t_start = t_inter
-            y0 = (1 - t_start) * y0 + t_start * test_cond
-            steps = int(steps * (1 - t_start))
-
-        if t_start == 0 and use_epss:  # use Empirically Pruned Step Sampling for low NFE
-            t = get_epss_timesteps(steps, device=self.device, dtype=step_cond.dtype)
+        if use_epss:
+            time_points = get_epss_timesteps(num_steps, device=device, dtype=dtype)
         else:
-            t = torch.linspace(t_start, 1, steps + 1, device=self.device, dtype=step_cond.dtype)
+            time_points = torch.linspace(0, 1, num_steps + 1, device=device, dtype=dtype)
         if sway_sampling_coef is not None:
-            t = t + sway_sampling_coef * (torch.cos(torch.pi / 2 * t) - 1 + t)
+            time_points = time_points + sway_sampling_coef * (
+                torch.cos(torch.pi / 2 * time_points) - 1 + time_points
+            )
 
-        trajectory = odeint(fn, y0, t, **self.odeint_kwargs)
-        self.transformer.clear_cache()
+        solver = F5TTSFixedStepODESolver(function=ode_function, initial_value=noise, method=ode_method)
+        trajectory = solver.integrate(time_points)
+        backbone.clear_cache()
 
-        sampled = trajectory[-1]
-        out = sampled
-        out = torch.where(cond_mask, cond, out)
+        mel_spectrogram = torch.where(cond_mask, conditioning_features, trajectory[-1])
 
-        if exists(vocoder):
-            out = out.permute(0, 2, 1)
-            out = vocoder(out)
-
-        return out, trajectory
-
-    def forward(
-        self,
-        inp: float["b n d"] | float["b nw"],  # mel or raw wave
-        text: int["b nt"] | list[str],
-        *,
-        lens: int["b"] | None = None,
-        noise_scheduler: str | None = None,
-    ):
-        # handle raw wave
-        if inp.ndim == 2:
-            inp = self.mel_spec(inp)
-            inp = inp.permute(0, 2, 1)
-            assert inp.shape[-1] == self.num_channels
-
-        batch, seq_len, dtype, device, _σ1 = *inp.shape[:2], inp.dtype, self.device, self.sigma
-
-        # handle text as string
-        if isinstance(text, list):
-            if exists(self.vocab_char_map):
-                text = list_str_to_idx(text, self.vocab_char_map).to(device)
-            else:
-                text = list_str_to_tensor(text).to(device)
-            assert text.shape[0] == batch
-
-        # lens and mask
-        if not exists(lens):  # if lens not acquired by trainer from collate_fn
-            lens = torch.full((batch,), seq_len, device=device)
-        mask = lens_to_mask(lens, length=seq_len)
-
-        # get a random span to mask out for training conditionally
-        frac_lengths = torch.zeros((batch,), device=self.device).float().uniform_(*self.frac_lengths_mask)
-        rand_span_mask = mask_from_frac_lengths(lens, frac_lengths)
-
-        if exists(mask):
-            rand_span_mask &= mask
-
-        # mel is x1
-        x1 = inp
-
-        # x0 is gaussian noise
-        x0 = torch.randn_like(x1)
-
-        # time step
-        time = torch.rand((batch,), dtype=dtype, device=self.device)
-        # TODO. noise_scheduler
-
-        # sample xt (φ_t(x) in the paper)
-        t = time.unsqueeze(-1).unsqueeze(-1)
-        φ = (1 - t) * x0 + t * x1
-        flow = x1 - x0
-
-        # only predict what is within the random mask span for infilling
-        cond = torch.where(rand_span_mask[..., None], torch.zeros_like(x1), x1)
-
-        # transformer and cfg training with a drop rate
-        drop_audio_cond = random() < self.audio_drop_prob  # p_drop in voicebox paper
-        if random() < self.cond_drop_prob:  # p_uncond in voicebox paper
-            drop_audio_cond = True
-            drop_text = True
-        else:
-            drop_text = False
-
-        # apply mask will use more memory; might adjust batchsize or batchsampler long sequence threshold
-        pred = self.transformer(
-            x=φ, cond=cond, text=text, time=time, drop_audio_cond=drop_audio_cond, drop_text=drop_text, mask=mask
+        return F5TTSGenerationOutput(
+            mel_spectrogram=mel_spectrogram,
+            trajectory=trajectory if return_trajectory else None,
         )
 
-        # flow matching loss
-        loss = F.mse_loss(pred, flow, reduction="none")
-        loss = loss[rand_span_mask]
 
-        return loss.mean(), cond, pred
+__all__ = ["F5TTSFixedStepODESolver", "F5TTSGenerationMixin", "F5TTSGenerationOutput", "get_epss_timesteps"]

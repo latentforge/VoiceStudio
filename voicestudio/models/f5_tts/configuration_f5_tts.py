@@ -1,58 +1,256 @@
-hydra:
-  run:
-    dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+"""Configuration class for F5-TTS."""
 
-datasets:
-  name: Emilia_ZH_EN  # dataset name
-  batch_size_per_gpu: 38400  # 8 GPUs, 8 * 38400 = 307200
-  batch_size_type: frame  # frame | sample
-  max_samples: 64  # max sequences per batch if use frame-wise batch_size. we set 32 for small models, 64 for base models
-  num_workers: 16
+from transformers.configuration_utils import PreTrainedConfig
 
-optim:
-  epochs: 11
-  learning_rate: 7.5e-5
-  num_warmup_updates: 20000  # warmup updates
-  grad_accumulation_steps: 1  # note: updates = steps / grad_accumulation_steps
-  max_grad_norm: 1.0  # gradient clipping
-  bnb_optimizer: False  # use bnb 8bit AdamW optimizer or not
 
-model:
-  name: F5TTS_v1_Base  # model name
-  tokenizer: pinyin  # tokenizer type
-  tokenizer_path: null  # if 'custom' tokenizer, define the path want to use (should be vocab.txt)
-  backbone: DiT
-  arch:
-    dim: 1024
-    depth: 22
-    heads: 16
-    ff_mult: 2
-    text_dim: 512
-    text_mask_padding: True
-    qk_norm: null  # null | rms_norm
-    conv_layers: 4
-    pe_attn_head: null
-    attn_backend: torch  # torch | flash_attn
-    attn_mask_enabled: False
-    checkpoint_activations: False  # recompute activations and save memory for extra compute
-  mel_spec:
-    target_sample_rate: 24000
-    n_mel_channels: 100
-    hop_length: 256
-    win_length: 1024
-    n_fft: 1024
-    mel_spec_type: vocos  # vocos | bigvgan
-  vocoder:
-    is_local: False  # use local offline ckpt or not
-    local_path: null  # local vocoder path
+class F5TTSVocosConfig(PreTrainedConfig):
+    r"""
+    This is the configuration class to store the configuration of a [`F5TTSVocosModel`], the ConvNeXt plus inverse
+    STFT vocoder that turns the log-mel spectrogram predicted by [`F5TTSForConditionalGeneration`] into a waveform.
+    Instantiating a configuration with the defaults will yield a configuration matching the
+    [charactr/vocos-mel-24khz](https://huggingface.co/charactr/vocos-mel-24khz) vocoder F5-TTS is released with.
 
-ckpts:
-  logger: wandb  # wandb | tensorboard | null
-  wandb_project: CFM-TTS  # wandb project name
-  wandb_run_name: ${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}  # wandb run name
-  wandb_resume_id: null  # wandb run id for resuming, null to auto-detect from checkpoint
-  log_samples: True  # infer random sample per save checkpoint. wip, normal to fail with extra long samples
-  save_per_updates: 50000  # save checkpoint per updates
-  keep_last_n_checkpoints: -1  # -1 to keep all, 0 to not save intermediate, > 0 to keep last N checkpoints
-  last_per_updates: 5000  # save last checkpoint per updates
-  save_dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}
+    Configuration objects inherit from [`PreTrainedConfig`] and can be used to control the model outputs. Read the
+    documentation from [`PreTrainedConfig`] for more information.
+
+    Args:
+        mel_dim (`int`, *optional*, defaults to 100):
+            Number of mel filterbank channels the vocoder consumes.
+        hidden_size (`int`, *optional*, defaults to 512):
+            Dimensionality of the ConvNeXt backbone.
+        intermediate_size (`int`, *optional*, defaults to 1536):
+            Dimensionality of the pointwise expansion inside each ConvNeXt block.
+        num_hidden_layers (`int`, *optional*, defaults to 8):
+            Number of ConvNeXt blocks.
+        layer_scale_init_value (`float`, *optional*):
+            Initial value of the per-channel layer scale of each ConvNeXt block. Defaults to
+            `1 / num_hidden_layers`.
+        n_fft (`int`, *optional*, defaults to 1024):
+            Size of the Fourier transform the head inverts.
+        hop_length (`int`, *optional*, defaults to 256):
+            Distance in waveform samples between neighbouring spectrogram frames.
+        sampling_rate (`int`, *optional*, defaults to 24000):
+            Sampling rate, in Hz, of the waveform the vocoder produces.
+        layer_norm_eps (`float`, *optional*, defaults to 1e-06):
+            Epsilon of the layer normalizations.
+        initializer_range (`float`, *optional*, defaults to 0.02):
+            Standard deviation of the truncated normal initializer used for the convolution and linear weights.
+    """
+
+    model_type = "f5_tts_vocos"
+
+    def __init__(
+        self,
+        mel_dim: int = 100,
+        hidden_size: int = 512,
+        intermediate_size: int = 1536,
+        num_hidden_layers: int = 8,
+        layer_scale_init_value: float | None = None,
+        n_fft: int = 1024,
+        hop_length: int = 256,
+        sampling_rate: int = 24000,
+        layer_norm_eps: float = 1e-6,
+        initializer_range: float = 0.02,
+        **kwargs,
+    ):
+        self.mel_dim = mel_dim
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.num_hidden_layers = num_hidden_layers
+        self.layer_scale_init_value = layer_scale_init_value
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.sampling_rate = sampling_rate
+        self.layer_norm_eps = layer_norm_eps
+        self.initializer_range = initializer_range
+        super().__init__(**kwargs)
+
+
+class F5TTSConfig(PreTrainedConfig):
+    r"""
+    This is the configuration class to store the configuration of a [`F5TTSForConditionalGeneration`]. It is used to
+    instantiate an F5-TTS model according to the specified arguments, defining the conditional flow matching model
+    and the backbone that predicts its vector field. Instantiating a configuration with the defaults will yield a
+    configuration matching the F5-TTS v1 Base architecture of
+    [SWivid/F5-TTS](https://huggingface.co/SWivid/F5-TTS).
+
+    Configuration objects inherit from [`PreTrainedConfig`] and can be used to control the model outputs. Read the
+    documentation from [`PreTrainedConfig`] for more information.
+
+    Args:
+        backbone (`str`, *optional*, defaults to `"dit"`):
+            Which vector field backbone to build, `"dit"` for the F5-TTS diffusion transformer or `"unett"` for the
+            flat UNet transformer of E2-TTS.
+        hidden_size (`int`, *optional*, defaults to 1024):
+            Dimensionality of the backbone.
+        num_hidden_layers (`int`, *optional*, defaults to 22):
+            Number of backbone layers. Must be even when `backbone` is `"unett"`.
+        num_attention_heads (`int`, *optional*, defaults to 16):
+            Number of attention heads in each layer.
+        head_dim (`int`, *optional*, defaults to 64):
+            Dimensionality of a single attention head. The attention inner dimension is
+            `num_attention_heads * head_dim` and is independent of `hidden_size`.
+        ff_mult (`int`, *optional*, defaults to 2):
+            Expansion factor of the feed forward inner dimension.
+        dropout (`float`, *optional*, defaults to 0.1):
+            Dropout applied to the attention output projection and inside the feed forward.
+        attention_dropout (`float`, *optional*, defaults to 0.0):
+            Dropout applied to the attention probabilities.
+        mel_dim (`int`, *optional*, defaults to 100):
+            Number of mel filterbank channels the flow is defined over.
+        text_vocab_size (`int`, *optional*, defaults to 2545):
+            Number of characters in the vocabulary file. The text embedding table holds `text_vocab_size + 1`
+            rows, the extra one being the filler at id `0` that [`F5TTSTokenizer`] pads with.
+        text_dim (`int`, *optional*, defaults to 512):
+            Dimensionality of the text embedding. Defaults to `mel_dim` when set to `None`.
+        text_mask_padding (`bool`, *optional*, defaults to `True`):
+            Whether filler and batch padding positions are zeroed before and after every text conv block.
+        text_average_upsampling (`bool`, *optional*, defaults to `False`):
+            Whether the encoded text is average upsampled to the speech length after the text conv blocks. Requires
+            `text_mask_padding` to be `True`.
+        text_conv_layers (`int`, *optional*, defaults to 4):
+            Number of ConvNeXt V2 blocks applied to the text embedding. `0` disables the sinusoidal position
+            embedding and the conv blocks altogether.
+        text_conv_mult (`int`, *optional*, defaults to 2):
+            Expansion factor of the pointwise layer inside each text ConvNeXt V2 block.
+        text_max_positions (`int`, *optional*, defaults to 8192):
+            Number of precomputed sinusoidal positions available to the text embedding.
+        qk_norm (`str`, *optional*):
+            Query and key normalization, `None` for none or `"rms_norm"` for per-head RMS normalization.
+        pe_attn_head (`int`, *optional*):
+            Number of leading attention heads that receive the rotary position embedding. `None` applies it to all
+            heads.
+        attn_mask_enabled (`bool`, *optional*, defaults to `False`):
+            Whether the padding mask is turned into an attention mask. Disabled in every released checkpoint's
+            training recipe.
+        long_skip_connection (`bool`, *optional*, defaults to `False`):
+            Whether the `"dit"` backbone concatenates its input embedding onto its last layer output and projects
+            the result back down.
+        skip_connect_type (`str`, *optional*, defaults to `"concat"`):
+            How the `"unett"` backbone joins a first half layer output onto its second half counterpart, one of
+            `"concat"`, `"add"` or `"none"`.
+        rms_norm_eps (`float`, *optional*, defaults to 1e-06):
+            Epsilon of the query and key RMS normalizations.
+        layer_norm_eps (`float`, *optional*, defaults to 1e-06):
+            Epsilon of the adaptive and feed forward layer normalizations.
+        max_position_embeddings (`int`, *optional*, defaults to 8192):
+            Longest speech sequence, in mel frames, the rotary position embedding is built for.
+        rope_parameters (`dict`, *optional*):
+            Rotary position embedding parameters. Defaults to `{"rope_type": "default", "rope_theta": 10000.0}`.
+        audio_drop_prob (`float`, *optional*, defaults to 0.3):
+            Probability of dropping the speech conditioning during training, for classifier free guidance.
+        cond_drop_prob (`float`, *optional*, defaults to 0.2):
+            Probability of dropping the speech conditioning and the text together during training.
+        frac_lengths_mask (`tuple[float, float]`, *optional*, defaults to `(0.7, 1.0)`):
+            Bounds of the uniform distribution the infilling span length is drawn from, as a fraction of the
+            sequence length.
+        sigma (`float`, *optional*, defaults to 0.0):
+            Standard deviation of the conditional probability path. `0.0` gives the straight optimal transport path
+            that every released checkpoint is trained with.
+        sampling_rate (`int`, *optional*, defaults to 24000):
+            Sampling rate, in Hz, of the waveform the mel spectrogram is computed from.
+        hop_length (`int`, *optional*, defaults to 256):
+            Distance in waveform samples between neighbouring mel frames.
+        initializer_range (`float`, *optional*, defaults to 0.02):
+            Standard deviation of the truncated normal initializer used for the weight matrices.
+
+    Example:
+
+    ```python
+    >>> from voicestudio.models.f5_tts import F5TTSConfig, F5TTSForConditionalGeneration
+
+    >>> configuration = F5TTSConfig()
+
+    >>> model = F5TTSForConditionalGeneration(configuration)
+
+    >>> configuration = model.config
+    ```"""
+
+    model_type = "f5_tts"
+
+    def __init__(
+        self,
+        backbone: str = "dit",
+        hidden_size: int = 1024,
+        num_hidden_layers: int = 22,
+        num_attention_heads: int = 16,
+        head_dim: int = 64,
+        ff_mult: int = 2,
+        dropout: float = 0.1,
+        attention_dropout: float = 0.0,
+        mel_dim: int = 100,
+        text_vocab_size: int = 2545,
+        text_dim: int | None = 512,
+        text_mask_padding: bool = True,
+        text_average_upsampling: bool = False,
+        text_conv_layers: int = 4,
+        text_conv_mult: int = 2,
+        text_max_positions: int = 8192,
+        qk_norm: str | None = None,
+        pe_attn_head: int | None = None,
+        attn_mask_enabled: bool = False,
+        long_skip_connection: bool = False,
+        skip_connect_type: str = "concat",
+        rms_norm_eps: float = 1e-6,
+        layer_norm_eps: float = 1e-6,
+        max_position_embeddings: int = 8192,
+        rope_parameters=None,
+        audio_drop_prob: float = 0.3,
+        cond_drop_prob: float = 0.2,
+        frac_lengths_mask: tuple[float, float] = (0.7, 1.0),
+        sigma: float = 0.0,
+        sampling_rate: int = 24000,
+        hop_length: int = 256,
+        initializer_range: float = 0.02,
+        **kwargs,
+    ):
+        if backbone not in ("dit", "unett"):
+            raise ValueError(f"`backbone` must be one of 'dit' or 'unett', got {backbone}.")
+        if backbone == "unett" and num_hidden_layers % 2 != 0:
+            raise ValueError(f"The 'unett' backbone needs an even `num_hidden_layers`, got {num_hidden_layers}.")
+        if qk_norm not in (None, "rms_norm"):
+            raise ValueError(f"`qk_norm` must be one of `None` or 'rms_norm', got {qk_norm}.")
+        if skip_connect_type not in ("concat", "add", "none"):
+            raise ValueError(
+                f"`skip_connect_type` must be one of 'concat', 'add' or 'none', got {skip_connect_type}."
+            )
+        if text_average_upsampling and not text_mask_padding:
+            raise ValueError("`text_average_upsampling` requires `text_mask_padding` to be True.")
+
+        self.backbone = backbone
+        self.hidden_size = hidden_size
+        self.num_hidden_layers = num_hidden_layers
+        self.num_attention_heads = num_attention_heads
+        self.head_dim = head_dim
+        self.ff_mult = ff_mult
+        self.dropout = dropout
+        self.attention_dropout = attention_dropout
+        self.mel_dim = mel_dim
+        self.text_vocab_size = text_vocab_size
+        self.text_dim = text_dim if text_dim is not None else mel_dim
+        self.text_mask_padding = text_mask_padding
+        self.text_average_upsampling = text_average_upsampling
+        self.text_conv_layers = text_conv_layers
+        self.text_conv_mult = text_conv_mult
+        self.text_max_positions = text_max_positions
+        self.qk_norm = qk_norm
+        self.pe_attn_head = pe_attn_head
+        self.attn_mask_enabled = attn_mask_enabled
+        self.long_skip_connection = long_skip_connection
+        self.skip_connect_type = skip_connect_type
+        self.rms_norm_eps = rms_norm_eps
+        self.layer_norm_eps = layer_norm_eps
+        self.max_position_embeddings = max_position_embeddings
+        self.rope_parameters = rope_parameters
+        self.audio_drop_prob = audio_drop_prob
+        self.cond_drop_prob = cond_drop_prob
+        self.frac_lengths_mask = tuple(frac_lengths_mask)
+        self.sigma = sigma
+        self.sampling_rate = sampling_rate
+        self.hop_length = hop_length
+        self.initializer_range = initializer_range
+
+        super().__init__(**kwargs)
+
+
+__all__ = ["F5TTSConfig", "F5TTSVocosConfig"]

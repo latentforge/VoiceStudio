@@ -1,218 +1,186 @@
-# ruff: noqa: F722 F821
-
-from __future__ import annotations
+"""Tokenization class for F5-TTS."""
 
 import os
-import random
-from collections import defaultdict
-from importlib.resources import files
 
-import rjieba
-import torch
-from pypinyin import Style, lazy_pinyin
-from torch.nn.utils.rnn import pad_sequence
+from transformers.tokenization_utils import PreTrainedTokenizer
+from transformers.utils import logging
 
 
-# seed everything
+logger = logging.get_logger(__name__)
+
+VOCAB_FILES_NAMES = {"vocab_file": "vocab.txt"}
+
+PUNCTUATION_TRANSLATION = str.maketrans({";": ",", "“": '"', "”": '"', "‘": "'", "’": "'"})
 
 
-def seed_everything(seed=0):
-    random.seed(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+def is_chinese(character: str) -> bool:
+    r"""
+    Args:
+        character (`str`):
+            Single character to test.
+
+    Returns:
+        `bool`: Whether the character falls in the common Chinese range.
+    """
+    return "㄀" <= character <= "鿿"
 
 
-# helpers
+def convert_char_to_pinyin(text_list: list[str], polyphone: bool = True) -> list[list[str]]:
+    r"""
+    Splits every string into the character sequence the model is trained on, replacing runs of Chinese characters
+    with their tone numbered pinyin and inserting a space in front of a multi character segment that does not
+    already follow one.
 
+    Chinese text needs the `rjieba` word segmenter and the `pypinyin` grapheme to phoneme converter. Without them,
+    a string holding no Chinese character is split into its characters, which leaves out the space the segmenter
+    would insert in front of a multi character segment following a character other than a space, a colon or a
+    quote.
 
-def exists(v):
-    return v is not None
+    Args:
+        text_list (`list[str]`):
+            Strings to convert.
+        polyphone (`bool`, *optional*, defaults to `True`):
+            Whether runs of Chinese characters are converted with tone sandhi applied.
 
+    Returns:
+        `list[list[str]]`: One character list per input string.
 
-def default(v, d):
-    return v if exists(v) else d
-
-
-def is_package_available(package_name: str) -> bool:
+    Raises:
+        ImportError: If a string holds Chinese characters and `rjieba` or `pypinyin` is not installed.
+    """
     try:
-        import importlib
+        import rjieba
+        from pypinyin import Style, lazy_pinyin
 
-        package_exists = importlib.util.find_spec(package_name) is not None
-        return package_exists
-    except Exception:
-        return False
+        segmenter_available = True
+    except ImportError:
+        segmenter_available = False
 
-
-# tensor helpers
-
-
-def lens_to_mask(t: int["b"], length: int | None = None) -> bool["b n"]:
-    if not exists(length):
-        length = t.amax()
-
-    seq = torch.arange(length, device=t.device)
-    return seq[None, :] < t[:, None]
-
-
-def mask_from_start_end_indices(seq_len: int["b"], start: int["b"], end: int["b"]):
-    max_seq_len = seq_len.max().item()
-    seq = torch.arange(max_seq_len, device=start.device).long()
-    start_mask = seq[None, :] >= start[:, None]
-    end_mask = seq[None, :] < end[:, None]
-    return start_mask & end_mask
-
-
-def mask_from_frac_lengths(seq_len: int["b"], frac_lengths: float["b"]):
-    lengths = (frac_lengths * seq_len).long()
-    max_start = seq_len - lengths
-
-    rand = torch.rand_like(frac_lengths)
-    start = (max_start * rand).long().clamp(min=0)
-    end = start + lengths
-
-    return mask_from_start_end_indices(seq_len, start, end)
-
-
-def maybe_masked_mean(t: float["b n d"], mask: bool["b n"] = None) -> float["b d"]:
-    if not exists(mask):
-        return t.mean(dim=1)
-
-    t = torch.where(mask[:, :, None], t, torch.tensor(0.0, device=t.device))
-    num = t.sum(dim=1)
-    den = mask.float().sum(dim=1)
-
-    return num / den.clamp(min=1.0)
-
-
-# simple utf-8 tokenizer, since paper went character based
-def list_str_to_tensor(text: list[str], padding_value=-1) -> int["b nt"]:
-    list_tensors = [torch.tensor([*bytes(t, "UTF-8")]) for t in text]  # ByT5 style
-    text = pad_sequence(list_tensors, padding_value=padding_value, batch_first=True)
-    return text
-
-
-# char tokenizer, based on custom dataset's extracted .txt file
-def list_str_to_idx(
-    text: list[str] | list[list[str]],
-    vocab_char_map: dict[str, int],  # {char: idx}
-    padding_value=-1,
-) -> int["b nt"]:
-    list_idx_tensors = [torch.tensor([vocab_char_map.get(c, 0) for c in t]) for t in text]  # pinyin or char style
-    text = pad_sequence(list_idx_tensors, padding_value=padding_value, batch_first=True)
-    return text
-
-
-# Get tokenizer
-
-
-def get_tokenizer(dataset_name, tokenizer: str = "pinyin"):
-    """
-    tokenizer   - "pinyin" do g2p for only chinese characters, need .txt vocab_file
-                - "char" for char-wise tokenizer, need .txt vocab_file
-                - "byte" for utf-8 tokenizer
-                - "custom" if you're directly passing in a path to the vocab.txt you want to use
-    vocab_size  - if use "pinyin", all available pinyin types, common alphabets (also those with accent) and symbols
-                - if use "char", derived from unfiltered character & symbol counts of custom dataset
-                - if use "byte", set to 256 (unicode byte range)
-    """
-    if tokenizer in ["pinyin", "char"]:
-        tokenizer_path = os.path.join(files("f5_tts").joinpath("../../data"), f"{dataset_name}_{tokenizer}/vocab.txt")
-        with open(tokenizer_path, "r", encoding="utf-8") as f:
-            vocab_char_map = {}
-            for i, char in enumerate(f):
-                vocab_char_map[char[:-1]] = i
-        vocab_size = len(vocab_char_map)
-        assert vocab_char_map[" "] == 0, "make sure space is of idx 0 in vocab.txt, cuz 0 is used for unknown char"
-
-    elif tokenizer == "byte":
-        vocab_char_map = None
-        vocab_size = 256
-
-    elif tokenizer == "custom":
-        with open(dataset_name, "r", encoding="utf-8") as f:
-            vocab_char_map = {}
-            for i, char in enumerate(f):
-                vocab_char_map[char[:-1]] = i
-        vocab_size = len(vocab_char_map)
-
-    return vocab_char_map, vocab_size
-
-
-# convert char to pinyin
-
-
-def convert_char_to_pinyin(text_list, polyphone=True):
     final_text_list = []
-    custom_trans = str.maketrans(
-        {";": ",", "“": '"', "”": '"', "‘": "'", "’": "'"}
-    )  # add custom trans here, to address oov
-
-    def is_chinese(c):
-        return (
-            "\u3100" <= c <= "\u9fff"  # common chinese characters
-        )
-
     for text in text_list:
         char_list = []
-        text = text.translate(custom_trans)
-        for seg in rjieba.cut(text):
-            seg_byte_len = len(bytes(seg, "UTF-8"))
-            if seg_byte_len == len(seg):  # if pure alphabets and symbols
-                if char_list and seg_byte_len > 1 and char_list[-1] not in " :'\"":
+        text = text.translate(PUNCTUATION_TRANSLATION)
+
+        if not segmenter_available:
+            if any(is_chinese(character) for character in text):
+                raise ImportError(
+                    "Converting Chinese text to pinyin needs the `rjieba` and `pypinyin` packages, which are not "
+                    "installed."
+                )
+            final_text_list.append(list(text))
+            continue
+
+        for segment in rjieba.cut(text):
+            segment_byte_len = len(bytes(segment, "UTF-8"))
+            if segment_byte_len == len(segment):
+                if char_list and segment_byte_len > 1 and char_list[-1] not in " :'\"":
                     char_list.append(" ")
-                char_list.extend(seg)
-            elif polyphone and seg_byte_len == 3 * len(seg):  # if pure east asian characters
-                seg_ = lazy_pinyin(seg, style=Style.TONE3, tone_sandhi=True)
-                for i, c in enumerate(seg):
-                    if is_chinese(c):
+                char_list.extend(segment)
+            elif polyphone and segment_byte_len == 3 * len(segment):
+                pinyin = lazy_pinyin(segment, style=Style.TONE3, tone_sandhi=True)
+                for index, character in enumerate(segment):
+                    if is_chinese(character):
                         char_list.append(" ")
-                    char_list.append(seg_[i])
-            else:  # if mixed characters, alphabets and symbols
-                for c in seg:
-                    if ord(c) < 256:
-                        char_list.extend(c)
-                    elif is_chinese(c):
+                    char_list.append(pinyin[index])
+            else:
+                for character in segment:
+                    if ord(character) < 256:
+                        char_list.extend(character)
+                    elif is_chinese(character):
                         char_list.append(" ")
-                        char_list.extend(lazy_pinyin(c, style=Style.TONE3, tone_sandhi=True))
+                        char_list.extend(lazy_pinyin(character, style=Style.TONE3, tone_sandhi=True))
                     else:
-                        char_list.append(c)
+                        char_list.append(character)
         final_text_list.append(char_list)
 
     return final_text_list
 
 
-# filter func for dirty data with many repetitions
+class F5TTSTokenizer(PreTrainedTokenizer):
+    r"""
+    Constructs an F5-TTS tokenizer. Id `0` is the filler the model's text embedding reserves for positions that
+    carry no character, and every line of the vocabulary file takes the id one past its line number. The first line,
+    a single space, doubles as the unknown token. Chinese text is replaced by tone numbered pinyin before lookup.
+
+    This tokenizer inherits from [`PreTrainedTokenizer`] which contains most of the main methods. Users should refer
+    to this superclass for more information regarding those methods.
+
+    Args:
+        vocab_file (`str`):
+            Path to the vocabulary file, one token per line.
+        pad_token (`str`, *optional*, defaults to `"<pad>"`):
+            Token standing for the filler id `0`. It is not part of the vocabulary file.
+        unk_token (`str`, *optional*, defaults to `" "`):
+            Token every out of vocabulary character maps onto.
+        polyphone (`bool`, *optional*, defaults to `True`):
+            Whether runs of Chinese characters are converted with tone sandhi applied.
+    """
+
+    vocab_files_names = VOCAB_FILES_NAMES
+    model_input_names = ["input_ids"]
+
+    def __init__(
+        self,
+        vocab_file: str,
+        pad_token: str = "<pad>",
+        unk_token: str = " ",
+        polyphone: bool = True,
+        **kwargs,
+    ):
+        self.vocab_file = vocab_file
+        self.polyphone = polyphone
+
+        self.encoder = {pad_token: 0}
+        with open(vocab_file, "r", encoding="utf-8") as vocab_handle:
+            for index, line in enumerate(vocab_handle):
+                self.encoder[line[:-1]] = index + 1
+        self.decoder = {index: token for token, index in self.encoder.items()}
+
+        super().__init__(pad_token=pad_token, unk_token=unk_token, **kwargs)
+
+    @property
+    def vocab_size(self) -> int:
+        return len(self.encoder)
+
+    def get_vocab(self) -> dict:
+        return dict(self.encoder, **self.added_tokens_encoder)
+
+    def _tokenize(self, text: str) -> list[str]:
+        return convert_char_to_pinyin([text], polyphone=self.polyphone)[0]
+
+    def _convert_token_to_id(self, token: str) -> int:
+        return self.encoder.get(token, self.encoder[str(self.unk_token)])
+
+    def _convert_id_to_token(self, index: int) -> str:
+        return self.decoder.get(index, str(self.unk_token))
+
+    def convert_tokens_to_string(self, tokens: list[str]) -> str:
+        return "".join(token for token in tokens if token != str(self.pad_token))
+
+    def save_vocabulary(self, save_directory: str, filename_prefix: str | None = None) -> tuple[str]:
+        r"""
+        Args:
+            save_directory (`str`):
+                Directory the vocabulary file is written to.
+            filename_prefix (`str`, *optional*):
+                Prefix prepended to the vocabulary file name.
+
+        Returns:
+            `tuple[str]`: Path of the written vocabulary file.
+
+        Raises:
+            ValueError: If `save_directory` is not a directory.
+        """
+        if not os.path.isdir(save_directory):
+            raise ValueError(f"Vocabulary path ({save_directory}) should be a directory.")
+        vocab_file = os.path.join(
+            save_directory, (filename_prefix + "-" if filename_prefix else "") + VOCAB_FILES_NAMES["vocab_file"]
+        )
+        with open(vocab_file, "w", encoding="utf-8") as writer:
+            for token, index in sorted(self.encoder.items(), key=lambda item: item[1]):
+                if index > 0:
+                    writer.write(token + "\n")
+        return (vocab_file,)
 
 
-def repetition_found(text, length=2, tolerance=10):
-    pattern_count = defaultdict(int)
-    for i in range(len(text) - length + 1):
-        pattern = text[i : i + length]
-        pattern_count[pattern] += 1
-    for pattern, count in pattern_count.items():
-        if count > tolerance:
-            return True
-    return False
-
-
-# get the empirically pruned step for sampling
-
-
-def get_epss_timesteps(n, device, dtype):
-    dt = 1 / 32
-    predefined_timesteps = {
-        5: [0, 2, 4, 8, 16, 32],
-        6: [0, 2, 4, 6, 8, 16, 32],
-        7: [0, 2, 4, 6, 8, 16, 24, 32],
-        10: [0, 2, 4, 6, 8, 12, 16, 20, 24, 28, 32],
-        12: [0, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32],
-        16: [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 32],
-    }
-    t = predefined_timesteps.get(n, [])
-    if not t:
-        return torch.linspace(0, 1, n + 1, device=device, dtype=dtype)
-    return dt * torch.tensor(t, device=device, dtype=dtype)
+__all__ = ["F5TTSTokenizer", "convert_char_to_pinyin"]
