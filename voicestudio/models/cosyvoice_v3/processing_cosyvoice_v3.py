@@ -2,20 +2,18 @@
 
 from typing import Optional
 
-from ..cosyvoice_v2.processing_cosyvoice_v2 import CosyVoiceV2FeatureExtractor, CosyVoiceV2Processor
+from ..cosyvoice_v2.processing_cosyvoice_v2 import (
+    SPECIAL_TOKENS as V2_SPECIAL_TOKENS,
+    CosyVoiceV2FeatureExtractor,
+    CosyVoiceV2Processor,
+)
 
 
-# The tokens upstream's `CosyVoice3Tokenizer` adds to the Qwen2 tokenizer. The first nineteen are
-# v2's; the rest are the end of system marker, the ARPAbet phoneme set and the pinyin syllable set
-# the v3 text frontend emits.
-SPECIAL_TOKENS = [
-    "<|im_start|>", "<|im_end|>", "<|endofprompt|>",
-    "[breath]", "<strong>", "</strong>", "[noise]",
-    "[laughter]", "[cough]", "[clucking]", "[accent]",
-    "[quick_breath]",
-    "<laughter>", "</laughter>",
-    "[hissing]", "[sigh]", "[vocalized-noise]",
-    "[lipsmack]", "[mn]", "<|endofsystem|>",
+# The tokens upstream's `CosyVoice3Tokenizer` adds to the Qwen2 tokenizer, in the order it adds
+# them: v2's tokens, then the end of system marker, the ARPAbet phoneme set and the pinyin syllable
+# set the v3 text frontend emits.
+SPECIAL_TOKENS = V2_SPECIAL_TOKENS + [
+    "<|endofsystem|>",
     "[AA]", "[AA0]", "[AA1]", "[AA2]", "[AE]", "[AE0]", "[AE1]", "[AE2]", "[AH]", "[AH0]", "[AH1]", "[AH2]",
     "[AO]", "[AO0]", "[AO1]", "[AO2]", "[AW]", "[AW0]", "[AW1]", "[AW2]", "[AY]", "[AY0]", "[AY1]", "[AY2]",
     "[B]", "[CH]", "[D]", "[DH]", "[EH]", "[EH0]", "[EH1]", "[EH2]", "[ER]", "[ER0]", "[ER1]", "[ER2]", "[EY]",
@@ -90,12 +88,8 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
         Returns:
             `int`: The number of tokens the tokenizer did not already carry.
         """
-        return tokenizer.add_special_tokens(
-            {
-                "eos_token": "<|endoftext|>",
-                "pad_token": "<|endoftext|>",
-                "additional_special_tokens": SPECIAL_TOKENS if tokens is None else tokens,
-            }
+        return CosyVoiceV2Processor.add_special_tokens(
+            tokenizer, tokens=SPECIAL_TOKENS if tokens is None else tokens
         )
 
 

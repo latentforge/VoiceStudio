@@ -10,6 +10,18 @@ from transformers.feature_extraction_utils import BatchFeature
 from ..cosyvoice_v1.processing_cosyvoice_v1 import CosyVoiceV1FeatureExtractor, CosyVoiceV1Processor
 
 
+# The tokens upstream's `CosyVoice2Tokenizer` adds to the Qwen2 tokenizer, in the order it adds them.
+SPECIAL_TOKENS = [
+    "<|im_start|>", "<|im_end|>", "<|endofprompt|>",
+    "[breath]", "<strong>", "</strong>", "[noise]",
+    "[laughter]", "[cough]", "[clucking]", "[accent]",
+    "[quick_breath]",
+    "<laughter>", "</laughter>",
+    "[hissing]", "[sigh]", "[vocalized-noise]",
+    "[lipsmack]", "[mn]",
+]
+
+
 class CosyVoiceV2FeatureExtractor(CosyVoiceV1FeatureExtractor):
     r"""
     Constructs a CosyVoice v2 feature extractor, which turns a waveform into the 24 kHz log mel
@@ -91,6 +103,28 @@ class CosyVoiceV2Processor(CosyVoiceV1Processor):
             and its speech tokens keep exactly this ratio.
     """
 
+    @staticmethod
+    def add_special_tokens(tokenizer, tokens: Optional[list[str]] = None) -> int:
+        r"""
+        Adds upstream's v2 special tokens to a tokenizer, in upstream's order.
+
+        Args:
+            tokenizer (`PreTrainedTokenizerBase`):
+                Tokenizer to extend.
+            tokens (`list[str]`, *optional*):
+                Tokens to add. Defaults to [`SPECIAL_TOKENS`].
+
+        Returns:
+            `int`: The number of tokens the tokenizer did not already carry.
+        """
+        return tokenizer.add_special_tokens(
+            {
+                "eos_token": "<|endoftext|>",
+                "pad_token": "<|endoftext|>",
+                "additional_special_tokens": SPECIAL_TOKENS if tokens is None else tokens,
+            }
+        )
+
     def __init__(
         self,
         feature_extractor=None,
@@ -155,4 +189,4 @@ class CosyVoiceV2Processor(CosyVoiceV1Processor):
         return data
 
 
-__all__ = ["CosyVoiceV2FeatureExtractor", "CosyVoiceV2Processor"]
+__all__ = ["SPECIAL_TOKENS", "CosyVoiceV2FeatureExtractor", "CosyVoiceV2Processor"]

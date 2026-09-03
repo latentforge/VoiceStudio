@@ -195,12 +195,14 @@ def convert(
     config.save_pretrained(output_path)
     save_file(converted, str(output_path / "model.safetensors"), metadata={"format": "pt"})
 
+    tokenizer = AutoTokenizer.from_pretrained(str(Path(resolved) / TEXT_MODEL_SUBDIR))
+    CosyVoiceV2Processor.add_special_tokens(tokenizer)
     processor = CosyVoiceV2Processor(
         feature_extractor=CosyVoiceV2FeatureExtractor(
             feature_size=config.flow_output_size, sampling_rate=config.sample_rate,
             mel_sampling_rate=config.sample_rate,
         ),
-        tokenizer=AutoTokenizer.from_pretrained(str(Path(resolved) / TEXT_MODEL_SUBDIR)),
+        tokenizer=tokenizer,
         token_mel_ratio=config.token_mel_ratio,
     )
     processor.save_pretrained(output_path)
