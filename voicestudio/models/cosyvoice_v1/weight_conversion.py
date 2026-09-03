@@ -1,238 +1,224 @@
-# Copyright (c) 2024 Alibaba Inc (authors: Xiang Lyu)
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-import os
-import time
-from typing import Generator
-from tqdm import tqdm
-from hyperpyyaml import load_hyperpyyaml
-from modelscope import snapshot_download
+"""Checkpoint conversion for CosyVoice v1."""
+
+import re
+from pathlib import Path
+
 import torch
-from cosyvoice.cli.frontend import CosyVoiceFrontEnd
-from cosyvoice.cli.model import CosyVoiceModel, CosyVoice2Model, CosyVoice3Model
-from cosyvoice.utils.file_utils import logging
-from cosyvoice.utils.class_utils import get_model_type
+from huggingface_hub import snapshot_download
+from safetensors.torch import save_file
+from transformers.models.whisper.tokenization_whisper import WhisperTokenizer
+
+from .configuration_cosyvoice_v1 import CosyVoiceV1Config
+from .modeling_cosyvoice_v1 import CosyVoiceV1ForConditionalGeneration
+from .processing_cosyvoice_v1 import CosyVoiceV1FeatureExtractor, CosyVoiceV1Processor
 
 
-class CosyVoice:
+# The v1 repositories the CosyVoice authors published. `CosyVoice-300M` is the base model;
+# `-SFT` and `-Instruct` add a `spk2info.pt` holding the built in speakers.
+PUBLISHED_CHECKPOINTS = {
+    "base": "FunAudioLLM/CosyVoice-300M",
+    "sft": "FunAudioLLM/CosyVoice-300M-SFT",
+    "instruct": "FunAudioLLM/CosyVoice-300M-Instruct",
+}
 
-    def __init__(self, model_dir, load_jit=False, load_trt=False, fp16=False, trt_concurrent=1):
-        self.model_dir = model_dir
-        self.fp16 = fp16
-        if not os.path.exists(model_dir):
-            model_dir = snapshot_download(model_dir)
-        hyper_yaml_path = '{}/cosyvoice.yaml'.format(model_dir)
-        if not os.path.exists(hyper_yaml_path):
-            raise ValueError('{} not found!'.format(hyper_yaml_path))
-        with open(hyper_yaml_path, 'r') as f:
-            configs = load_hyperpyyaml(f)
-        assert get_model_type(configs) == CosyVoiceModel, 'do not use {} for CosyVoice initialization!'.format(model_dir)
-        self.frontend = CosyVoiceFrontEnd(configs['get_tokenizer'],
-                                          configs['feat_extractor'],
-                                          '{}/campplus.onnx'.format(model_dir),
-                                          '{}/speech_tokenizer_v1.onnx'.format(model_dir),
-                                          '{}/spk2info.pt'.format(model_dir),
-                                          configs['allowed_special'])
-        self.sample_rate = configs['sample_rate']
-        if torch.cuda.is_available() is False and (load_jit is True or load_trt is True or fp16 is True):
-            load_jit, load_trt, fp16 = False, False, False
-            logging.warning('no cuda device, set load_jit/load_trt/fp16 to False')
-        self.model = CosyVoiceModel(configs['llm'], configs['flow'], configs['hift'], fp16)
-        self.model.load('{}/llm.pt'.format(model_dir),
-                        '{}/flow.pt'.format(model_dir),
-                        '{}/hift.pt'.format(model_dir))
-        if load_jit:
-            self.model.load_jit('{}/llm.text_encoder.{}.zip'.format(model_dir, 'fp16' if self.fp16 is True else 'fp32'),
-                                '{}/llm.llm.{}.zip'.format(model_dir, 'fp16' if self.fp16 is True else 'fp32'),
-                                '{}/flow.encoder.{}.zip'.format(model_dir, 'fp16' if self.fp16 is True else 'fp32'))
-        if load_trt:
-            self.model.load_trt('{}/flow.decoder.estimator.{}.mygpu.plan'.format(model_dir, 'fp16' if self.fp16 is True else 'fp32'),
-                                '{}/flow.decoder.estimator.fp32.onnx'.format(model_dir),
-                                trt_concurrent,
-                                self.fp16)
-        del configs
+# The three files of a released directory this conversion reads, one per network.
+CHECKPOINT_FILES = ("llm.pt", "flow.pt", "hift.pt")
 
-    def list_available_spks(self):
-        spks = list(self.frontend.spk2info.keys())
-        return spks
+# Upstream tokenizes text with `whisper.tokenizer.get_tokenizer(multilingual=True,
+# num_languages=100, language='en', task='transcribe')`, whose 51866 entry vocabulary is the one
+# `openai/whisper-large-v3` ships.
+TEXT_TOKENIZER_ID = "openai/whisper-large-v3"
 
-    def add_zero_shot_spk(self, prompt_text, prompt_wav, zero_shot_spk_id):
-        assert zero_shot_spk_id != '', 'do not use empty zero_shot_spk_id'
-        model_input = self.frontend.frontend_zero_shot('', prompt_text, prompt_wav, self.sample_rate, '')
-        del model_input['text']
-        del model_input['text_len']
-        self.frontend.spk2info[zero_shot_spk_id] = model_input
-        return True
+# `BaseEncoder` names its input projection `embed.out`, its blocks `encoders` and its closing
+# norm `after_norm`; `TransformerEncoderLayer` names its two norms `norm1`/`norm2` while
+# `ConformerEncoderLayer` names the same two `norm_mha`/`norm_ff`.
+ENCODER_RULES = (
+    (r"^(.*)\.embed\.out\.0\.", r"\1.input_projection.proj."),
+    (r"^(.*)\.embed\.out\.1\.", r"\1.input_projection.layer_norm."),
+    (r"^(.*)\.encoders\.(\d+)\.norm_mha\.", r"\1.layers.\2.self_attn_layer_norm."),
+    (r"^(.*)\.encoders\.(\d+)\.norm_ff\.", r"\1.layers.\2.final_layer_norm."),
+    (r"^(.*)\.encoders\.(\d+)\.norm1\.", r"\1.layers.\2.self_attn_layer_norm."),
+    (r"^(.*)\.encoders\.(\d+)\.norm2\.", r"\1.layers.\2.final_layer_norm."),
+    (r"^(.*)\.encoders\.(\d+)\.", r"\1.layers.\2."),
+    (r"^(.*)\.after_norm\.", r"\1.layer_norm."),
+)
 
-    def save_spkinfo(self):
-        torch.save(self.frontend.spk2info, '{}/spk2info.pt'.format(self.model_dir))
-
-    def inference_sft(self, tts_text, spk_id, stream=False, speed=1.0, text_frontend=True):
-        for i in tqdm(self.frontend.text_normalize(tts_text, split=True, text_frontend=text_frontend)):
-            model_input = self.frontend.frontend_sft(i, spk_id)
-            start_time = time.time()
-            logging.info('synthesis text {}'.format(i))
-            for model_output in self.model.tts(**model_input, stream=stream, speed=speed):
-                speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
-                logging.info('yield speech len {}, rtf {}'.format(speech_len, (time.time() - start_time) / speech_len))
-                yield model_output
-                start_time = time.time()
-
-    def inference_zero_shot(self, tts_text, prompt_text, prompt_wav, zero_shot_spk_id='', stream=False, speed=1.0, text_frontend=True):
-        prompt_text = self.frontend.text_normalize(prompt_text, split=False, text_frontend=text_frontend)
-        for i in tqdm(self.frontend.text_normalize(tts_text, split=True, text_frontend=text_frontend)):
-            if (not isinstance(i, Generator)) and len(i) < 0.5 * len(prompt_text):
-                logging.warning('synthesis text {} too short than prompt text {}, this may lead to bad performance'.format(i, prompt_text))
-            model_input = self.frontend.frontend_zero_shot(i, prompt_text, prompt_wav, self.sample_rate, zero_shot_spk_id)
-            start_time = time.time()
-            logging.info('synthesis text {}'.format(i))
-            for model_output in self.model.tts(**model_input, stream=stream, speed=speed):
-                speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
-                logging.info('yield speech len {}, rtf {}'.format(speech_len, (time.time() - start_time) / speech_len))
-                yield model_output
-                start_time = time.time()
-
-    def inference_cross_lingual(self, tts_text, prompt_wav, zero_shot_spk_id='', stream=False, speed=1.0, text_frontend=True):
-        for i in tqdm(self.frontend.text_normalize(tts_text, split=True, text_frontend=text_frontend)):
-            model_input = self.frontend.frontend_cross_lingual(i, prompt_wav, self.sample_rate, zero_shot_spk_id)
-            start_time = time.time()
-            logging.info('synthesis text {}'.format(i))
-            for model_output in self.model.tts(**model_input, stream=stream, speed=speed):
-                speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
-                logging.info('yield speech len {}, rtf {}'.format(speech_len, (time.time() - start_time) / speech_len))
-                yield model_output
-                start_time = time.time()
-
-    def inference_instruct(self, tts_text, spk_id, instruct_text, stream=False, speed=1.0, text_frontend=True):
-        assert self.__class__.__name__ == 'CosyVoice', 'inference_instruct is only implemented for CosyVoice!'
-        instruct_text = self.frontend.text_normalize(instruct_text, split=False, text_frontend=text_frontend)
-        for i in tqdm(self.frontend.text_normalize(tts_text, split=True, text_frontend=text_frontend)):
-            model_input = self.frontend.frontend_instruct(i, spk_id, instruct_text)
-            start_time = time.time()
-            logging.info('synthesis text {}'.format(i))
-            for model_output in self.model.tts(**model_input, stream=stream, speed=speed):
-                speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
-                logging.info('yield speech len {}, rtf {}'.format(speech_len, (time.time() - start_time) / speech_len))
-                yield model_output
-                start_time = time.time()
-
-    def inference_vc(self, source_wav, prompt_wav, stream=False, speed=1.0):
-        model_input = self.frontend.frontend_vc(source_wav, prompt_wav, self.sample_rate)
-        start_time = time.time()
-        for model_output in self.model.tts(**model_input, stream=stream, speed=speed):
-            speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
-            logging.info('yield speech len {}, rtf {}'.format(speech_len, (time.time() - start_time) / speech_len))
-            yield model_output
-            start_time = time.time()
+# The vocoder was trained with the pre-parametrization spelling of weight norm.
+WEIGHT_NORM_RULES = (
+    (r"\.weight_g$", ".parametrizations.weight.original0"),
+    (r"\.weight_v$", ".parametrizations.weight.original1"),
+)
 
 
-class CosyVoice2(CosyVoice):
+def rename(key: str, rules: tuple[tuple[str, str], ...]) -> str:
+    r"""
+    Applies the first matching rename rule to a state dict key.
 
-    def __init__(self, model_dir, load_jit=False, load_trt=False, load_vllm=False, fp16=False, trt_concurrent=1):
-        self.model_dir = model_dir
-        self.fp16 = fp16
-        if not os.path.exists(model_dir):
-            model_dir = snapshot_download(model_dir)
-        hyper_yaml_path = '{}/cosyvoice2.yaml'.format(model_dir)
-        if not os.path.exists(hyper_yaml_path):
-            raise ValueError('{} not found!'.format(hyper_yaml_path))
-        with open(hyper_yaml_path, 'r') as f:
-            configs = load_hyperpyyaml(f, overrides={'qwen_pretrain_path': os.path.join(model_dir, 'CosyVoice-BlankEN')})
-        assert get_model_type(configs) == CosyVoice2Model, 'do not use {} for CosyVoice2 initialization!'.format(model_dir)
-        self.frontend = CosyVoiceFrontEnd(configs['get_tokenizer'],
-                                          configs['feat_extractor'],
-                                          '{}/campplus.onnx'.format(model_dir),
-                                          '{}/speech_tokenizer_v2.onnx'.format(model_dir),
-                                          '{}/spk2info.pt'.format(model_dir),
-                                          configs['allowed_special'])
-        self.sample_rate = configs['sample_rate']
-        if torch.cuda.is_available() is False and (load_jit is True or load_trt is True or load_vllm is True or fp16 is True):
-            load_jit, load_trt, load_vllm, fp16 = False, False, False, False
-            logging.warning('no cuda device, set load_jit/load_trt/load_vllm/fp16 to False')
-        self.model = CosyVoice2Model(configs['llm'], configs['flow'], configs['hift'], fp16)
-        self.model.load('{}/llm.pt'.format(model_dir),
-                        '{}/flow.pt'.format(model_dir),
-                        '{}/hift.pt'.format(model_dir))
-        if load_vllm:
-            self.model.load_vllm('{}/vllm'.format(model_dir))
-        if load_jit:
-            self.model.load_jit('{}/flow.encoder.{}.zip'.format(model_dir, 'fp16' if self.fp16 is True else 'fp32'))
-        if load_trt:
-            self.model.load_trt('{}/flow.decoder.estimator.{}.mygpu.plan'.format(model_dir, 'fp16' if self.fp16 is True else 'fp32'),
-                                '{}/flow.decoder.estimator.fp32.onnx'.format(model_dir),
-                                trt_concurrent,
-                                self.fp16)
-        del configs
+    Args:
+        key (`str`):
+            Key of the released state dict.
+        rules (`tuple`):
+            Pairs of regular expression and replacement.
 
-    def inference_instruct2(self, tts_text, instruct_text, prompt_wav, zero_shot_spk_id='', stream=False, speed=1.0, text_frontend=True):
-        for i in tqdm(self.frontend.text_normalize(tts_text, split=True, text_frontend=text_frontend)):
-            model_input = self.frontend.frontend_instruct2(i, instruct_text, prompt_wav, self.sample_rate, zero_shot_spk_id)
-            start_time = time.time()
-            logging.info('synthesis text {}'.format(i))
-            for model_output in self.model.tts(**model_input, stream=stream, speed=speed):
-                speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
-                logging.info('yield speech len {}, rtf {}'.format(speech_len, (time.time() - start_time) / speech_len))
-                yield model_output
-                start_time = time.time()
+    Returns:
+        `str`: The renamed key.
+    """
+    for pattern, replacement in rules:
+        renamed, count = re.subn(pattern, replacement, key)
+        if count:
+            return renamed
+    return key
 
 
-class CosyVoice3(CosyVoice2):
+def build_config(**overrides) -> CosyVoiceV1Config:
+    r"""
+    Builds the [`CosyVoiceV1Config`] of the released 300M checkpoints.
 
-    def __init__(self, model_dir, load_trt=False, load_vllm=False, fp16=False, trt_concurrent=1):
-        self.model_dir = model_dir
-        self.fp16 = fp16
-        if not os.path.exists(model_dir):
-            model_dir = snapshot_download(model_dir)
-        hyper_yaml_path = '{}/cosyvoice3.yaml'.format(model_dir)
-        if not os.path.exists(hyper_yaml_path):
-            raise ValueError('{} not found!'.format(hyper_yaml_path))
-        with open(hyper_yaml_path, 'r') as f:
-            configs = load_hyperpyyaml(f, overrides={'qwen_pretrain_path': os.path.join(model_dir, 'CosyVoice-BlankEN')})
-        assert get_model_type(configs) == CosyVoice3Model, 'do not use {} for CosyVoice3 initialization!'.format(model_dir)
-        self.frontend = CosyVoiceFrontEnd(configs['get_tokenizer'],
-                                          configs['feat_extractor'],
-                                          '{}/campplus.onnx'.format(model_dir),
-                                          '{}/speech_tokenizer_v3.onnx'.format(model_dir),
-                                          '{}/spk2info.pt'.format(model_dir),
-                                          configs['allowed_special'])
-        self.sample_rate = configs['sample_rate']
-        if torch.cuda.is_available() is False and (load_trt is True or fp16 is True):
-            load_trt, fp16 = False, False
-            logging.warning('no cuda device, set load_trt/fp16 to False')
-        self.model = CosyVoice3Model(configs['llm'], configs['flow'], configs['hift'], fp16)
-        self.model.load('{}/llm.pt'.format(model_dir),
-                        '{}/flow.pt'.format(model_dir),
-                        '{}/hift.pt'.format(model_dir))
-        if load_vllm:
-            self.model.load_vllm('{}/vllm'.format(model_dir))
-        if load_trt:
-            if self.fp16 is True:
-                logging.warning('DiT tensorRT fp16 engine have some performance issue, use at caution!')
-            self.model.load_trt('{}/flow.decoder.estimator.{}.mygpu.plan'.format(model_dir, 'fp16' if self.fp16 is True else 'fp32'),
-                                '{}/flow.decoder.estimator.fp32.onnx'.format(model_dir),
-                                trt_concurrent,
-                                self.fp16)
-        del configs
+    Every released v1 directory ships the same `cosyvoice.yaml`, so the geometry is the class
+    defaults and only the overrides a caller passes change it.
+
+    Args:
+        overrides (`dict`, *optional*):
+            Configuration fields overriding the released geometry.
+
+    Returns:
+        [`CosyVoiceV1Config`]: The configuration.
+    """
+    return CosyVoiceV1Config(**overrides)
 
 
-def AutoModel(**kwargs):
-    if not os.path.exists(kwargs['model_dir']):
-        kwargs['model_dir'] = snapshot_download(kwargs['model_dir'])
-    if os.path.exists('{}/cosyvoice.yaml'.format(kwargs['model_dir'])):
-        return CosyVoice(**kwargs)
-    elif os.path.exists('{}/cosyvoice2.yaml'.format(kwargs['model_dir'])):
-        return CosyVoice2(**kwargs)
-    elif os.path.exists('{}/cosyvoice3.yaml'.format(kwargs['model_dir'])):
-        return CosyVoice3(**kwargs)
-    else:
-        raise TypeError('No valid model type found!')
+def convert_state_dict(
+    llm_state_dict: dict[str, torch.Tensor],
+    flow_state_dict: dict[str, torch.Tensor],
+    hift_state_dict: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    r"""
+    Renames the three released state dicts onto [`CosyVoiceV1ForConditionalGeneration`].
+
+    Args:
+        llm_state_dict (`dict[str, torch.Tensor]`):
+            Tensors of `llm.pt`.
+        flow_state_dict (`dict[str, torch.Tensor]`):
+            Tensors of `flow.pt`.
+        hift_state_dict (`dict[str, torch.Tensor]`):
+            Tensors of `hift.pt`, stored either as the bare generator or as a full `HiFiGan`
+            module whose generator keys carry a `generator.` prefix.
+
+    Returns:
+        `dict[str, torch.Tensor]`: The renamed tensors.
+    """
+    converted = {}
+    for key, value in llm_state_dict.items():
+        converted[f"llm.{rename(key, ENCODER_RULES)}"] = value.contiguous()
+    for key, value in flow_state_dict.items():
+        converted[f"flow.{rename(key, ENCODER_RULES)}"] = value.contiguous()
+    for key, value in hift_state_dict.items():
+        key = key.removeprefix("generator.")
+        converted[f"hift.{rename(key, WEIGHT_NORM_RULES)}"] = value.contiguous()
+    return converted
+
+
+def load_upstream_checkpoints(source: str) -> tuple[dict[str, torch.Tensor], ...]:
+    r"""
+    Reads `llm.pt`, `flow.pt` and `hift.pt` out of a released CosyVoice v1 directory.
+
+    Args:
+        source (`str`):
+            Key of [`PUBLISHED_CHECKPOINTS`], repository id, or local directory holding the three
+            files.
+
+    Returns:
+        `tuple[dict[str, torch.Tensor], ...]`: The language model, flow and vocoder tensors.
+    """
+    source = PUBLISHED_CHECKPOINTS.get(source, source)
+    if not Path(source).is_dir():
+        source = snapshot_download(source, allow_patterns=list(CHECKPOINT_FILES))
+    return tuple(
+        torch.load(Path(source) / name, map_location="cpu", weights_only=True) for name in CHECKPOINT_FILES
+    )
+
+
+def build_model_files(
+    source: str = "base", dtype: torch.dtype = torch.float32
+) -> tuple[CosyVoiceV1Config, dict[str, torch.Tensor]]:
+    r"""
+    Reads a released CosyVoice v1 directory and returns what
+    [`CosyVoiceV1ForConditionalGeneration`] needs to load it.
+
+    Args:
+        source (`str`, *optional*, defaults to `"base"`):
+            Key of [`PUBLISHED_CHECKPOINTS`], repository id, or local directory.
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+
+    Returns:
+        `tuple[CosyVoiceV1Config, dict[str, torch.Tensor]]`: The configuration and the renamed
+        tensors.
+
+    Raises:
+        RuntimeError: If the renamed tensors do not cover the model exactly.
+    """
+    config = build_config()
+    converted = convert_state_dict(*load_upstream_checkpoints(source))
+
+    model = CosyVoiceV1ForConditionalGeneration(config)
+    missing, unexpected = model.load_state_dict(converted, strict=False)
+    missing = [key for key in missing if key not in dict(model.named_buffers())]
+    if missing or unexpected:
+        raise RuntimeError(
+            f"The conversion does not cover the model exactly: missing={missing}, unexpected={unexpected}."
+        )
+
+    return config, {key: value.to(dtype) for key, value in converted.items()}
+
+
+def convert(
+    source: str = "base",
+    output_dir: str = "cosyvoice-v1-converted",
+    dtype: torch.dtype = torch.float32,
+) -> None:
+    r"""
+    Converts a released CosyVoice v1 directory into one
+    [`CosyVoiceV1ForConditionalGeneration.from_pretrained`] and
+    [`CosyVoiceV1Processor.from_pretrained`] can load.
+
+    The speech tokenizer and the speaker encoder are not converted: upstream publishes them as
+    ONNX graphs only, and the saved processor leaves their paths unset for the caller to fill in.
+
+    Args:
+        source (`str`, *optional*, defaults to `"base"`):
+            Key of [`PUBLISHED_CHECKPOINTS`], repository id, or local directory.
+        output_dir (`str`, *optional*, defaults to `"cosyvoice-v1-converted"`):
+            Directory the converted config, weights and processor files are written to.
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    config, converted = build_model_files(source, dtype=dtype)
+    config.save_pretrained(output_path)
+    save_file(converted, str(output_path / "model.safetensors"), metadata={"format": "pt"})
+
+    processor = CosyVoiceV1Processor(
+        feature_extractor=CosyVoiceV1FeatureExtractor(
+            feature_size=config.flow_output_size, mel_sampling_rate=config.sample_rate
+        ),
+        tokenizer=WhisperTokenizer.from_pretrained(TEXT_TOKENIZER_ID, language="en", task="transcribe"),
+    )
+    processor.save_pretrained(output_path)
+
+
+__all__ = [
+    "CHECKPOINT_FILES",
+    "ENCODER_RULES",
+    "PUBLISHED_CHECKPOINTS",
+    "TEXT_TOKENIZER_ID",
+    "WEIGHT_NORM_RULES",
+    "build_config",
+    "build_model_files",
+    "convert",
+    "convert_state_dict",
+    "load_upstream_checkpoints",
+    "rename",
+]

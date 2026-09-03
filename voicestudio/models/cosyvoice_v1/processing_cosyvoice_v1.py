@@ -1,224 +1,396 @@
-# Copyright (c) 2024 Alibaba Inc (authors: Xiang Lyu)
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-from functools import partial
-from typing import Generator
-import json
-import onnxruntime
-import torch
+"""Processor class for CosyVoice v1."""
+
+from typing import Optional, Union
+
 import numpy as np
-import whisper
-from typing import Callable
+import torch
+import torchaudio
 import torchaudio.compliance.kaldi as kaldi
-import os
-import re
-import inflect
-from cosyvoice.utils.file_utils import logging, load_wav
-from cosyvoice.utils.frontend_utils import contains_chinese, replace_blank, replace_corner_mark, remove_bracket, spell_out_number, split_paragraph, is_only_punctuation
+from librosa.filters import mel as librosa_mel
+
+from transformers.feature_extraction_sequence_utils import SequenceFeatureExtractor
+from transformers.feature_extraction_utils import BatchFeature
+from transformers.processing_utils import ProcessorMixin
 
 
-class CosyVoiceFrontEnd:
+class CosyVoiceV1FeatureExtractor(SequenceFeatureExtractor):
+    r"""
+    Constructs a CosyVoice v1 feature extractor, which turns a waveform into the log mel spectrogram
+    the flow matching model is conditioned on and trained against.
 
-    def __init__(self,
-                 get_tokenizer: Callable,
-                 feat_extractor: Callable,
-                 campplus_model: str,
-                 speech_tokenizer_model: str,
-                 spk2info: str = '',
-                 allowed_special: str = 'all'):
-        self.tokenizer = get_tokenizer()
-        self.feat_extractor = feat_extractor
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        option = onnxruntime.SessionOptions()
-        option.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-        option.intra_op_num_threads = 1
-        self.campplus_session = onnxruntime.InferenceSession(campplus_model, sess_options=option, providers=["CPUExecutionProvider"])
-        self.speech_tokenizer_session = onnxruntime.InferenceSession(speech_tokenizer_model, sess_options=option,
-                                                                     providers=["CUDAExecutionProvider" if torch.cuda.is_available() else
-                                                                                "CPUExecutionProvider"])
-        if os.path.exists(spk2info):
-            self.spk2info = torch.load(spk2info, map_location=self.device, weights_only=True)
-        else:
-            self.spk2info = {}
-        self.allowed_special = allowed_special
-        self.inflect_parser = inflect.engine()
-        # NOTE compatible when no text frontend tool is avaliable
+    Args:
+        feature_size (`int`, *optional*, defaults to 80):
+            Number of mel bins.
+        sampling_rate (`int`, *optional*, defaults to 24000):
+            Rate the incoming waveform is resampled to before the mel spectrogram is taken.
+        mel_sampling_rate (`int`, *optional*, defaults to 22050):
+            Rate the mel filter bank is built for.
+        n_fft (`int`, *optional*, defaults to 1024):
+            Size of the Fourier transform.
+        hop_length (`int`, *optional*, defaults to 256):
+            Hop between two consecutive frames.
+        win_length (`int`, *optional*, defaults to 1024):
+            Size of the analysis window.
+        fmin (`float`, *optional*, defaults to 0.0):
+            Lowest frequency of the mel filter bank.
+        fmax (`float`, *optional*, defaults to 8000.0):
+            Highest frequency of the mel filter bank.
+        padding_value (`float`, *optional*, defaults to 0.0):
+            Value used to pad batches of spectrograms.
+    """
+
+    model_input_names = ["speech_feat"]
+
+    def __init__(
+        self,
+        feature_size: int = 80,
+        sampling_rate: int = 24000,
+        mel_sampling_rate: int = 22050,
+        n_fft: int = 1024,
+        hop_length: int = 256,
+        win_length: int = 1024,
+        fmin: float = 0.0,
+        fmax: float = 8000.0,
+        padding_value: float = 0.0,
+        **kwargs,
+    ):
+        super().__init__(
+            feature_size=feature_size, sampling_rate=sampling_rate, padding_value=padding_value, **kwargs
+        )
+        self.mel_sampling_rate = mel_sampling_rate
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.win_length = win_length
+        self.fmin = fmin
+        self.fmax = fmax
+        self.mel_filters = librosa_mel(
+            sr=mel_sampling_rate, n_fft=n_fft, n_mels=feature_size, fmin=fmin, fmax=fmax
+        )
+
+    def _mel_spectrogram(self, waveform: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            waveform (`torch.Tensor` of shape `(batch_size, num_samples)`):
+                Waveform sampled at `sampling_rate`.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, feature_size, num_frames)`: the log mel spectrogram.
+        """
+        padding = int((self.n_fft - self.hop_length) / 2)
+        waveform = torch.nn.functional.pad(waveform.unsqueeze(1), (padding, padding), mode="reflect").squeeze(1)
+        spectrogram = torch.stft(
+            waveform,
+            self.n_fft,
+            hop_length=self.hop_length,
+            win_length=self.win_length,
+            window=torch.hann_window(self.win_length, device=waveform.device),
+            center=False,
+            pad_mode="reflect",
+            normalized=False,
+            onesided=True,
+            return_complex=True,
+        )
+        spectrogram = torch.view_as_real(spectrogram)
+        spectrogram = torch.sqrt(spectrogram.pow(2).sum(-1) + 1e-9)
+        mel_filters = torch.from_numpy(self.mel_filters).to(spectrogram)
+        return torch.log(torch.clamp(torch.matmul(mel_filters, spectrogram), min=1e-5))
+
+    def __call__(
+        self,
+        raw_speech: Union[np.ndarray, torch.Tensor, list],
+        sampling_rate: Optional[int] = None,
+        return_tensors: str = "pt",
+        **kwargs,
+    ) -> BatchFeature:
+        """
+        Args:
+            raw_speech (`np.ndarray`, `torch.Tensor` or `list`):
+                Mono waveform of shape `(num_samples,)` or `(1, num_samples)`.
+            sampling_rate (`int`, *optional*):
+                Rate of `raw_speech`. It is resampled to `self.sampling_rate` when the two differ.
+            return_tensors (`str`, *optional*, defaults to `"pt"`):
+                Only `"pt"` is supported.
+
+        Returns:
+            [`BatchFeature`]: `speech_feat` of shape `(1, num_frames, feature_size)` and
+            `speech_feat_lengths` of shape `(1,)`.
+
+        Raises:
+            ValueError: If `return_tensors` is not `"pt"`.
+        """
+        if return_tensors != "pt":
+            raise ValueError(f"{self.__class__.__name__} only supports return_tensors='pt'")
+        waveform = raw_speech if isinstance(raw_speech, torch.Tensor) else torch.as_tensor(np.asarray(raw_speech))
+        waveform = waveform.reshape(1, -1).float()
+        if sampling_rate is not None and sampling_rate != self.sampling_rate:
+            waveform = torchaudio.functional.resample(waveform, sampling_rate, self.sampling_rate)
+        speech_feat = self._mel_spectrogram(waveform).transpose(1, 2)
+        lengths = torch.tensor([speech_feat.shape[1]], dtype=torch.int32)
+        return BatchFeature({"speech_feat": speech_feat, "speech_feat_lengths": lengths})
+
+
+class CosyVoiceV1Processor(ProcessorMixin):
+    r"""
+    Constructs a CosyVoice v1 processor, which wraps a Whisper tokenizer, the mel spectrogram feature
+    extractor of the flow matching model, the supervised semantic speech tokenizer and the speaker
+    encoder into a single object.
+
+    The speech tokenizer and the speaker encoder are the ONNX graphs shipped with the released model
+    directory, `speech_tokenizer_v1.onnx` and `campplus.onnx`. Upstream publishes no PyTorch weights
+    for either, so `onnxruntime` and both graph files are required to derive a prompt from a
+    waveform. They are opened lazily, so text tokenization and the speaker table work without them.
+
+    Args:
+        feature_extractor ([`CosyVoiceV1FeatureExtractor`]):
+            Mel spectrogram extractor of the flow matching model.
+        tokenizer ([`WhisperTokenizer`]):
+            Text tokenizer.
+        speech_token_model_path (`str`, *optional*):
+            Path of `speech_tokenizer_v1.onnx`.
+        speaker_encoder_model_path (`str`, *optional*):
+            Path of `campplus.onnx`.
+        speaker_info_path (`str`, *optional*):
+            Path of a `spk2info.pt`, the table of precomputed prompts the SFT and Instruct
+            checkpoints ship. Read lazily by [`~CosyVoiceV1Processor.get_speaker`].
+        speech_token_mel_bins (`int`, *optional*, defaults to 128):
+            Number of mel bins of the log mel spectrogram the speech tokenizer consumes.
+    """
+
+    speech_tokenizer_sampling_rate = 16000
+    speaker_encoder_sampling_rate = 16000
+    speaker_encoder_max_seconds = 10
+
+    def __init__(
+        self,
+        feature_extractor=None,
+        tokenizer=None,
+        speech_token_model_path: Optional[str] = None,
+        speaker_encoder_model_path: Optional[str] = None,
+        speaker_info_path: Optional[str] = None,
+        speech_token_mel_bins: int = 128,
+        **kwargs,
+    ):
+        super().__init__(feature_extractor, tokenizer, **kwargs)
+        self.speech_token_model_path = speech_token_model_path
+        self.speaker_encoder_model_path = speaker_encoder_model_path
+        self.speaker_info_path = speaker_info_path
+        self.speech_token_mel_bins = speech_token_mel_bins
+        self._speech_token_features = None
+        self._speech_tokenizer_session = None
+        self._speaker_encoder_session = None
+        self._speaker_info = None
+
+    @property
+    def speech_token_feature_extractor(self):
+        """
+        Returns:
+            [`WhisperFeatureExtractor`]: The log mel extractor feeding the speech tokenizer.
+        """
+        if self._speech_token_features is None:
+            from transformers import WhisperFeatureExtractor
+
+            self._speech_token_features = WhisperFeatureExtractor(
+                feature_size=self.speech_token_mel_bins, sampling_rate=self.speech_tokenizer_sampling_rate
+            )
+        return self._speech_token_features
+
+    @property
+    def speakers(self) -> list[str]:
+        """
+        Returns:
+            `list[str]`: Names of the speakers `speaker_info_path` holds, empty when it is unset.
+        """
+        if self.speaker_info_path is None:
+            return []
+        if self._speaker_info is None:
+            self._speaker_info = torch.load(self.speaker_info_path, map_location="cpu", weights_only=True)
+        return list(self._speaker_info)
+
+    def get_speaker(self, name: str) -> BatchFeature:
+        """
+        Reads one precomputed prompt out of `speaker_info_path`.
+
+        Args:
+            name (`str`):
+                Name of the speaker, one of [`~CosyVoiceV1Processor.speakers`].
+
+        Returns:
+            [`BatchFeature`]: `speaker_embedding`, and `prompt_speech_token_ids` plus `speech_feat`
+            when the table carries them.
+
+        Raises:
+            ValueError: If no speaker table is configured or `name` is not in it.
+        """
+        if not self.speakers:
+            raise ValueError("this processor has no `speaker_info_path`, so it has no speaker table")
+        if name not in self._speaker_info:
+            raise ValueError(f"{name} is not one of {list(self._speaker_info)}")
+        entry = self._speaker_info[name]
+        data = {"speaker_embedding": entry["embedding"]}
+        if "speech_token" in entry:
+            data["prompt_speech_token_ids"] = entry["speech_token"].to(torch.int32)
+            data["prompt_speech_token_lengths"] = torch.tensor(
+                [entry["speech_token"].shape[1]], dtype=torch.int32
+            )
+        if "speech_feat" in entry:
+            data["speech_feat"] = entry["speech_feat"]
+            data["speech_feat_lengths"] = torch.tensor([entry["speech_feat"].shape[1]], dtype=torch.int32)
+        return BatchFeature(data)
+
+    @staticmethod
+    def _open_onnx_session(path: str, providers: list[str]):
+        """
+        Args:
+            path (`str`):
+                Path of the ONNX graph.
+            providers (`list[str]`):
+                Execution providers, in order of preference.
+
+        Returns:
+            `onnxruntime.InferenceSession`: the opened session.
+
+        Raises:
+            ImportError: If `onnxruntime` is not installed.
+        """
         try:
-            import ttsfrd
-            self.frd = ttsfrd.TtsFrontendEngine()
-            ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-            assert self.frd.initialize('{}/../../pretrained_models/CosyVoice-ttsfrd/resource'.format(ROOT_DIR)) is True, \
-                'failed to initialize ttsfrd resource'
-            self.frd.set_lang_type('pinyinvg')
-            self.text_frontend = 'ttsfrd'
-            logging.info('use ttsfrd frontend')
-        except:
-            try:
-                from wetext import Normalizer as ZhNormalizer
-                from wetext import Normalizer as EnNormalizer
-                self.zh_tn_model = ZhNormalizer(remove_erhua=False)
-                self.en_tn_model = EnNormalizer()
-                self.text_frontend = 'wetext'
-                logging.info('use wetext frontend')
-            except:
-                self.text_frontend = ''
-                logging.info('no frontend is avaliable')
+            import onnxruntime
+        except ImportError as error:
+            raise ImportError(
+                "the CosyVoice v1 speech tokenizer and speaker encoder are published as ONNX graphs "
+                "only, so deriving a prompt from a waveform needs `onnxruntime`, which this package "
+                "does not depend on. Use `get_speaker` with a `spk2info.pt` instead, or install "
+                "`onnxruntime` yourself."
+            ) from error
+        options = onnxruntime.SessionOptions()
+        options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+        options.intra_op_num_threads = 1
+        return onnxruntime.InferenceSession(path, sess_options=options, providers=providers)
+
+    def _resample(self, waveform: torch.Tensor, sampling_rate: Optional[int], target_rate: int) -> torch.Tensor:
+        waveform = waveform.reshape(1, -1).float()
+        if sampling_rate is not None and sampling_rate != target_rate:
+            waveform = torchaudio.functional.resample(waveform, sampling_rate, target_rate)
+        return waveform
+
+    def encode_speech_tokens(
+        self, audio: Union[np.ndarray, torch.Tensor], sampling_rate: Optional[int] = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Turns a waveform into supervised semantic speech tokens.
+
+        Args:
+            audio (`np.ndarray` or `torch.Tensor`):
+                Mono waveform.
+            sampling_rate (`int`, *optional*):
+                Rate of `audio`.
+
+        Returns:
+            `tuple(torch.Tensor)`: the speech token ids of shape `(1, speech_length)` and their length.
+
+        Raises:
+            ValueError: If the waveform is longer than thirty seconds.
+        """
+        if self._speech_tokenizer_session is None:
+            providers = ["CUDAExecutionProvider"] if torch.cuda.is_available() else ["CPUExecutionProvider"]
+            self._speech_tokenizer_session = self._open_onnx_session(self.speech_token_model_path, providers)
+        waveform = self._resample(
+            audio if isinstance(audio, torch.Tensor) else torch.as_tensor(np.asarray(audio)),
+            sampling_rate,
+            self.speech_tokenizer_sampling_rate,
+        )
+        if waveform.shape[1] / self.speech_tokenizer_sampling_rate > 30:
+            raise ValueError("the CosyVoice v1 speech tokenizer does not support audio longer than 30 seconds")
+        features = self.speech_token_feature_extractor(
+            waveform.squeeze(0).numpy(),
+            sampling_rate=self.speech_tokenizer_sampling_rate,
+            padding=False,
+            return_tensors="np",
+        ).input_features
+        inputs = self._speech_tokenizer_session.get_inputs()
+        speech_token = self._speech_tokenizer_session.run(
+            None,
+            {
+                inputs[0].name: features.astype(np.float32),
+                inputs[1].name: np.array([features.shape[2]], dtype=np.int32),
+            },
+        )[0].flatten()
+        speech_token_ids = torch.tensor([speech_token], dtype=torch.int32)
+        return speech_token_ids, torch.tensor([speech_token_ids.shape[1]], dtype=torch.int32)
+
+    def encode_speaker(
+        self, audio: Union[np.ndarray, torch.Tensor], sampling_rate: Optional[int] = None
+    ) -> torch.Tensor:
+        """
+        Turns a waveform into an utterance level speaker embedding.
+
+        Args:
+            audio (`np.ndarray` or `torch.Tensor`):
+                Mono waveform.
+            sampling_rate (`int`, *optional*):
+                Rate of `audio`.
+
+        Returns:
+            `torch.Tensor` of shape `(1, speaker_embedding_dim)`: the speaker embedding.
+        """
+        if self._speaker_encoder_session is None:
+            self._speaker_encoder_session = self._open_onnx_session(
+                self.speaker_encoder_model_path, ["CPUExecutionProvider"]
+            )
+        waveform = self._resample(
+            audio if isinstance(audio, torch.Tensor) else torch.as_tensor(np.asarray(audio)),
+            sampling_rate,
+            self.speaker_encoder_sampling_rate,
+        )
+        features = kaldi.fbank(
+            waveform, num_mel_bins=80, dither=0, sample_frequency=self.speaker_encoder_sampling_rate
+        )
+        features = features - features.mean(dim=0, keepdim=True)
+        embedding = self._speaker_encoder_session.run(
+            None, {self._speaker_encoder_session.get_inputs()[0].name: features.unsqueeze(dim=0).numpy()}
+        )[0].flatten()
+        return torch.tensor([embedding])
+
+    def __call__(
+        self,
+        text: Optional[Union[str, list[str]]] = None,
+        audio: Optional[Union[np.ndarray, torch.Tensor]] = None,
+        sampling_rate: Optional[int] = None,
+        prompt_text: Optional[Union[str, list[str]]] = None,
+        **kwargs,
+    ) -> BatchFeature:
+        """
+        Args:
+            text (`str` or `list[str]`, *optional*):
+                Text to synthesize.
+            audio (`np.ndarray` or `torch.Tensor`, *optional*):
+                Mono waveform of the prompt utterance, turned into speech tokens, a mel spectrogram and
+                a speaker embedding.
+            sampling_rate (`int`, *optional*):
+                Rate of `audio`.
+            prompt_text (`str` or `list[str]`, *optional*):
+                Transcript of the prompt utterance.
+
+        Returns:
+            [`BatchFeature`]: `input_ids` and `input_lengths` for the text, plus
+            `prompt_input_ids`, `prompt_speech_token_ids`, `prompt_speech_token_lengths`,
+            `speech_feat`, `speech_feat_lengths` and `speaker_embedding` when a prompt is given.
+        """
+        data = {}
+        if text is not None:
+            encoded = self.tokenizer(text, add_special_tokens=False, return_tensors="pt", **kwargs)
+            data["input_ids"] = encoded["input_ids"].to(torch.int32)
+            data["input_lengths"] = torch.tensor([data["input_ids"].shape[1]], dtype=torch.int32)
+        if prompt_text is not None:
+            encoded = self.tokenizer(prompt_text, add_special_tokens=False, return_tensors="pt", **kwargs)
+            data["prompt_input_ids"] = encoded["input_ids"].to(torch.int32)
+            data["prompt_input_lengths"] = torch.tensor([data["prompt_input_ids"].shape[1]], dtype=torch.int32)
+        if audio is not None:
+            speech_token_ids, speech_token_lengths = self.encode_speech_tokens(audio, sampling_rate)
+            data["prompt_speech_token_ids"] = speech_token_ids
+            data["prompt_speech_token_lengths"] = speech_token_lengths
+            data.update(self.feature_extractor(audio, sampling_rate=sampling_rate))
+            data["speaker_embedding"] = self.encode_speaker(audio, sampling_rate)
+        return BatchFeature(data)
 
 
-    def _extract_text_token(self, text):
-        if isinstance(text, Generator):
-            logging.info('get tts_text generator, will return _extract_text_token_generator!')
-            # NOTE add a dummy text_token_len for compatibility
-            return self._extract_text_token_generator(text), torch.tensor([0], dtype=torch.int32).to(self.device)
-        else:
-            text_token = self.tokenizer.encode(text, allowed_special=self.allowed_special)
-            text_token = torch.tensor([text_token], dtype=torch.int32).to(self.device)
-            text_token_len = torch.tensor([text_token.shape[1]], dtype=torch.int32).to(self.device)
-            return text_token, text_token_len
-
-    def _extract_text_token_generator(self, text_generator):
-        for text in text_generator:
-            text_token, _ = self._extract_text_token(text)
-            for i in range(text_token.shape[1]):
-                yield text_token[:, i: i + 1]
-
-    def _extract_speech_token(self, prompt_wav):
-        speech = load_wav(prompt_wav, 16000)
-        assert speech.shape[1] / 16000 <= 30, 'do not support extract speech token for audio longer than 30s'
-        feat = whisper.log_mel_spectrogram(speech, n_mels=128)
-        speech_token = self.speech_tokenizer_session.run(None,
-                                                         {self.speech_tokenizer_session.get_inputs()[0].name:
-                                                          feat.detach().cpu().numpy(),
-                                                          self.speech_tokenizer_session.get_inputs()[1].name:
-                                                          np.array([feat.shape[2]], dtype=np.int32)})[0].flatten().tolist()
-        speech_token = torch.tensor([speech_token], dtype=torch.int32).to(self.device)
-        speech_token_len = torch.tensor([speech_token.shape[1]], dtype=torch.int32).to(self.device)
-        return speech_token, speech_token_len
-
-    def _extract_spk_embedding(self, prompt_wav):
-        speech = load_wav(prompt_wav, 16000)
-        feat = kaldi.fbank(speech,
-                           num_mel_bins=80,
-                           dither=0,
-                           sample_frequency=16000)
-        feat = feat - feat.mean(dim=0, keepdim=True)
-        embedding = self.campplus_session.run(None,
-                                              {self.campplus_session.get_inputs()[0].name: feat.unsqueeze(dim=0).cpu().numpy()})[0].flatten().tolist()
-        embedding = torch.tensor([embedding]).to(self.device)
-        return embedding
-
-    def _extract_speech_feat(self, prompt_wav):
-        speech = load_wav(prompt_wav, 24000)
-        speech_feat = self.feat_extractor(speech).squeeze(dim=0).transpose(0, 1).to(self.device)
-        speech_feat = speech_feat.unsqueeze(dim=0)
-        speech_feat_len = torch.tensor([speech_feat.shape[1]], dtype=torch.int32).to(self.device)
-        return speech_feat, speech_feat_len
-
-    def text_normalize(self, text, split=True, text_frontend=True):
-        if isinstance(text, Generator):
-            logging.info('get tts_text generator, will skip text_normalize!')
-            return [text]
-        # NOTE skip text_frontend when ssml symbol in text
-        if '<|' in text and '|>' in text:
-            text_frontend = False
-        if text_frontend is False or text == '':
-            return [text] if split is True else text
-        text = text.strip()
-        if self.text_frontend == 'ttsfrd':
-            texts = [i["text"] for i in json.loads(self.frd.do_voicegen_frd(text))["sentences"]]
-            text = ''.join(texts)
-        else:
-            if contains_chinese(text):
-                if self.text_frontend == 'wetext':
-                    text = self.zh_tn_model.normalize(text)
-                text = text.replace("\n", "")
-                text = replace_blank(text)
-                text = replace_corner_mark(text)
-                text = text.replace(".", "。")
-                text = text.replace(" - ", "，")
-                text = remove_bracket(text)
-                text = re.sub(r'[，,、]+$', '。', text)
-                texts = list(split_paragraph(text, partial(self.tokenizer.encode, allowed_special=self.allowed_special), "zh", token_max_n=80,
-                                             token_min_n=60, merge_len=20, comma_split=False))
-            else:
-                if self.text_frontend == 'wetext':
-                    text = self.en_tn_model.normalize(text)
-                text = spell_out_number(text, self.inflect_parser)
-                texts = list(split_paragraph(text, partial(self.tokenizer.encode, allowed_special=self.allowed_special), "en", token_max_n=80,
-                                             token_min_n=60, merge_len=20, comma_split=False))
-        texts = [i for i in texts if not is_only_punctuation(i)]
-        return texts if split is True else text
-
-    def frontend_sft(self, tts_text, spk_id):
-        tts_text_token, tts_text_token_len = self._extract_text_token(tts_text)
-        embedding = self.spk2info[spk_id]['embedding']
-        model_input = {'text': tts_text_token, 'text_len': tts_text_token_len, 'llm_embedding': embedding, 'flow_embedding': embedding}
-        return model_input
-
-    def frontend_zero_shot(self, tts_text, prompt_text, prompt_wav, resample_rate, zero_shot_spk_id):
-        tts_text_token, tts_text_token_len = self._extract_text_token(tts_text)
-        if zero_shot_spk_id == '':
-            prompt_text_token, prompt_text_token_len = self._extract_text_token(prompt_text)
-            speech_feat, speech_feat_len = self._extract_speech_feat(prompt_wav)
-            speech_token, speech_token_len = self._extract_speech_token(prompt_wav)
-            if resample_rate == 24000:
-                # cosyvoice2, force speech_feat % speech_token = 2
-                token_len = min(int(speech_feat.shape[1] / 2), speech_token.shape[1])
-                speech_feat, speech_feat_len[:] = speech_feat[:, :2 * token_len], 2 * token_len
-                speech_token, speech_token_len[:] = speech_token[:, :token_len], token_len
-            embedding = self._extract_spk_embedding(prompt_wav)
-            model_input = {'prompt_text': prompt_text_token, 'prompt_text_len': prompt_text_token_len,
-                           'llm_prompt_speech_token': speech_token, 'llm_prompt_speech_token_len': speech_token_len,
-                           'flow_prompt_speech_token': speech_token, 'flow_prompt_speech_token_len': speech_token_len,
-                           'prompt_speech_feat': speech_feat, 'prompt_speech_feat_len': speech_feat_len,
-                           'llm_embedding': embedding, 'flow_embedding': embedding}
-        else:
-            model_input = {**self.spk2info[zero_shot_spk_id]}
-        model_input['text'] = tts_text_token
-        model_input['text_len'] = tts_text_token_len
-        return model_input
-
-    def frontend_cross_lingual(self, tts_text, prompt_wav, resample_rate, zero_shot_spk_id):
-        model_input = self.frontend_zero_shot(tts_text, '', prompt_wav, resample_rate, zero_shot_spk_id)
-        # in cross lingual mode, we remove prompt in llm
-        del model_input['prompt_text']
-        del model_input['prompt_text_len']
-        del model_input['llm_prompt_speech_token']
-        del model_input['llm_prompt_speech_token_len']
-        return model_input
-
-    def frontend_instruct(self, tts_text, spk_id, instruct_text):
-        model_input = self.frontend_sft(tts_text, spk_id)
-        # in instruct mode, we remove spk_embedding in llm due to information leakage
-        del model_input['llm_embedding']
-        instruct_text_token, instruct_text_token_len = self._extract_text_token(instruct_text)
-        model_input['prompt_text'] = instruct_text_token
-        model_input['prompt_text_len'] = instruct_text_token_len
-        return model_input
-
-    def frontend_instruct2(self, tts_text, instruct_text, prompt_wav, resample_rate, zero_shot_spk_id):
-        model_input = self.frontend_zero_shot(tts_text, instruct_text, prompt_wav, resample_rate, zero_shot_spk_id)
-        del model_input['llm_prompt_speech_token']
-        del model_input['llm_prompt_speech_token_len']
-        return model_input
-
-    def frontend_vc(self, source_speech_16k, prompt_wav, resample_rate):
-        prompt_speech_token, prompt_speech_token_len = self._extract_speech_token(prompt_wav)
-        prompt_speech_feat, prompt_speech_feat_len = self._extract_speech_feat(prompt_wav)
-        embedding = self._extract_spk_embedding(prompt_wav)
-        source_speech_token, source_speech_token_len = self._extract_speech_token(source_speech_16k)
-        model_input = {'source_speech_token': source_speech_token, 'source_speech_token_len': source_speech_token_len,
-                       'flow_prompt_speech_token': prompt_speech_token, 'flow_prompt_speech_token_len': prompt_speech_token_len,
-                       'prompt_speech_feat': prompt_speech_feat, 'prompt_speech_feat_len': prompt_speech_feat_len,
-                       'flow_embedding': embedding}
-        return model_input
+__all__ = ["CosyVoiceV1FeatureExtractor", "CosyVoiceV1Processor"]
