@@ -254,7 +254,27 @@ uses it would otherwise be uninitialised memory, which is the failure that silen
 output before it was found. It is built on first use from a saved and restored generator state, and
 outside inference mode so that the cached tensor stays usable by autograd.
 
-**Generated speech, transcribed back.** Pending the run of `ckpts/cv2_generate.py`.
+**Generated speech, transcribed back.** Two utterances were synthesized from the converted weights
+and transcribed with `facebook/wav2vec2-base-960h`.
+
+| Prompt text | Transcript |
+|---|---|
+| `The quick brown fox jumps over the lazy dog.` | `THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG` |
+| `She sells sea shells by the sea shore.` | `SHE SELLS SEA SHELLS BY THE SEASHORE` |
+
+Both are word for word. `SEASHORE` for `sea shore` is the connectionist temporal classification
+decoder merging the compound, which v1 produced on the same sentence, rather than a synthesis error.
+
+The conditioning was upstream's sft mode, `sft, speaker embedding only, no reference waveform`,
+selected by the geometry test above rather than hardcoded: a 192 dimensional campplus speaker vector
+taken from the v1 speaker table, no prompt speech tokens and no prompt mel spectrogram. That
+exercises the language model, the flow matching model and the vocoder end to end, and it is a
+meaningful test of all three precisely because the v2 language model does not read the speaker
+embedding at all, so every word in these transcripts came out of the text path.
+
+It does **not** exercise zero shot voice cloning from a reference clip. That path needs speech tokens
+and a mel spectrogram derived from a waveform, which needs the ONNX speech tokenizer, and it is
+therefore **unverified**. The transcripts above say nothing about whether cloning a voice works.
 
 ## Not carried over from upstream
 
