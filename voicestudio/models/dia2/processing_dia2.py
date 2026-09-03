@@ -3,10 +3,15 @@
 import re
 
 import torch
+import torchaudio
 
 from transformers.audio_utils import AudioInput, make_list_of_audio
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.mimi.modeling_mimi import MimiModel
+from transformers.models.whisper.modeling_whisper import WhisperForConditionalGeneration
+from transformers.models.whisper.processing_whisper import WhisperProcessor
+from transformers.models.whisper.tokenization_whisper import LANGUAGES as WHISPER_LANGUAGES
+from transformers.models.whisper.tokenization_whisper import _combine_tokens_into_words
 from transformers.processing_utils import ProcessingKwargs, ProcessorMixin, Unpack
 from transformers.tokenization_utils_base import PreTokenizedInput, TextInput
 from transformers.utils import logging
@@ -19,6 +24,8 @@ SPEAKER_TOKENS = ("[S1]", "[S2]")
 
 # A word boundary is either a `<break time="1.5s"/>` silence directive or plain whitespace.
 WORD_SEPARATOR = re.compile(r"(?:<break\s+time=\"([0-9]+(?:\.[0-9]*)?)s\"\s*/?>)|(?:\s+)")
+
+DEFAULT_WHISPER_CHECKPOINT = "openai/whisper-large-v3"
 
 
 class Dia2ProcessorKwargs(ProcessingKwargs, total=False):
@@ -43,6 +50,10 @@ class Dia2Processor(ProcessorMixin):
     a plain token sequence: it splits the script into words, tokenizes each of them, and reports how many tokens
     and how many frames of hold time each word owns.
 
+    Conditioning audio needs a word-level alignment to place its words on the frame grid. A caller can supply
+    one directly through `transcript`, or leave it out and let the processor derive it from `audio` itself with
+    a Whisper model, loaded on first use from `whisper_checkpoint`.
+
     Args:
         feature_extractor ([`EncodecFeatureExtractor`], *optional*):
             Feature extractor of the Mimi codec, used to prepare conditioning audio.
@@ -52,6 +63,9 @@ class Dia2Processor(ProcessorMixin):
             Codec that turns conditioning audio into codes and generated codes back into a waveform.
         chat_template (`str`, *optional*):
             Template string used by [`~ProcessorMixin.apply_chat_template`].
+        whisper_checkpoint (`str`, *optional*, defaults to `"openai/whisper-large-v3"`):
+            Hub id or local path of the Whisper checkpoint used to align `audio` when `transcript` is not
+            given. Only loaded the first time that path is taken.
     """
 
     # `ProcessorMixin` only accepts an `audio_tokenizer` argument whose class is registered for audio
@@ -59,12 +73,25 @@ class Dia2Processor(ProcessorMixin):
     # class-level default keeps it out of `__dict__`, and therefore out of `to_dict`, while it is unset.
     audio_tokenizer = None
 
+    # Cache for the Whisper model and processor backing automatic alignment, built on first use by
+    # `_require_whisper`. Kept off `__init__`'s signature so it is never part of `to_dict`.
+    _whisper_model = None
+    _whisper_processor = None
+
     feature_extractor_class = "EncodecFeatureExtractor"
     tokenizer_class = "AutoTokenizer"
 
-    def __init__(self, feature_extractor=None, tokenizer=None, audio_tokenizer=None, chat_template=None):
+    def __init__(
+        self,
+        feature_extractor=None,
+        tokenizer=None,
+        audio_tokenizer=None,
+        chat_template=None,
+        whisper_checkpoint: str = DEFAULT_WHISPER_CHECKPOINT,
+    ):
         if audio_tokenizer is not None:
             self.audio_tokenizer = audio_tokenizer
+        self.whisper_checkpoint = whisper_checkpoint
         super().__init__(feature_extractor, tokenizer, chat_template=chat_template)
 
     @property
@@ -83,6 +110,14 @@ class Dia2Processor(ProcessorMixin):
             )
         return self.audio_tokenizer
 
+    def _require_whisper(self) -> tuple[WhisperForConditionalGeneration, WhisperProcessor]:
+        if self._whisper_model is None:
+            self._whisper_processor = WhisperProcessor.from_pretrained(self.whisper_checkpoint)
+            self._whisper_model = WhisperForConditionalGeneration.from_pretrained(self.whisper_checkpoint)
+            self._whisper_model.to(self._require_audio_tokenizer().device)
+            self._whisper_model.eval()
+        return self._whisper_model, self._whisper_processor
+
     def __call__(
         self,
         text: TextInput | PreTokenizedInput | list[TextInput] | None = None,
@@ -96,10 +131,11 @@ class Dia2Processor(ProcessorMixin):
                 Script to speak, using `[S1]` / `[S2]` speaker tags and optional `<break time="1.5s"/>`
                 directives. A list is joined into a single script, one line per element.
             audio (`AudioInput`, *optional*):
-                One conditioning waveform per speaker, at `sampling_rate`. Requires `transcript`.
+                One conditioning waveform per speaker, at `sampling_rate`.
             transcript (`list[list[dict]]`, *optional*):
                 Word-level alignment of each `audio` entry, as a list of `{"text": str, "start": float,
-                "end": float}` dicts with times in seconds.
+                "end": float}` dicts with times in seconds. When `audio` is given and this is not, it is
+                derived automatically with the Whisper model from `whisper_checkpoint`.
 
         Returns:
             [`~feature_extraction_utils.BatchFeature`]: A dictionary holding
@@ -128,10 +164,10 @@ class Dia2Processor(ProcessorMixin):
         data = {}
         prefix_words = []
         if audio is not None:
-            if transcript is None:
-                raise ValueError("`audio` requires the matching word-level `transcript`.")
             audio = make_list_of_audio(audio)
-            if len(audio) != len(transcript):
+            if transcript is None:
+                transcript = [self._transcribe(waveform) for waveform in audio]
+            elif len(audio) != len(transcript):
                 raise ValueError(
                     f"Got {len(audio)} conditioning waveforms but {len(transcript)} transcripts; they must match."
                 )
@@ -187,6 +223,67 @@ class Dia2Processor(ProcessorMixin):
     def _encode_word(self, word: str, speaker: str | None, add_special_tokens: bool) -> list[int]:
         text = f"{speaker} {word}" if speaker else word
         return list(self.tokenizer.encode(text, add_special_tokens=add_special_tokens))
+
+    def _transcribe(self, waveform) -> list[dict]:
+        """
+        Runs `whisper_checkpoint` over one conditioning waveform and returns its word-level alignment, in the
+        same `{"text", "start", "end"}` schema `_align_words` consumes.
+        """
+        model, whisper_processor = self._require_whisper()
+        feature_extractor = whisper_processor.feature_extractor
+        tokenizer = whisper_processor.tokenizer
+
+        audio = torch.as_tensor(waveform, dtype=torch.float32)
+        if audio.ndim > 1:
+            audio = audio.reshape(-1) if audio.shape[0] == 1 else audio.mean(dim=0)
+        if self.sampling_rate != feature_extractor.sampling_rate:
+            audio = torchaudio.functional.resample(audio, self.sampling_rate, feature_extractor.sampling_rate)
+
+        inputs = feature_extractor(
+            audio.numpy(),
+            sampling_rate=feature_extractor.sampling_rate,
+            return_tensors="pt",
+            return_attention_mask=True,
+        )
+        input_features = inputs["input_features"].to(device=model.device, dtype=model.dtype)
+        attention_mask = inputs["attention_mask"].to(model.device)
+
+        with torch.no_grad():
+            outputs = model.generate(
+                input_features,
+                attention_mask=attention_mask,
+                return_token_timestamps=True,
+                return_dict_in_generate=True,
+            )
+        sequence = (outputs["sequences"] if isinstance(outputs, dict) else outputs.sequences)[0].tolist()
+        token_timestamps = (
+            outputs["token_timestamps"] if isinstance(outputs, dict) else outputs.token_timestamps
+        )[0].tolist()
+
+        # `generate` prepends the language it auto-detected, when the checkpoint is multilingual; grouping
+        # tokens into words needs it too, since it decides whether words are split on whitespace or on
+        # Unicode boundaries.
+        language = None
+        lang_to_id = getattr(model.generation_config, "lang_to_id", None)
+        if lang_to_id:
+            id_to_code = {token_id: token.strip("<|>") for token, token_id in lang_to_id.items()}
+            language = next(
+                (WHISPER_LANGUAGES.get(id_to_code[token_id]) for token_id in sequence if token_id in id_to_code),
+                None,
+            )
+
+        special_ids = set(tokenizer.all_special_ids)
+        content_positions = [position for position, token_id in enumerate(sequence) if token_id not in special_ids]
+        content_tokens = [sequence[position] for position in content_positions]
+        words, _, token_groups = _combine_tokens_into_words(tokenizer, content_tokens, language=language)
+
+        alignment = []
+        for word, group in zip(words, token_groups):
+            start_position = content_positions[group[0]]
+            end_position = content_positions[group[-1]]
+            start = token_timestamps[start_position - 1] if start_position > 0 else 0.0
+            alignment.append({"text": word.strip(), "start": start, "end": token_timestamps[end_position]})
+        return alignment
 
     def _encode_prefix(
         self, audio: list, transcript: list[list[dict]], add_special_tokens: bool
