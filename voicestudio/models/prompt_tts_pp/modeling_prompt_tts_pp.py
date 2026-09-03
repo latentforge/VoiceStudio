@@ -1912,7 +1912,7 @@ class PromptTTSPPForConditionalGeneration(PromptTTSPPPreTrainedModel):
         Returns:
             [`PromptTTSPPForConditionalGeneration`]: The loaded model.
         """
-        from .weight_conversion import build_model_files, is_published_layout
+        from .weight_conversion import converted_checkpoint, is_published_layout
 
         if (
             pretrained_model_name_or_path is not None
@@ -1920,9 +1920,9 @@ class PromptTTSPPForConditionalGeneration(PromptTTSPPPreTrainedModel):
             and kwargs.get("state_dict") is None
             and is_published_layout(pretrained_model_name_or_path, PromptTTSPPConfig.model_type)
         ):
-            rel_pos_type = kwargs.pop("rel_pos_type", "legacy")
-            config, state_dict = build_model_files(pretrained_model_name_or_path, rel_pos_type=rel_pos_type)
-            return super().from_pretrained(None, *model_args, config=config, state_dict=state_dict, **kwargs)
+            pretrained_model_name_or_path = converted_checkpoint(
+                pretrained_model_name_or_path, rel_pos_type=kwargs.pop("rel_pos_type", "legacy")
+            )
         return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
 
     def get_input_embeddings(self):
@@ -2260,7 +2260,7 @@ class PromptTTSPPBigVGan(BigVGANModel):
         Returns:
             [`PromptTTSPPBigVGan`]: The loaded vocoder.
         """
-        from .weight_conversion import build_vocoder_files, is_published_layout
+        from .weight_conversion import converted_vocoder_checkpoint, is_published_layout
 
         if (
             pretrained_model_name_or_path is not None
@@ -2268,10 +2268,7 @@ class PromptTTSPPBigVGan(BigVGANModel):
             and kwargs.get("state_dict") is None
             and is_published_layout(pretrained_model_name_or_path, PromptTTSPPBigVGanConfig.model_type)
         ):
-            config, state_dict = build_vocoder_files(pretrained_model_name_or_path)
-            return super(BigVGANModel, cls).from_pretrained(
-                None, *model_args, config=config, state_dict=state_dict, **kwargs
-            )
+            pretrained_model_name_or_path = converted_vocoder_checkpoint(pretrained_model_name_or_path)
         return super(BigVGANModel, cls).from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
 
     def build_upsample_layer(

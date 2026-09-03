@@ -9,11 +9,11 @@ from pathlib import Path
 import torch
 import yaml
 from huggingface_hub import hf_hub_download
-from safetensors.torch import save_file
 from transformers.models.auto.tokenization_auto import AutoTokenizer
 from transformers.utils import CONFIG_NAME
 from transformers.utils.hub import cached_file
 
+from ...utils.checkpoint_cache import CheckpointWriter, cached_conversion, file_identity
 from .configuration_prompt_tts_pp import PromptTTSPPBigVGanConfig, PromptTTSPPConfig
 from .feature_extraction_prompt_tts_pp import PromptTTSPPFeatureExtractor
 from .processing_prompt_tts_pp import PromptTTSPPProcessor
@@ -335,6 +335,111 @@ def build_processor(source=DEFAULT_REPO_ID, phonemize: bool = True) -> PromptTTS
     )
 
 
+def write_checkpoint(
+    source=DEFAULT_REPO_ID,
+    directory: str = "prompt_tts_pp",
+    rel_pos_type: str = "legacy",
+    dtype: torch.dtype = torch.float32,
+) -> PromptTTSPPConfig:
+    r"""
+    Reads the released acoustic model out of the Space and writes what
+    [`PromptTTSPPForConditionalGeneration.from_pretrained`] reads into `directory`.
+
+    Args:
+        source (`str` or `os.PathLike`, *optional*, defaults to [`DEFAULT_REPO_ID`]):
+            Repository id of the Space, or a local directory holding a copy of its tree.
+        directory (`str`, *optional*, defaults to `"prompt_tts_pp"`):
+            Directory the converted config and weights are written to.
+        rel_pos_type (`str`, *optional*, defaults to `"legacy"`):
+            Relative positional encoding variant of the checkpoint, see [`build_config`].
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+
+    Returns:
+        [`PromptTTSPPConfig`]: The configuration that was written.
+    """
+    config, converted = build_model_files(source, rel_pos_type=rel_pos_type, dtype=dtype)
+    with CheckpointWriter(directory) as writer:
+        for key in list(converted):
+            writer.add(key, converted.pop(key))
+    config.save_pretrained(directory)
+    return config
+
+
+def write_vocoder_checkpoint(
+    source=DEFAULT_REPO_ID, directory: str = "prompt_tts_pp/vocoder", dtype: torch.dtype = torch.float32
+) -> PromptTTSPPBigVGanConfig:
+    r"""
+    Reads the released f0 aware vocoder out of the Space and writes what
+    [`PromptTTSPPBigVGan.from_pretrained`] reads into `directory`.
+
+    Args:
+        source (`str` or `os.PathLike`, *optional*, defaults to [`DEFAULT_REPO_ID`]):
+            Repository id of the Space, or a local directory holding a copy of its tree.
+        directory (`str`, *optional*, defaults to `"prompt_tts_pp/vocoder"`):
+            Directory the converted config and weights are written to.
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+
+    Returns:
+        [`PromptTTSPPBigVGanConfig`]: The configuration that was written.
+    """
+    config, converted = build_vocoder_files(source, dtype=dtype)
+    with CheckpointWriter(directory) as writer:
+        for key in list(converted):
+            writer.add(key, converted.pop(key))
+    config.save_pretrained(directory)
+    return config
+
+
+def converted_checkpoint(
+    source=DEFAULT_REPO_ID, rel_pos_type: str = "legacy", dtype: torch.dtype = torch.float32
+) -> Path:
+    r"""
+    Returns a directory holding the converted form of the released acoustic model, which
+    [`~PreTrainedModel.from_pretrained`] reads the ordinary way, converting it the first time it is asked for
+    and reusing that conversion afterwards.
+
+    Args:
+        source (`str` or `os.PathLike`, *optional*, defaults to [`DEFAULT_REPO_ID`]):
+            Repository id of the Space, or a local directory holding a copy of its tree.
+        rel_pos_type (`str`, *optional*, defaults to `"legacy"`):
+            Relative positional encoding variant of the checkpoint, see [`build_config`].
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+
+    Returns:
+        `Path`: The directory holding the converted checkpoint.
+    """
+    parts = [str(source), rel_pos_type, str(dtype), file_identity(resolve_file(source, DEFAULT_MODEL_FILE))]
+    return cached_conversion(
+        "prompt_tts_pp",
+        parts,
+        lambda directory: write_checkpoint(source, directory, rel_pos_type=rel_pos_type, dtype=dtype),
+    )
+
+
+def converted_vocoder_checkpoint(source=DEFAULT_REPO_ID, dtype: torch.dtype = torch.float32) -> Path:
+    r"""
+    Returns a directory holding the converted form of the released f0 aware vocoder, which
+    [`~PreTrainedModel.from_pretrained`] reads the ordinary way, converting it the first time it is asked for
+    and reusing that conversion afterwards.
+
+    Args:
+        source (`str` or `os.PathLike`, *optional*, defaults to [`DEFAULT_REPO_ID`]):
+            Repository id of the Space, or a local directory holding a copy of its tree.
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+
+    Returns:
+        `Path`: The directory holding the converted checkpoint.
+    """
+    parts = [str(source), str(dtype), file_identity(resolve_file(source, DEFAULT_VOCODER_FILE))]
+    return cached_conversion(
+        "prompt_tts_pp_vocoder", parts, lambda directory: write_vocoder_checkpoint(source, directory, dtype=dtype)
+    )
+
+
 def convert(
     source=DEFAULT_REPO_ID,
     output_dir: str = "prompt_tts_pp",
@@ -345,7 +450,8 @@ def convert(
     Writes the released PromptTTS++ checkpoints into a directory of its own, with the vocoder in its `vocoder`
     subdirectory, which [`PromptTTSPPForConditionalGeneration.from_pretrained`],
     [`PromptTTSPPBigVGan.from_pretrained`] and [`PromptTTSPPProcessor.from_pretrained`] read without reaching
-    the Space again, for a checkpoint that is loaded many times or shipped elsewhere.
+    the Space again, for a checkpoint that is shipped elsewhere or kept outside the conversion cache
+    [`converted_checkpoint`] holds.
 
     Args:
         source (`str` or `os.PathLike`, *optional*, defaults to [`DEFAULT_REPO_ID`]):
@@ -358,18 +464,8 @@ def convert(
             Dtype the converted weights are cast to.
     """
     output_path = Path(output_dir)
-    vocoder_path = output_path / "vocoder"
-    output_path.mkdir(parents=True, exist_ok=True)
-    vocoder_path.mkdir(parents=True, exist_ok=True)
-
-    config, converted = build_model_files(source, rel_pos_type=rel_pos_type, dtype=dtype)
-    config.save_pretrained(output_path)
-    save_file(converted, str(output_path / "model.safetensors"), metadata={"format": "pt"})
-
-    vocoder_config, vocoder_converted = build_vocoder_files(source, dtype=dtype)
-    vocoder_config.save_pretrained(vocoder_path)
-    save_file(vocoder_converted, str(vocoder_path / "model.safetensors"), metadata={"format": "pt"})
-
+    write_checkpoint(source, output_path, rel_pos_type=rel_pos_type, dtype=dtype)
+    write_vocoder_checkpoint(source, output_path / "vocoder", dtype=dtype)
     build_processor(source).save_pretrained(output_path)
 
 
@@ -386,7 +482,11 @@ __all__ = [
     "convert",
     "convert_state_dict",
     "convert_vocoder_state_dict",
+    "converted_checkpoint",
+    "converted_vocoder_checkpoint",
     "is_published_layout",
     "load_upstream_checkpoint",
     "resolve_file",
+    "write_checkpoint",
+    "write_vocoder_checkpoint",
 ]
