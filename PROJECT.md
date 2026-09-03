@@ -278,13 +278,8 @@ bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts
 conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
 `Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
 
-Two items left open:
+One item left open:
 
-- **Higgs TTS 2 checkpoint identity.** The branch verified against
-  `eustlb/higgs-audio-v2-generation-3B-base`; this repo uses `bosonai/higgs-tts-2-3b-base`. Whether
-  they are the same weights was never established. Comparing `architectures`, `num_hidden_layers`,
-  `num_codebooks` and the tensor key set of the two `config.json`/`model.safetensors.index.json`
-  pairs would settle it; the branch's figures were `num_codebooks` 8 and logits `(1, 299, 8208)`.
 - **DAC weight-norm coverage.** `in_proj` and `out_proj` take `apply_weight_norm` the same way the
   convolutions do, so they need the `original0`/`original1`/`bias` rules too. Delegating to
   transformers' own `convert_dac_checkpoint` should cover it; confirm by checking that no source
