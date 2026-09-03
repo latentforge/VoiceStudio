@@ -4,7 +4,15 @@ from typing import ClassVar
 
 from transformers.configuration_utils import PreTrainedConfig
 
+from ..bigvgan import BigVGANConfig
 from ..vocos import VocosConfig
+
+
+# The two vocoders the released checkpoints were trained against, keyed by their `model_type`.
+VOCODER_CONFIGS: dict[str, type[PreTrainedConfig]] = {
+    VocosConfig.model_type: VocosConfig,
+    BigVGANConfig.model_type: BigVGANConfig,
+}
 
 
 class F5TTSConfig(PreTrainedConfig):
@@ -94,10 +102,13 @@ class F5TTSConfig(PreTrainedConfig):
             Distance in waveform samples between neighbouring mel frames.
         initializer_range (`float`, *optional*, defaults to 0.02):
             Standard deviation of the truncated normal initializer used for the weight matrices.
-        vocoder_config (`Union[dict, `VocosConfig`]`, *optional*):
+        vocoder_config (`Union[dict, `VocosConfig`, `BigVGANConfig`]`, *optional*):
             Configuration of the vocoder that turns a predicted log mel spectrogram back into a waveform,
-            [charactr/vocos-mel-24khz](https://huggingface.co/charactr/vocos-mel-24khz) in every released
-            checkpoint.
+            [charactr/vocos-mel-24khz](https://huggingface.co/charactr/vocos-mel-24khz) for every released
+            checkpoint whose mel front end is `"vocos"` and
+            [nvidia/bigvgan_v2_24khz_100band_256x](https://huggingface.co/nvidia/bigvgan_v2_24khz_100band_256x)
+            for `F5TTS_Base_bigvgan`. A dictionary is read as the entry of [`VOCODER_CONFIGS`] its `model_type`
+            names.
 
     Example:
 
@@ -112,7 +123,7 @@ class F5TTSConfig(PreTrainedConfig):
     ```"""
 
     model_type = "f5_tts"
-    sub_configs: ClassVar[dict[str, type[PreTrainedConfig]]] = {"vocoder_config": VocosConfig}
+    sub_configs: ClassVar[dict[str, type[PreTrainedConfig]]] = {"vocoder_config": PreTrainedConfig}
 
     def __init__(
         self,
@@ -198,7 +209,13 @@ class F5TTSConfig(PreTrainedConfig):
         self.initializer_range = initializer_range
 
         if isinstance(vocoder_config, dict):
-            vocoder_config = VocosConfig(**vocoder_config)
+            model_type = vocoder_config.get("model_type", VocosConfig.model_type)
+            if model_type not in VOCODER_CONFIGS:
+                raise ValueError(
+                    f"`vocoder_config` names the model type {model_type}, which is not one of the vocoders this "
+                    f"model composes, {sorted(VOCODER_CONFIGS)}."
+                )
+            vocoder_config = VOCODER_CONFIGS[model_type](**vocoder_config)
         elif vocoder_config is None:
             vocoder_config = VocosConfig()
         self.vocoder_config = vocoder_config
@@ -206,4 +223,4 @@ class F5TTSConfig(PreTrainedConfig):
         super().__init__(**kwargs)
 
 
-__all__ = ["F5TTSConfig"]
+__all__ = ["VOCODER_CONFIGS", "F5TTSConfig"]

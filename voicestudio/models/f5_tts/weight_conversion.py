@@ -7,7 +7,8 @@ import torch
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file, save_file
 
-from ..vocos.weight_conversion import build_model_files as build_vocoder_files
+from ..bigvgan.weight_conversion import build_model_files as build_bigvgan_files
+from ..vocos.weight_conversion import build_model_files as build_vocos_files
 from .configuration_f5_tts import F5TTSConfig
 from .feature_extraction_f5_tts import F5TTSFeatureExtractor
 from .processing_f5_tts import F5TTSProcessor
@@ -114,7 +115,11 @@ PUBLISHED_CHECKPOINTS = {
     "E2TTS_Base": ("SWivid/E2-TTS", "E2TTS_Base/model_1200000.safetensors", "F5TTS_Base/vocab.txt"),
 }
 
-VOCOS_SOURCE = "charactr/vocos-mel-24khz"
+# The vocoder each mel front end was trained against, and the function that reads its published repository.
+VOCODER_SOURCES = {
+    "vocos": ("charactr/vocos-mel-24khz", build_vocos_files),
+    "bigvgan": ("nvidia/bigvgan_v2_24khz_100band_256x", build_bigvgan_files),
+}
 
 # Buffers the EMA wrapper and the mel front end of a `CFM` module keep in the checkpoint and that no parameter
 # of this model corresponds to.
@@ -248,7 +253,7 @@ def convert(
     r"""
     Converts a published F5-TTS or E2-TTS checkpoint into a directory
     [`F5TTSForConditionalGeneration.from_pretrained`] and [`F5TTSProcessor.from_pretrained`] can load, with the
-    Vocos vocoder composed into the model.
+    vocoder `mel_spec_type` names composed into the model.
 
     Args:
         checkpoint_name (`str`, *optional*, defaults to `"F5TTS_v1_Base"`):
@@ -263,13 +268,21 @@ def convert(
         vocab_file (`str`, *optional*):
             Local vocabulary file to use instead of downloading the published one.
         vocoder_path (`str`, *optional*):
-            Local directory holding a Vocos `config.yaml` and `pytorch_model.bin`. Defaults to downloading
-            [charactr/vocos-mel-24khz](https://huggingface.co/charactr/vocos-mel-24khz).
+            Local directory holding the published repository of the vocoder `mel_spec_type` names. Defaults to
+            downloading the entry of [`VOCODER_SOURCES`] it names.
         mel_spec_type (`str`, *optional*, defaults to `"vocos"`):
-            Mel front end the checkpoint was trained against, `"vocos"` or `"bigvgan"`.
+            Mel front end the checkpoint was trained against, `"vocos"` or `"bigvgan"`. It also selects the
+            vocoder composed into the model, and it has to match the checkpoint: `F5TTS_Base_bigvgan` is the
+            only released one trained against `"bigvgan"`.
         dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
             Dtype the converted weights are cast to.
+
+    Raises:
+        ValueError: If `mel_spec_type` is not one of the front ends this model implements.
     """
+    if mel_spec_type not in VOCODER_SOURCES:
+        raise ValueError(f"`mel_spec_type` must be one of {sorted(VOCODER_SOURCES)}, got {mel_spec_type}.")
+
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -281,7 +294,8 @@ def convert(
     with open(vocab_file, "r", encoding="utf-8") as vocab_handle:
         text_vocab_size = sum(1 for _ in vocab_handle)
 
-    vocoder_config, vocoder_state_dict = build_vocoder_files(vocoder_path or VOCOS_SOURCE, dtype=dtype)
+    vocoder_source, build_vocoder_files = VOCODER_SOURCES[mel_spec_type]
+    vocoder_config, vocoder_state_dict = build_vocoder_files(vocoder_path or vocoder_source, dtype=dtype)
 
     config = build_config(
         architecture or checkpoint_name, text_vocab_size=text_vocab_size, vocoder_config=vocoder_config
@@ -305,6 +319,7 @@ def convert(
 __all__ = [
     "ARCHITECTURES",
     "PUBLISHED_CHECKPOINTS",
+    "VOCODER_SOURCES",
     "build_config",
     "convert",
     "convert_state_dict",

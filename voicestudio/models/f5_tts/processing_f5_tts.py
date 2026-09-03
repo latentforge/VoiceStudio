@@ -248,9 +248,10 @@ class F5TTSProcessor(ProcessorMixin):
             mel_spectrogram (`torch.Tensor`):
                 Generated log mel spectrogram of shape `(batch_size, sequence_length, mel_dim)`, one entry per
                 chunk, in order.
-            vocoder ([`VocosModel`]):
+            vocoder ([`VocosModel`] or [`BigVGANModel`]):
                 Vocoder turning a generated log mel spectrogram back into a waveform, which is
-                `F5TTSForConditionalGeneration.vocoder`.
+                `F5TTSForConditionalGeneration.vocoder`. It has to match the mel front end the feature extractor
+                is configured with.
             duration (`torch.Tensor`, *optional*):
                 Number of frames of each entry as returned by [`~F5TTSProcessor.__call__`]. Given, the batch
                 padding past each entry's own duration is cut before vocoding.

@@ -8,7 +8,7 @@ step through adaptive layer norms. Training masks out a random span of the targe
 infill it, which at inference time makes voice cloning a special case: the reference clip occupies the leading
 frames, the text to speak follows the reference transcription, and the frames past the reference are the span to
 fill in. Generation integrates the vector field with a fixed step solver over a Sway Sampling time grid and decodes
-the result with a Vocos vocoder.
+the result with the vocoder the checkpoint was trained against, Vocos or BigVGAN.
 
 The same file also carries E2-TTS, the flat UNet transformer baseline the authors publish alongside F5-TTS. It is
 the same flow, the same objective and the same sampler, over a backbone that prepends the time step embedding to
@@ -30,8 +30,15 @@ convert("F5TTS_v1_Base", "f5-tts-v1-base-converted")
 
 `convert` accepts any key of `PUBLISHED_CHECKPOINTS` (`F5TTS_v1_Base`, `F5TTS_v1_Base_no_zero_init`, `F5TTS_Base`,
 `F5TTS_Base_bigvgan`, `E2TTS_Base`), writes the model, the tokenizer and the feature extractor into the output
-directory, and downloads [charactr/vocos-mel-24khz](https://huggingface.co/charactr/vocos-mel-24khz) into the
-model's own `vocoder` sub-model.
+directory, and downloads the vocoder into the model's own `vocoder` sub-model. `mel_spec_type` selects both the
+mel front end and that vocoder, and it has to match the checkpoint:
+[charactr/vocos-mel-24khz](https://huggingface.co/charactr/vocos-mel-24khz) for the default `"vocos"`, and
+[nvidia/bigvgan_v2_24khz_100band_256x](https://huggingface.co/nvidia/bigvgan_v2_24khz_100band_256x) for
+`"bigvgan"`, which is what `F5TTS_Base_bigvgan` was trained with:
+
+```python
+convert("F5TTS_Base_bigvgan", "f5-tts-base-bigvgan-converted", mel_spec_type="bigvgan")
+```
 
 ```python
 import soundfile as sf
@@ -148,11 +155,12 @@ In `transformers` itself, `fastspeech2_conformer` and `vits` are the two non-aut
 lineages, and both are duration-predictor models whose backbones carry no time step conditioning at all, so
 neither offers a layer to inherit.
 
-The vocoder is `VocosModel` from `voicestudio/models/vocos`, held as a sub-model the way `ParlerTTSConfig` holds
-its `audio_encoder`: `F5TTSConfig.vocoder_config` is a `VocosConfig`, `F5TTSForConditionalGeneration.vocoder` is
-the model it builds, and `convert` writes its weights into the same `model.safetensors` under a `vocoder.` prefix.
-Vocos is an independently published vocoder with checkpoints of its own, and F5-TTS also ships a BigVGAN variant
-of the same slot, so it does not belong inside this folder. `src/transformers/models/` ships `univnet`, the
+The vocoder is `VocosModel` from `voicestudio/models/vocos` or `BigVGANModel` from `voicestudio/models/bigvgan`,
+held as a sub-model the way `ParlerTTSConfig` holds its `audio_encoder`: `F5TTSConfig.vocoder_config` is a
+`VocosConfig` or a `BigVGANConfig`, which `VOCODER_CONFIGS` selects by `model_type`,
+`F5TTSForConditionalGeneration.vocoder` is the model it builds, and `convert` writes its weights into the same
+`model.safetensors` under a `vocoder.` prefix. Both are independently published vocoders with checkpoints of
+their own, so neither belongs inside this folder. `src/transformers/models/` ships `univnet`, the
 `speecht5` HiFi-GAN, `vits`, `encodec`, `dac`, `mimi`, `xcodec`, `xcodec2`, `higgs_audio_v2_tokenizer`,
 `qwen3_tts_tokenizer_*` and `vibevoice_acoustic_tokenizer`; none of them is a ConvNeXt plus inverse STFT mel
 vocoder, so there was nothing to relay to.
@@ -171,8 +179,9 @@ already carries. `pyproject.toml` and `uv.lock` need no change, and nothing was 
   `grid_constructor`, `odeint` runs its fixed grid solver on the time points it is handed, takes one Euler or
   midpoint step per interval, and linearly interpolates onto the requested points, which is what the class does in
   forty lines.
-- `vocos` supplied the vocoder, now `VocosModel` in `voicestudio/models/vocos`, which F5-TTS composes as a
-  sub-model.
+- `vocos` supplied one of the two vocoders, now `VocosModel` in `voicestudio/models/vocos`, which F5-TTS composes
+  as a sub-model. The other, which upstream pulls in as a git submodule of `NVIDIA/BigVGAN`, is `BigVGANModel` in
+  `voicestudio/models/bigvgan`, composed the same way.
 - `librosa` and `torchaudio.transforms.MelSpectrogram` supplied the two mel front ends. Both became
   `F5TTSFeatureExtractor`, over `torchaudio.functional.melscale_fbanks`: `norm=None, mel_scale="htk"` reproduces
   the `"vocos"` front end and `norm="slaney", mel_scale="slaney"` reproduces `librosa.filters.mel`'s defaults, which
@@ -231,6 +240,20 @@ SILENT SPECTATOR WATCHING SPECIES EVOLVE EMPIRES RISE AND FALL BUT ALWAYS REMEMB
 for word, from the F5-TTS v1 Base, the F5-TTS Base and the E2-TTS Base checkpoints alike. That path runs the
 tokenizer, the feature extractor, the sampler and the composed `VocosModel` end to end.
 
+`F5TTS_Base_bigvgan` converts and loads the same way with `mel_spec_type="bigvgan"`, at 812 tensors and
+449511316 parameters, of which the composed `BigVGANModel` is 449 tensors and 112414512 parameters, all loading
+clean and the vocoder frozen. Generating the same text in the same reference voice transcribes back as I DON'T
+REALLY CARE WHAT YOU CALL ME I'VE BEEN A SILENT SPECTATOR WATCHING SPECIES EVOLVE EMPIRES RISE AND FALL, word for
+word.
+
+Vocoding that same generated spectrogram with `VocosModel` instead, which is what this checkpoint used to be
+paired with, transcribes word for word as well, so the transcript alone does not catch the wrong vocoder. The
+level and the spectrum do. The two waveforms differ by a mean absolute 0.075 and a maximum 1.017, and the Vocos
+one comes out at an RMS of 0.0038 against 0.140, a factor of 37 quieter. On copy synthesis of the demo reference
+clip, where the target spectrogram is known, `BigVGANModel` reproduces the log mel spectrogram it was handed to
+an L1 of 0.0886 while `VocosModel` on the same input reaches 3.895, because a `"bigvgan"` front end spectrogram
+is on a Slaney mel scale and Vocos was trained to invert an HTK one.
+
 Checkpoint search, per CLAUDE.md section 2.3: the Hugging Face hub holds `SWivid/F5-TTS`, with `F5TTS_Base`,
 `F5TTS_Base_bigvgan`, `F5TTS_v1_Base` and `F5TTS_v1_Base_no_zero_init`, and `SWivid/E2-TTS`, with `E2TTS_Base`;
 `charactr/vocos-mel-24khz` and `nvidia/bigvgan_v2_24khz_100band_256x` hold the two vocoders. The upstream README
@@ -249,12 +272,6 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
   over the concatenated pair, and the last block drops the text branch. `F5TTSConfig.backbone` accepts only
   `"dit"` and `"unett"`, so MMDiT is absent. No configuration in `src/f5_tts/configs/` selects it and no published
   checkpoint uses it, but that is not the same as it not existing, and whether to add it is a scope decision.
-- **BigVGAN.** `F5TTS_Base_bigvgan` is a real published checkpoint whose mel front end is the `"bigvgan"` one, and
-  `F5TTSFeatureExtractor` reproduces that front end exactly. The vocoder itself is not migrated: upstream pulls
-  `nvidia/bigvgan_v2_24khz_100band_256x` in as a git submodule of custom CUDA kernels, anti-aliased Snake
-  activations and a multi-band generator, which is a model migration of its own rather than a piece of inlined
-  math. `convert` will produce that checkpoint and pair it with the Vocos vocoder, which is the wrong vocoder for
-  it. Nothing stops a caller passing their own vocoder to `F5TTSProcessor.batch_decode` instead.
 - **Chinese text.** See the `rjieba` and `pypinyin` entry under Dependencies. The tokenizer raises rather than
   silently mistokenizing.
 - **Automatic transcription of the reference clip.** `preprocess_ref_audio_text` ran
@@ -307,7 +324,7 @@ below.
 | `src/f5_tts/configs/*.yaml` | `ARCHITECTURES` in `weight_conversion.py`, and `F5TTSConfig` |
 | `src/f5_tts/infer/examples/vocab.txt`, `data/Emilia_ZH_EN_pinyin/vocab.txt` | The `vocab.txt` each published checkpoint ships, which `convert` downloads |
 | `src/f5_tts/infer/speech_edit.py` | The `edit_mask` and `fix_duration` arguments of `generate` and `F5TTSProcessor.__call__`, minus the script that builds the frame level mask |
-| `src/third_party/BigVGAN` | Not carried over, see above. The `"bigvgan"` mel front end of `F5TTSFeatureExtractor` is the only part of it that has a counterpart |
+| `src/third_party/BigVGAN` | `voicestudio/models/bigvgan`, which `convert` composes as the `vocoder` sub-model when `mel_spec_type="bigvgan"`. The `"bigvgan"` mel front end of `F5TTSFeatureExtractor` reproduces its analysis side |
 | `INFO.md` | This file. It was the upstream `README.md`, renamed when the tree was merged in |
 | `src/f5_tts/infer/README.md`, `infer/SHARED.md`, `model/backbones/README.md`, `eval/README.md`, `train/README.md` | This file's Usage, Training and Lineage sections. The community finetune list in `SHARED.md` has no counterpart |
 | `ckpts/README.md` | `PUBLISHED_CHECKPOINTS` in `weight_conversion.py`, which names the repository and file of every released checkpoint |
@@ -326,7 +343,7 @@ below.
 
 Two things outside this folder are still needed and were deliberately not touched:
 
-- `voicestudio/models/__init__.py` needs a `from .f5_tts import *` line, and a `from .vocos import *` line for
-  the vocoder this model composes.
-- `PROJECT.md` needs an F5-TTS status entry carrying the gaps listed above, in particular the MMDiT backbone, the
-  BigVGAN vocoder and the `rjieba`/`pypinyin` decision, and a Vocos entry carrying that model's own gaps.
+- `voicestudio/models/__init__.py` needs a `from .f5_tts import *` line, and a `from .vocos import *` and a
+  `from .bigvgan import *` line for the two vocoders this model composes.
+- `PROJECT.md` needs an F5-TTS status entry carrying the gaps listed above, in particular the MMDiT backbone and
+  the `rjieba`/`pypinyin` decision, and Vocos and BigVGAN entries carrying those models' own gaps.

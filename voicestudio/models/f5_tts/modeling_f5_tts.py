@@ -40,6 +40,7 @@ from transformers.models.llama.modeling_llama import (
 from transformers.processing_utils import Unpack
 from transformers.utils import ModelOutput, TransformersKwargs, auto_docstring, logging
 
+from ..bigvgan import BigVGANConfig, BigVGANModel
 from ..vocos import VocosModel
 from .configuration_f5_tts import F5TTSConfig
 from .generation_f5_tts import F5TTSGenerationMixin
@@ -1281,7 +1282,8 @@ class F5TTSForConditionalGeneration(F5TTSPreTrainedModel, F5TTSGenerationMixin):
     def __init__(self, config: F5TTSConfig):
         super().__init__(config)
         self.model = F5TTSModel(config) if config.backbone == "dit" else F5TTSUNetModel(config)
-        self.vocoder = VocosModel(config.vocoder_config)
+        vocoder_class = BigVGANModel if isinstance(config.vocoder_config, BigVGANConfig) else VocosModel
+        self.vocoder = vocoder_class(config.vocoder_config)
         self.mel_dim = config.mel_dim
         self.post_init()
         self.freeze_vocoder()
