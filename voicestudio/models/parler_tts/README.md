@@ -7,17 +7,13 @@ Original model and code: [huggingface/parler-tts](https://github.com/huggingface
 
 ## Usage
 
-The published checkpoints ship the audio codec in the original `descript-audio-codec` config and weight layout, so they need a one-time conversion before they load:
-
-```python
-from voicestudio.models.parler_tts.weight_conversion import convert
-
-model_id = convert("parler-tts/parler-tts-mini-v1", "parler-tts-mini-v1-converted")
-```
+`from_pretrained` takes any published repository id as it stands:
 
 ```python
 import torch
 from transformers import AutoModelForTextToWaveform, AutoProcessor
+
+model_id = "parler-tts/parler-tts-mini-v1"
 
 processor = AutoProcessor.from_pretrained(model_id)
 model = AutoModelForTextToWaveform.from_pretrained(model_id, dtype=torch.float16).to("cuda")
@@ -36,19 +32,37 @@ generation = model.generate(**inputs)
 sf.write("output.wav", generation.float().cpu().numpy().squeeze(), model.config.audio_encoder.sampling_rate)
 ```
 
-One thing above is load-bearing: `num_return_sequences` must stay at its default of 1. Values above 1 raise,
-because the delay-pattern logits processor and the post-processing reshape are both sized from the
-unexpanded batch.
+A published checkpoint holds its audio codec as the `descript-audio-codec` module Parler-TTS trained with, in
+that module's own weight layout, described by a vendored `DACConfig` serialized under `model_type: "dac"` that
+declares the codec's bitrate and latent width and none of the architecture hyperparameters. Both calls above read
+that layout as it stands. `ParlerTTSConfig` builds the `DacConfig` the entry describes, and
+`ParlerTTSForConditionalGeneration.from_pretrained` folds the codec's weight norm reparameterization back into
+plain weights and maps its 301 tensors onto `DacModel`'s 223 on the way in.
 
-`generate` already returns a finished waveform, not codes: `ParlerTTSForConditionalGeneration` owns the
-`DacModel` codec as `self.audio_encoder` and decodes internally before returning, the same shape MusicGen
-uses, so no separate `.decode()` call is needed in the flow above. `ParlerTTSProcessor` still carries its
-own `audio_tokenizer`, loaded standalone from the checkpoint's `audio_encoder` subfolder (written by
-`weight_conversion.convert`), for decoding DAC codes obtained some other way than `generate`.
+Three things about that path are load-bearing:
 
-`ParlerTTSForConditionalGeneration` also accepts raw target audio for training, through `input_values`
-rather than through the processor: the model encodes it into codes with its own `audio_encoder` to derive
-`decoder_input_ids` when neither `decoder_input_ids` nor `labels` are given (see `forward`). That path,
-together with `from_sub_models_config`/`from_sub_models_pretrained`, is why `audio_encoder` stays a
-submodule of the model itself, sharing one checkpoint with `text_encoder` and `decoder`, rather than moving
-out to the processor entirely.
+- `num_return_sequences` must stay at its default of 1. Values above 1 raise, because the delay-pattern logits
+  processor and the post-processing reshape are both sized from the unexpanded batch.
+- `generate` already returns a finished waveform, not codes: `ParlerTTSForConditionalGeneration` owns the
+  `DacModel` codec as `self.audio_encoder` and decodes internally before returning, the same shape MusicGen uses,
+  so no separate `.decode()` call is needed in the flow above.
+- `ParlerTTSProcessor` still carries its own `audio_tokenizer`, for decoding DAC codes obtained some other way
+  than `generate`. It is read out of the published checkpoint's own weights, or out of the `audio_encoder`
+  subfolder of a directory `weight_conversion.convert` wrote.
+
+`ParlerTTSForConditionalGeneration` also accepts raw target audio for training, through `input_values` rather
+than through the processor: the model encodes it into codes with its own `audio_encoder` to derive
+`decoder_input_ids` when neither `decoder_input_ids` nor `labels` are given (see `forward`). That path, together
+with `from_sub_models_config`/`from_sub_models_pretrained`, is why `audio_encoder` stays a submodule of the model
+itself, sharing one checkpoint with `text_encoder` and `decoder`, rather than moving out to the processor
+entirely.
+
+`weight_conversion.convert` still writes a converted directory, for a checkpoint that has to be materialized once
+and loaded many times or shipped elsewhere. It also saves the codec standalone under an `audio_encoder`
+subfolder, and both classes load the result without converting anything again:
+
+```python
+from voicestudio.models.parler_tts.weight_conversion import convert
+
+convert("parler-tts/parler-tts-mini-v1", "parler-tts-mini-v1-converted")
+```
