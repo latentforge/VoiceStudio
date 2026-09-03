@@ -4,12 +4,10 @@ Spark-TTS is a text-to-speech model in which synthesis, voice cloning and attrib
 prediction over a single flat sequence. A Qwen2.5-0.5B decoder whose vocabulary is extended to 166000 entries emits
 BiCodec tokens directly, so no flow-matching or diffusion stage follows it.
 
-BiCodec, the audio tokenizer, splits speech into two streams. A time-varying semantic stream comes from a single
-factorized vector quantizer over the averaged hidden states of a frozen `wav2vec2-large-xlsr-53`, at 50 tokens per
-second over an 8192-entry codebook. A time-invariant global stream comes from an ECAPA-TDNN speaker encoder whose
-frame features a perceiver resampler compresses into 32 latents, each quantized by a finite scalar quantizer over
-`4^6` levels. Decoding conditions a ConvNeXt prenet on the flattened global latents through adaptive layer
-normalization, adds them again to its output, and runs a DAC-style wave generator at 16 kHz.
+BiCodec, the audio tokenizer whose tokens those are, is a model of its own and lives in
+[`voicestudio/models/spark_tts_bicodec`](../spark_tts_bicodec). It splits speech into a time-varying semantic stream
+at 50 tokens per second and a time-invariant global stream of 32 speaker tokens, and turns either back into a
+waveform at 16 kHz.
 
 Original model and code: [SparkAudio/Spark-TTS](https://github.com/SparkAudio/Spark-TTS)
 
@@ -73,7 +71,8 @@ waveform = processor.decode(generated, input_length=inputs["input_ids"].shape[-1
 Passing `prompt_text`, the transcript of the reference clip, additionally seeds the prompt with the clip's own
 semantic tokens so that generation continues it.
 
-BiCodec is usable on its own through `SparkTTSBiCodecModel`, which is what `processor.audio_tokenizer` holds:
+BiCodec is usable on its own through [`SparkTTSBiCodecModel`](../spark_tts_bicodec), which is what
+`processor.audio_tokenizer` holds:
 
 ```python
 inputs = processor.feature_extractor(reference, sampling_rate=sampling_rate).to(model.device)
@@ -112,10 +111,12 @@ for, and `labels` is `-100` over the padding and over the whole prompt, which is
 rather than reading it off the tokenizer, so reproducing it exactly means loading the tokenizer with
 `padding_side="left"`; the converted checkpoint's own default is `"right"`. And it overwrites the last label of
 every row with the end-of-sequence id instead of appending a token, which for this tokenizer is a no-op, since the
-continuation already ends in `<|im_end|>` and that is the end-of-sequence token. The two layouts upstream trains jointly are both available: the voice-cloning
-layout supervises `<|start_semantic_token|>` + semantic tokens + `<|im_end|>`, and the attribute layout, selected by
-also passing `gender`/`pitch`/`speed` together with `pitch_value` and `speed_value`, supervises the acoustic value
-tokens, the global tokens and the semantic tokens.
+continuation already ends in `<|im_end|>` and that is the end-of-sequence token.
+
+The two layouts upstream trains jointly are both available: the voice-cloning layout supervises
+`<|start_semantic_token|>` + semantic tokens + `<|im_end|>`, and the attribute layout, selected by also passing
+`gender`/`pitch`/`speed` together with `pitch_value` and `speed_value`, supervises the acoustic value tokens, the
+global tokens and the semantic tokens.
 
 ### BiCodec
 
@@ -233,8 +234,14 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
   to the `Conv1d` layers of the wave generator (`layers.init_weights`), leaving the ECAPA-TDNN encoder, the
   perceiver resampler, the quantizers and every `ConvTranspose1d` on PyTorch's own defaults.
   `SparkTTSBiCodecPreTrainedModel._init_weights` is a single rule over the whole tree instead, as `transformers`
-  models are written. This only affects training from a random initialization; loading a checkpoint overwrites all
-  of it.
+  models are written. The largest single consequence is the semantic codebook: upstream leaves the `nn.Embedding`
+  on PyTorch's `N(0, 1)` and the migration draws it from `N(0, 0.02)`. This only affects training from a random
+  initialization; loading a checkpoint overwrites all of it.
+- **Independent prenet and postnet channel widths.** Upstream's `Decoder` takes `input_channels` and `out_channels`
+  per instance, so in principle the postnet's output width, which is the self-supervised feature width, is
+  unrelated to the codec latent width. `SparkTTSSemanticDecoder` ties all four to `config.hidden_size`, which also
+  makes `feature_loss` require `semantic_model_config.hidden_size == hidden_size`. Every one of those is 1024 in the
+  released checkpoint, so nothing about it changes, but a checkpoint that set them apart could not be expressed.
 - **The upstream CLI, Gradio app and Triton/TensorRT-LLM serving tree.** `cli/inference.py`, `webui.py` and
   `runtime/triton_trtllm/` are dropped with no counterpart, along with `gradio` and the Triton client dependencies.
 
@@ -245,8 +252,11 @@ Sixty-five files were removed from this folder over the migration, plus the fold
 accounted for below: the first list is the code that has a named counterpart, the second is everything removed with
 no counterpart at all.
 
-- `sparktts/models/bicodec.py` was renamed to `modeling_spark_tts.py`; `BiCodec` is `SparkTTSBiCodecModel`, and its
-  mel transform moved into `SparkTTSFeatureExtractor`.
+Everything BiCodec is now under [`voicestudio/models/spark_tts_bicodec`](../spark_tts_bicodec), so the paths below
+that end in `modeling_spark_tts_bicodec.py` name a file in that folder.
+
+- `sparktts/models/bicodec.py` was renamed to `modeling_spark_tts_bicodec.py`; `BiCodec` is `SparkTTSBiCodecModel`,
+  and its mel transform moved into `SparkTTSFeatureExtractor`.
 - `sparktts/models/audio_tokenizer.py` was renamed to `feature_extraction_spark_tts.py`; `BiCodecTokenizer`'s audio
   loading, reference clip selection and wav2vec2 feature extraction became `SparkTTSFeatureExtractor` and
   `SparkTTSBiCodecModel.extract_semantic_features`.
@@ -304,7 +314,8 @@ Removed with no counterpart, none of which carries model behaviour:
 - `requirements.txt.bak` pinned the upstream dependency set. The `## Dependencies` section below is the accounting
   of what happened to each of its entries.
 - `LICENSE` was a copy of the Apache 2.0 text. `transformers` carries a model's license as a header in
-  `modeling_<model>.py`, which `modeling_spark_tts.py` has, and keeps one `LICENSE` at the repository root.
+  `modeling_<model>.py`, which both `modeling_spark_tts.py` and `modeling_spark_tts_bicodec.py` have, and keeps
+  one `LICENSE` at the repository root.
 
 
 ## Dependencies
@@ -322,5 +333,9 @@ quantizer is now a plain `view`/`reshape`/`transpose`/`stack`. `omegaconf` is re
 
 Two things outside this folder are still needed and were deliberately not touched:
 
-- `voicestudio/models/__init__.py` needs a `from .spark_tts import *` line.
+- `voicestudio/models/__init__.py` needs a `from .spark_tts import *` line and a
+  `from .spark_tts_bicodec import *` line. Importing `spark_tts` alone already registers the codec, since it
+  imports it, so the second line only matters for `from voicestudio.models import SparkTTSBiCodecModel`.
 - `PROJECT.md` needs a Spark-TTS status entry carrying the gaps listed above.
+
+`pyproject.toml` and `uv.lock` need no change; see `## Dependencies` above.

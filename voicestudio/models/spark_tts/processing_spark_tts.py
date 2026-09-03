@@ -70,7 +70,7 @@ class SparkTTSProcessor(ProcessorMixin):
             Template string used to format chat-style inputs.
     """
 
-    feature_extractor_class = "SparkTTSFeatureExtractor"
+    attributes = ["feature_extractor", "tokenizer"]
     tokenizer_class = "AutoTokenizer"
     audio_tokenizer_class = "SparkTTSBiCodecModel"
 

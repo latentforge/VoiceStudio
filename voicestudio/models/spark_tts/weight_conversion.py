@@ -10,7 +10,8 @@ from huggingface_hub import snapshot_download
 from safetensors.torch import load_file, save_file
 from transformers import AutoTokenizer, Qwen2Config, Wav2Vec2Model
 
-from .configuration_spark_tts import SparkTTSBiCodecConfig, SparkTTSConfig
+from ..spark_tts_bicodec.configuration_spark_tts_bicodec import SparkTTSBiCodecConfig
+from .configuration_spark_tts import SparkTTSConfig
 from .feature_extraction_spark_tts import SparkTTSFeatureExtractor
 
 
@@ -229,7 +230,7 @@ def convert(checkpoint_path, output_dir):
     converted = {_rename_bicodec_key(key): value for key, value in bicodec_state_dict.items()}
     converted.update({f"semantic_model.{key}": value for key, value in semantic_model.state_dict().items()})
 
-    from .modeling_spark_tts import SparkTTSBiCodecModel
+    from ..spark_tts_bicodec.modeling_spark_tts_bicodec import SparkTTSBiCodecModel
 
     expected = dict(SparkTTSBiCodecModel(audio_tokenizer_config).state_dict())
     if set(converted) != set(expected):
@@ -253,7 +254,6 @@ def convert(checkpoint_path, output_dir):
         text_config.pop(key, None)
     config = SparkTTSConfig(
         **text_config,
-        audio_tokenizer_config=audio_tokenizer_config,
         sampling_rate=repo_config["sample_rate"],
         ref_segment_duration=repo_config["ref_segment_duration"],
         volume_normalize=repo_config["volume_normalize"],
