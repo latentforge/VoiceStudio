@@ -10,6 +10,8 @@ from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.mt5.configuration_mt5 import MT5Config
 from transformers.utils import logging
 
+from ..vocos import VocosConfig
+
 
 logger = logging.get_logger(__name__)
 
@@ -181,6 +183,10 @@ class VoxInstructConfig(PreTrainedConfig):
             Configuration of the acoustic tokenizer and vocoder, `facebook/encodec_24khz` in the released model.
         semantic_encoder_config (`Union[dict, `HubertConfig`]`, *optional*):
             Configuration of the semantic tokenizer backbone, `facebook/hubert-base-ls960` in the released model.
+        vocoder_config (`Union[dict, `VocosConfig`]`, *optional*):
+            Configuration of the vocoder that turns the EnCodec codes back into a waveform,
+            [charactr/vocos-encodec-24khz](https://huggingface.co/charactr/vocos-encodec-24khz) in the released
+            model.
         semantic_num_clusters (`int`, *optional*, defaults to 500):
             Number of k-means centroids quantizing the semantic tokenizer features.
         semantic_feature_layer (`int`, *optional*, defaults to 9):
@@ -207,12 +213,14 @@ class VoxInstructConfig(PreTrainedConfig):
         "nar_config": VoxInstructNARConfig,
         "audio_encoder_config": EncodecConfig,
         "semantic_encoder_config": HubertConfig,
+        "vocoder_config": VocosConfig,
     }
 
     ar_config: dict | PreTrainedConfig | None = None
     nar_config: dict | PreTrainedConfig | None = None
     audio_encoder_config: dict | PreTrainedConfig | None = None
     semantic_encoder_config: dict | PreTrainedConfig | None = None
+    vocoder_config: dict | PreTrainedConfig | None = None
     semantic_num_clusters: int = 500
     semantic_feature_layer: int = 9
     semantic_frame_multiple: int = 320
@@ -238,6 +246,20 @@ class VoxInstructConfig(PreTrainedConfig):
             self.semantic_encoder_config = HubertConfig(**self.semantic_encoder_config)
         elif self.semantic_encoder_config is None:
             self.semantic_encoder_config = HubertConfig()
+
+        if isinstance(self.vocoder_config, dict):
+            self.vocoder_config = VocosConfig(**self.vocoder_config)
+        elif self.vocoder_config is None:
+            self.vocoder_config = VocosConfig(
+                feature_extractor_type="encodec",
+                input_channels=128,
+                hidden_size=384,
+                intermediate_size=1152,
+                adanorm_num_embeddings=4,
+                n_fft=1280,
+                hop_length=320,
+                padding="same",
+            )
 
         super().__post_init__(**kwargs)
 

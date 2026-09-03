@@ -34,6 +34,7 @@ from transformers.models.llama.modeling_llama import LlamaForCausalLM, LlamaMode
 from transformers.models.mt5.modeling_mt5 import MT5EncoderModel
 from transformers.utils import auto_docstring, logging
 
+from ..vocos import VocosModel
 from .configuration_vox_instruct import VoxInstructARConfig, VoxInstructConfig, VoxInstructNARConfig
 from .generation_vox_instruct import VoxInstructGenerationMixin
 from .tokenization_vox_instruct import VoxInstructSemanticTokenizerModel
@@ -601,7 +602,8 @@ class VoxInstructNARModel(VoxInstructPreTrainedModel):
     custom_intro="""
     VoxInstruct, an instruction to speech model. A frozen mT5 encoder turns a free form instruction into a prefix, an
     autoregressive stage predicts HuBERT semantic tokens followed by the first EnCodec codebook, a non-autoregressive
-    stage fills in the remaining seven codebooks, and the EnCodec decoder turns them back into a waveform.
+    stage fills in the remaining seven codebooks, and a Vocos vocoder over the summed codebook embeddings turns
+    them back into a waveform.
     """
 )
 class VoxInstructForConditionalGeneration(VoxInstructPreTrainedModel, VoxInstructGenerationMixin):
@@ -614,6 +616,7 @@ class VoxInstructForConditionalGeneration(VoxInstructPreTrainedModel, VoxInstruc
         self.nar = VoxInstructNARModel(config.nar_config)
         self.audio_encoder = EncodecModel(config.audio_encoder_config)
         self.semantic_encoder = VoxInstructSemanticTokenizerModel(config)
+        self.vocoder = VocosModel(config.vocoder_config)
         self.post_init()
         self.freeze_encoders()
 
@@ -627,13 +630,40 @@ class VoxInstructForConditionalGeneration(VoxInstructPreTrainedModel, VoxInstruc
         return self.ar.get_output_embeddings()
 
     def freeze_encoders(self):
-        """Freezes what upstream never trains: both instruction encoder bodies, the codec and the tokenizer."""
+        """Freezes what upstream never trains: both instruction encoder bodies, the codec, the tokenizer and the
+        vocoder."""
         self.ar.freeze_encoders()
         self.nar.freeze_encoders()
-        for module in (self.audio_encoder, self.semantic_encoder):
+        for module in (self.audio_encoder, self.semantic_encoder, self.vocoder):
             for parameter in module.parameters():
                 parameter.requires_grad = False
             module._requires_grad = False
+
+    def decode(self, audio_codes: torch.LongTensor, vocoder: str = "vocos") -> torch.FloatTensor:
+        r"""
+        Turns EnCodec codes into a waveform.
+
+        Args:
+            audio_codes (`torch.LongTensor` of shape `(batch_size, num_codebooks, num_frames)`):
+                EnCodec codes, with the codebook offsets already removed.
+            vocoder (`str`, *optional*, defaults to `"vocos"`):
+                Which decoder turns the codes into a waveform, `"vocos"` for the Vocos vocoder over the summed
+                codebook embeddings or `"encodec"` for the EnCodec decoder.
+
+        Returns:
+            `torch.FloatTensor`: Waveform of shape `(batch_size, 1, num_samples)`.
+
+        Raises:
+            ValueError: If `vocoder` is neither `"vocos"` nor `"encodec"`.
+        """
+        if vocoder == "encodec":
+            return self.audio_encoder.decode(audio_codes.unsqueeze(0), [None])[0]
+        if vocoder != "vocos":
+            raise ValueError(f"`vocoder` must be one of 'vocos' or 'encodec', got {vocoder}.")
+
+        bandwidths = self.config.vocoder_config.bandwidths
+        bandwidth_id = torch.tensor([bandwidths.index(self.config.audio_bandwidth)], device=audio_codes.device)
+        return self.vocoder(audio_codes=audio_codes, bandwidth_id=bandwidth_id).audio_values.unsqueeze(1)
 
     @auto_docstring
     def forward(

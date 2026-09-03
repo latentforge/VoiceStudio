@@ -16,6 +16,7 @@ from transformers.models.encodec.configuration_encodec import EncodecConfig
 from transformers.models.hubert.configuration_hubert import HubertConfig
 from transformers.models.mt5.configuration_mt5 import MT5Config
 
+from ..vocos.weight_conversion import build_model_files as build_vocoder_files
 from .configuration_vox_instruct import VoxInstructARConfig, VoxInstructConfig, VoxInstructNARConfig
 from .feature_extraction_vox_instruct import VoxInstructFeatureExtractor
 from .modeling_vox_instruct import VoxInstructForConditionalGeneration
@@ -31,6 +32,7 @@ SEMANTIC_KMEANS = f"{CHECKPOINT_ROOT}/hubert-base-checkpoint/hubert_base_ls960_L
 AUDIO_CHECKPOINT = f"{CHECKPOINT_ROOT}/encodec-checkpoint/encodec_24khz-d7cc33bc.th"
 AUDIO_CONFIG = f"{CHECKPOINT_ROOT}/encodec-checkpoint/encodec_processor/config.json"
 TEXT_ENCODER_CONFIG = f"{CHECKPOINT_ROOT}/google-mt5-base-checkpoint/config.json"
+VOCODER_DIR = f"{CHECKPOINT_ROOT}/vocos-encodec-24khz"
 
 # The released `hubert_base_ls960.pt` pickles the `fairseq` training task and its `omegaconf` configuration next to
 # the tensors. Only the tensors are read, so those classes are resolved to inert placeholders.
@@ -207,17 +209,19 @@ def build_config(directory: Path) -> VoxInstructConfig:
     """
     text_encoder_config = MT5Config.from_json_file(directory / TEXT_ENCODER_CONFIG)
     audio_encoder_config = EncodecConfig.from_json_file(directory / AUDIO_CONFIG)
+    vocoder_config, _ = build_vocoder_files(str(directory / VOCODER_DIR))
     return VoxInstructConfig(
         ar_config=VoxInstructARConfig(text_encoder_config=text_encoder_config),
         nar_config=VoxInstructNARConfig(text_encoder_config=text_encoder_config),
         audio_encoder_config=audio_encoder_config,
         semantic_encoder_config=HubertConfig(feat_proj_dropout=0.1),
+        vocoder_config=vocoder_config,
     )
 
 
 def convert_state_dict(directory: Path, config: VoxInstructConfig) -> dict[str, torch.Tensor]:
     r"""
-    Reads the five released weight files and maps them onto [`VoxInstructForConditionalGeneration`] keys.
+    Reads the six released weight files and maps them onto [`VoxInstructForConditionalGeneration`] keys.
 
     Args:
         directory (`Path`):
@@ -259,6 +263,10 @@ def convert_state_dict(directory: Path, config: VoxInstructConfig) -> dict[str, 
     audio = torch.load(directory / AUDIO_CHECKPOINT, map_location="cpu", weights_only=False)
     for key, value in audio.items():
         state_dict[f"audio_encoder.{convert_audio_codec_key(key)}"] = value
+
+    _, vocoder = build_vocoder_files(str(directory / VOCODER_DIR))
+    for key, value in vocoder.items():
+        state_dict[f"vocoder.{key}"] = value
 
     return state_dict
 

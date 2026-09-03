@@ -181,6 +181,7 @@ class VoxInstructGenerationMixin(GenerationMixin):
         guidance_scale_acoustic_on_semantic: float = 1.0,
         num_nar_iterations: int = 1,
         return_audio: bool = True,
+        vocoder: str = "vocos",
         **kwargs,
     ) -> VoxInstructGenerateOutput:
         r"""
@@ -229,14 +230,20 @@ class VoxInstructGenerationMixin(GenerationMixin):
             num_nar_iterations (`int`, *optional*, defaults to 1):
                 Number of confidence ordered passes the non-autoregressive stage runs per residual codebook.
             return_audio (`bool`, *optional*, defaults to `True`):
-                Whether to decode the codes into a waveform with the EnCodec decoder.
+                Whether to decode the codes into a waveform.
+            vocoder (`str`, *optional*, defaults to `"vocos"`):
+                Which decoder turns the codes into a waveform, `"vocos"` for the Vocos vocoder over the summed
+                codebook embeddings or `"encodec"` for the EnCodec decoder.
 
         Returns:
             [`VoxInstructGenerateOutput`]
 
         Raises:
-            ValueError: If neither `input_ids` nor `language_ids` is given, or if the batch size is not one.
+            ValueError: If neither `input_ids` nor `language_ids` is given, if the batch size is not one, or if
+                `vocoder` is neither `"vocos"` nor `"encodec"`.
         """
+        if vocoder not in ("vocos", "encodec"):
+            raise ValueError(f"`vocoder` must be one of 'vocos' or 'encodec', got {vocoder}.")
         if input_ids is None:
             if language_ids is None:
                 raise ValueError("Give either `input_ids` or `language_ids` to build the prompt from.")
@@ -369,7 +376,7 @@ class VoxInstructGenerationMixin(GenerationMixin):
 
         audio_values = None
         if return_audio:
-            audio_values = self.audio_encoder.decode(codes.unsqueeze(0), [None])[0]
+            audio_values = self.decode(codes, vocoder=vocoder)
 
         return VoxInstructGenerateOutput(
             audio_values=audio_values,
