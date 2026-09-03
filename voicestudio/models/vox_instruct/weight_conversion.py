@@ -6,6 +6,7 @@ import json
 import re
 import sys
 import types
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from transformers.models.mt5.configuration_mt5 import MT5Config
 from transformers.utils import CONFIG_NAME
 from transformers.utils.hub import cached_file
 
+from ...utils.checkpoint_cache import CheckpointWriter, cached_conversion, file_identity
 from ..vocos.weight_conversion import build_model_files as build_vocoder_files
 from .configuration_vox_instruct import VoxInstructARConfig, VoxInstructConfig, VoxInstructNARConfig
 from .feature_extraction_vox_instruct import VoxInstructFeatureExtractor
@@ -270,6 +272,60 @@ def build_config(directory: Path) -> VoxInstructConfig:
     )
 
 
+def iter_converted_tensors(directory: Path, config: VoxInstructConfig) -> Iterator[tuple[str, torch.Tensor]]:
+    r"""
+    Reads the six released weight files and yields their tensors under
+    [`VoxInstructForConditionalGeneration`]'s keys.
+
+    Each file maps onto a submodule of its own, so they are read one at a time and dropped as they are yielded,
+    and no two of them are ever resident together.
+
+    Args:
+        directory (`Path`):
+            Local directory holding the released layout.
+        config ([`VoxInstructConfig`]):
+            Configuration the weights are checked against.
+
+    Yields:
+        `tuple[str, torch.Tensor]`: One converted key and its tensor.
+
+    Raises:
+        ValueError: If the k-means codebook does not match `config.semantic_num_clusters`.
+    """
+    for prefix, checkpoint in (("ar", AR_CHECKPOINT), ("nar", NAR_CHECKPOINT)):
+        stage = torch.load(directory / checkpoint, map_location="cpu", weights_only=False)["model"]
+        for key in list(stage):
+            value = stage.pop(key)
+            if key.startswith("t5_model."):
+                key = f"text_encoder.{convert_text_encoder_key(key.removeprefix('t5_model.'))}"
+            yield f"{prefix}.{key}", value
+
+    semantic = load_legacy_checkpoint(directory / SEMANTIC_CHECKPOINT)["model"]
+    for key in list(semantic):
+        value = semantic.pop(key)
+        # The pretraining projection and its label embeddings sit outside `HubertModel`.
+        if key.startswith("final_proj.") or key == "label_embs_concat":
+            continue
+        yield f"semantic_encoder.encoder.{convert_semantic_encoder_key(key)}", value
+
+    kmeans = joblib.load(directory / SEMANTIC_KMEANS)
+    centers = torch.as_tensor(kmeans.cluster_centers_, dtype=torch.float32)
+    if centers.shape[0] != config.semantic_num_clusters:
+        raise ValueError(
+            f"The k-means codebook holds {centers.shape[0]} centroids, but the configuration declares "
+            f"{config.semantic_num_clusters}."
+        )
+    yield "semantic_encoder.cluster_centers", centers
+
+    audio = torch.load(directory / AUDIO_CHECKPOINT, map_location="cpu", weights_only=False)
+    for key in list(audio):
+        yield f"audio_encoder.{convert_audio_codec_key(key)}", audio.pop(key)
+
+    _, vocoder = build_vocoder_files(str(directory / VOCODER_DIR))
+    for key in list(vocoder):
+        yield f"vocoder.{key}", vocoder.pop(key)
+
+
 def convert_state_dict(directory: Path, config: VoxInstructConfig) -> dict[str, torch.Tensor]:
     r"""
     Reads the six released weight files and maps them onto [`VoxInstructForConditionalGeneration`] keys.
@@ -286,40 +342,69 @@ def convert_state_dict(directory: Path, config: VoxInstructConfig) -> dict[str, 
     Raises:
         ValueError: If the k-means codebook does not match `config.semantic_num_clusters`.
     """
-    state_dict = {}
+    return dict(iter_converted_tensors(directory, config))
 
-    for prefix, checkpoint in (("ar", AR_CHECKPOINT), ("nar", NAR_CHECKPOINT)):
-        stage = torch.load(directory / checkpoint, map_location="cpu", weights_only=False)["model"]
-        for key, value in stage.items():
-            if key.startswith("t5_model."):
-                key = f"text_encoder.{convert_text_encoder_key(key.removeprefix('t5_model.'))}"
-            state_dict[f"{prefix}.{key}"] = value
 
-    semantic = load_legacy_checkpoint(directory / SEMANTIC_CHECKPOINT)["model"]
-    for key, value in semantic.items():
-        # The pretraining projection and its label embeddings sit outside `HubertModel`.
-        if key.startswith("final_proj.") or key == "label_embs_concat":
-            continue
-        state_dict[f"semantic_encoder.encoder.{convert_semantic_encoder_key(key)}"] = value
+def write_checkpoint(directory: Path, output_dir, config: VoxInstructConfig | None = None) -> VoxInstructConfig:
+    r"""
+    Reads a released VoxInstruct checkpoint and writes what
+    [`VoxInstructForConditionalGeneration.from_pretrained`] reads into `output_dir`, one released file at a time.
 
-    kmeans = joblib.load(directory / SEMANTIC_KMEANS)
-    centers = torch.as_tensor(kmeans.cluster_centers_, dtype=torch.float32)
-    if centers.shape[0] != config.semantic_num_clusters:
+    Args:
+        directory (`Path`):
+            Local directory holding the released layout.
+        output_dir (`str` or `os.PathLike`):
+            Directory the converted checkpoint is written to.
+        config ([`VoxInstructConfig`], *optional*):
+            Configuration to convert the checkpoint into. Defaults to the one the released files describe.
+
+    Returns:
+        [`VoxInstructConfig`]: The configuration that was written.
+
+    Raises:
+        ValueError: If the converted tensors do not cover the model exactly.
+    """
+    if config is None:
+        config = build_config(directory)
+
+    written = set()
+    with CheckpointWriter(output_dir) as writer:
+        for key, value in iter_converted_tensors(directory, config):
+            writer.add(key, value)
+            written.add(key)
+
+    with torch.device("meta"):
+        expected = set(VoxInstructForConditionalGeneration(config).state_dict())
+    if written != expected:
         raise ValueError(
-            f"The k-means codebook holds {centers.shape[0]} centroids, but the configuration declares "
-            f"{config.semantic_num_clusters}."
+            f"The converted weights do not match VoxInstructForConditionalGeneration: missing "
+            f"{sorted(expected - written)}, unexpected {sorted(written - expected)}."
         )
-    state_dict["semantic_encoder.cluster_centers"] = centers
 
-    audio = torch.load(directory / AUDIO_CHECKPOINT, map_location="cpu", weights_only=False)
-    for key, value in audio.items():
-        state_dict[f"audio_encoder.{convert_audio_codec_key(key)}"] = value
+    config.save_pretrained(output_dir)
+    return config
 
-    _, vocoder = build_vocoder_files(str(directory / VOCODER_DIR))
-    for key, value in vocoder.items():
-        state_dict[f"vocoder.{key}"] = value
 
-    return state_dict
+def converted_checkpoint(source: str = "niobures/VoxInstruct") -> Path:
+    r"""
+    Returns a directory holding the converted form of a released VoxInstruct checkpoint, which
+    [`~PreTrainedModel.from_pretrained`] reads the ordinary way, converting it the first time it is asked for
+    and reusing that conversion afterwards.
+
+    Args:
+        source (`str`, *optional*, defaults to `"niobures/VoxInstruct"`):
+            Local directory or Hugging Face repository holding the released `models/VoxInstruct/pretrained`
+            layout.
+
+    Returns:
+        `Path`: The directory holding the converted checkpoint.
+    """
+    directory = resolve(source)
+    return cached_conversion(
+        "vox_instruct",
+        [str(source), file_identity(directory)],
+        lambda output_dir: write_checkpoint(directory, output_dir),
+    )
 
 
 def build_processor(directory: Path, config: VoxInstructConfig, tokenizer_id: str) -> VoxInstructProcessor:
@@ -364,7 +449,8 @@ def convert(
 ) -> None:
     r"""
     Converts a released VoxInstruct checkpoint into a directory [`VoxInstructForConditionalGeneration`] and
-    [`VoxInstructProcessor`] load from.
+    [`VoxInstructProcessor`] load from, for a checkpoint that is shipped elsewhere or kept outside the
+    conversion cache [`converted_checkpoint`] holds.
 
     Args:
         source (`str`, *optional*, defaults to `"niobures/VoxInstruct"`):
@@ -375,15 +461,10 @@ def convert(
             Repository holding a serialized fast tokenizer for the mT5 sentencepiece vocabulary.
 
     Raises:
-        RuntimeError: If the converted state dictionary does not cover the model exactly.
+        ValueError: If the converted tensors do not cover the model exactly.
     """
     directory = resolve(source)
-    config = build_config(directory)
-    state_dict = convert_state_dict(directory, config)
-
-    model = VoxInstructForConditionalGeneration(config)
-    model.load_state_dict(state_dict, strict=True)
-    model.save_pretrained(output_dir)
+    config = write_checkpoint(directory, output_dir)
     build_processor(directory, config, tokenizer_id).save_pretrained(output_dir)
 
 

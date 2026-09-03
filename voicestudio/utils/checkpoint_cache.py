@@ -164,6 +164,7 @@ class CheckpointWriter:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.max_shard_size = max_shard_size
         self._buffer: dict[str, torch.Tensor] = {}
+        self._buffered_storages: set[int] = set()
         self._buffered_size = 0
         self._shards: list[list[str]] = []
         self._total_size = 0
@@ -183,7 +184,8 @@ class CheckpointWriter:
             key (`str`):
                 Name the tensor is stored under.
             tensor (`torch.Tensor`):
-                The tensor. A view of a larger storage is copied, since safetensors stores whole buffers.
+                The tensor. It is copied where safetensors cannot store it as it stands, which is a view of a
+                larger storage, or a second name for a tensor already in the shard.
         """
         tensor = tensor.detach().contiguous()
         if tensor.numel() * tensor.element_size() != tensor.untyped_storage().nbytes():
@@ -192,7 +194,11 @@ class CheckpointWriter:
         size = tensor.numel() * tensor.element_size()
         if self._buffer and self._buffered_size + size > self.max_shard_size:
             self.flush()
+        if tensor.untyped_storage().data_ptr() in self._buffered_storages:
+            tensor = tensor.clone()
+
         self._buffer[key] = tensor
+        self._buffered_storages.add(tensor.untyped_storage().data_ptr())
         self._buffered_size += size
 
     def update(self, tensors: Mapping[str, torch.Tensor]) -> None:
@@ -212,6 +218,7 @@ class CheckpointWriter:
         self._shards.append(sorted(self._buffer))
         self._total_size += self._buffered_size
         self._buffer = {}
+        self._buffered_storages = set()
         self._buffered_size = 0
 
     def close(self) -> None:

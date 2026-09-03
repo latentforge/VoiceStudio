@@ -639,7 +639,7 @@ class VoxInstructForConditionalGeneration(VoxInstructPreTrainedModel, VoxInstruc
         Returns:
             [`VoxInstructForConditionalGeneration`]: The loaded model.
         """
-        from .weight_conversion import build_config, convert_state_dict, is_published_layout, resolve
+        from .weight_conversion import converted_checkpoint, is_published_layout
 
         if (
             pretrained_model_name_or_path is not None
@@ -647,10 +647,7 @@ class VoxInstructForConditionalGeneration(VoxInstructPreTrainedModel, VoxInstruc
             and kwargs.get("state_dict") is None
             and is_published_layout(pretrained_model_name_or_path)
         ):
-            directory = resolve(pretrained_model_name_or_path)
-            config = build_config(directory)
-            state_dict = convert_state_dict(directory, config)
-            return super().from_pretrained(None, *model_args, config=config, state_dict=state_dict, **kwargs)
+            pretrained_model_name_or_path = converted_checkpoint(pretrained_model_name_or_path)
         return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
 
     def get_input_embeddings(self):
