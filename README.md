@@ -63,10 +63,9 @@ Optional extras, selected with `uv sync --extra <name>` or all at once with `uv 
 | `eval` | `pyworld`, `jiwer` | f0 extraction for CosyVoice's vocoder objective, and the word error rate check used to verify a model |
 | `kernels` | `transformers[kernels]` | flash attention and other fused kernels |
 | `omni` | `pillow`, `torchvision` | Chroma, whose processor subclasses `Qwen2_5OmniProcessor` |
-| `onnx` | `onnxruntime`, `onnx` | CosyVoice v1's speech tokenizer and speaker encoder, and Qwen3-TTS |
 | `native` | `torchnative` | on-device inference |
 | `web` | `fastapi` | the web front end |
-| `all` | `train`, `eval`, `kernels`, `omni`, `onnx`, `web` | everything except `native` |
+| `all` | `train`, `eval`, `kernels`, `omni`, `web` | everything except `native` |
 
 ---
 

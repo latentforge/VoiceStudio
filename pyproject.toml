@@ -46,7 +46,6 @@ all = [
     "voicestudio[eval]",
     "voicestudio[kernels]",
     "voicestudio[omni]",
-    "voicestudio[onnx]",
     "voicestudio[web]",
 ]
 kernels = [
@@ -66,11 +65,6 @@ eval = [
 omni = [
     "pillow",
     "torchvision",
-]
-onnx = [
-    "onnxruntime-gpu[cuda,cudnn]>=1.18.0 ; platform_system == 'Linux' or platform_system == 'Windows'",
-    "onnxruntime>=1.18.0 ; platform_system == 'Darwin'",
-    "onnx",
 ]
 native = [  # on-device inference
     "torchnative",
