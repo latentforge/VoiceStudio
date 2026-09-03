@@ -1,0 +1,279 @@
+"""Checkpoint conversion for BigVGAN."""
+
+import json
+import re
+from pathlib import Path
+
+import torch
+from huggingface_hub import hf_hub_download
+from safetensors.torch import save_file
+
+from .configuration_bigvgan import BigVGANConfig
+from .feature_extraction_bigvgan import BigVGANFeatureExtractor
+
+
+# Every repository NVIDIA published, keyed by the suffix of its name.
+PUBLISHED_CHECKPOINTS = {
+    "v2_24khz_100band_256x": "nvidia/bigvgan_v2_24khz_100band_256x",
+    "v2_22khz_80band_256x": "nvidia/bigvgan_v2_22khz_80band_256x",
+    "v2_22khz_80band_fmax8k_256x": "nvidia/bigvgan_v2_22khz_80band_fmax8k_256x",
+    "v2_44khz_128band_256x": "nvidia/bigvgan_v2_44khz_128band_256x",
+    "v2_44khz_128band_512x": "nvidia/bigvgan_v2_44khz_128band_512x",
+    "base_22khz_80band": "nvidia/bigvgan_base_22khz_80band",
+    "base_24khz_100band": "nvidia/bigvgan_base_24khz_100band",
+    "22khz_80band": "nvidia/bigvgan_22khz_80band",
+    "24khz_100band": "nvidia/bigvgan_24khz_100band",
+}
+
+CONFIG_FILE = "config.json"
+WEIGHTS_FILE = "bigvgan_generator.pt"
+
+# Resampling filters of the anti aliased activations, which the model rebuilds from its configuration.
+_DISCARDED_SUFFIXES = (".upsample.filter", ".downsample.lowpass.filter")
+
+_CONV_PRE = re.compile(r"^conv_pre\.(.+)$")
+_CONV_POST = re.compile(r"^conv_post\.(.+)$")
+_UPSAMPLE = re.compile(r"^ups\.(\d+)\.0\.(.+)$")
+_RESBLOCK_CONV = re.compile(r"^resblocks\.(\d+)\.convs(1|2|)\.(\d+)\.(.+)$")
+_RESBLOCK_ACTIVATION = re.compile(r"^resblocks\.(\d+)\.activations\.(\d+)\.act\.(alpha|beta)$")
+_POST_ACTIVATION = re.compile(r"^activation_post\.act\.(alpha|beta)$")
+
+
+def build_config(hyperparameters: dict, **overrides) -> BigVGANConfig:
+    r"""
+    Builds a [`BigVGANConfig`] from a BigVGAN `config.json`.
+
+    Args:
+        hyperparameters (`dict`):
+            Parsed `config.json` of a BigVGAN repository.
+        overrides (`dict`, *optional*):
+            Configuration fields overriding the ones read from `hyperparameters`.
+
+    Returns:
+        [`BigVGANConfig`]: The equivalent VoiceStudio configuration.
+    """
+    fields = {
+        "model_in_dim": hyperparameters["num_mels"],
+        "sampling_rate": hyperparameters["sampling_rate"],
+        "upsample_initial_channel": hyperparameters["upsample_initial_channel"],
+        "upsample_rates": hyperparameters["upsample_rates"],
+        "upsample_kernel_sizes": hyperparameters["upsample_kernel_sizes"],
+        "resblock_type": str(hyperparameters["resblock"]),
+        "resblock_kernel_sizes": hyperparameters["resblock_kernel_sizes"],
+        "resblock_dilation_sizes": hyperparameters["resblock_dilation_sizes"],
+        "activation": hyperparameters["activation"],
+        "snake_logscale": hyperparameters["snake_logscale"],
+        # Both default to True upstream, and the v1 repositories predate the two keys.
+        "use_tanh_at_final": hyperparameters.get("use_tanh_at_final", True),
+        "use_bias_at_final": hyperparameters.get("use_bias_at_final", True),
+        "n_fft": hyperparameters["n_fft"],
+        "hop_length": hyperparameters["hop_size"],
+        "win_length": hyperparameters["win_size"],
+        "mel_fmin": hyperparameters["fmin"],
+        "mel_fmax": hyperparameters["fmax"],
+        "mel_loss_fmax": hyperparameters["fmax_for_loss"],
+        "use_multiscale_mel_loss": hyperparameters.get("use_multiscale_melloss", False),
+        # The v1 repositories predate the key, and upstream falls back to HiFi-GAN's weight.
+        "mel_loss_coeff": hyperparameters.get("lambda_melloss", 45.0),
+    }
+
+    fields.update(overrides)
+    return BigVGANConfig(**fields)
+
+
+def convert_state_dict(state_dict: dict[str, torch.Tensor], config: BigVGANConfig) -> dict[str, torch.Tensor]:
+    r"""
+    Renames a published BigVGAN state dict onto [`BigVGANModel`]'s parameter names and folds the weight norm
+    reparameterization of every convolution back into plain weights.
+
+    Args:
+        state_dict (`dict[str, torch.Tensor]`):
+            The `"generator"` entry of a published `bigvgan_generator.pt`.
+        config ([`BigVGANConfig`]):
+            Configuration built from the matching `config.json`.
+
+    Returns:
+        `dict[str, torch.Tensor]`: The renamed tensors.
+
+    Raises:
+        ValueError: If a tensor has no destination in the migrated model.
+    """
+    num_kernels = len(config.resblock_kernel_sizes)
+
+    folded = {}
+    for key, value in state_dict.items():
+        if key.endswith(_DISCARDED_SUFFIXES):
+            continue
+        if key.endswith(".weight_v"):
+            continue
+        if key.endswith(".weight_g"):
+            stem = key[: -len(".weight_g")]
+            direction = state_dict[f"{stem}.weight_v"]
+            norm = direction.pow(2).sum(dim=tuple(range(1, direction.dim())), keepdim=True).sqrt()
+            folded[f"{stem}.weight"] = value * direction / norm
+        else:
+            folded[key] = value
+
+    converted = {}
+    for key, value in folded.items():
+        match = _CONV_PRE.match(key) or _CONV_POST.match(key)
+        if match:
+            converted[key] = value
+            continue
+
+        match = _UPSAMPLE.match(key)
+        if match:
+            converted[f"upsampler.{match.group(1)}.{match.group(2)}"] = value
+            continue
+
+        match = _RESBLOCK_CONV.match(key)
+        if match:
+            block, which, layer, leaf = match.groups()
+            index = 1 if which in ("1", "") else 2
+            block = int(block)
+            converted[
+                f"resblocks.{block // num_kernels}.{block % num_kernels}.layers.{layer}.conv{index}.{leaf}"
+            ] = value
+            continue
+
+        match = _RESBLOCK_ACTIVATION.match(key)
+        if match:
+            block, activation, leaf = match.groups()
+            block, activation = int(block), int(activation)
+            # `AMPBlock1` holds one activation per convolution, the even ones in front of `convs1` and the odd
+            # ones in front of `convs2`, while `AMPBlock2` holds a single one per layer.
+            if config.resblock_type == "1":
+                layer, index = activation // 2, activation % 2 + 1
+            else:
+                layer, index = activation, 1
+            converted[
+                f"resblocks.{block // num_kernels}.{block % num_kernels}.layers.{layer}.activation{index}.{leaf}"
+            ] = value
+            continue
+
+        match = _POST_ACTIVATION.match(key)
+        if match:
+            converted[f"post_activation.{match.group(1)}"] = value
+            continue
+
+        raise ValueError(f"The published checkpoint holds a tensor this model has no destination for: {key}")
+
+    return converted
+
+
+def load_hyperparameters_and_weights(
+    source: str, weights_name: str = WEIGHTS_FILE
+) -> tuple[dict, dict[str, torch.Tensor]]:
+    r"""
+    Reads the `config.json` and the generator weights of a BigVGAN repository or local directory.
+
+    Args:
+        source (`str`):
+            Key of [`PUBLISHED_CHECKPOINTS`], repository id, or local directory holding both files.
+        weights_name (`str`, *optional*, defaults to `"bigvgan_generator.pt"`):
+            Name of the weight file to read, which the v2 repositories also publish as
+            `bigvgan_generator_3msteps.pt`.
+
+    Returns:
+        `tuple[dict, dict[str, torch.Tensor]]`: The parsed configuration and the generator's tensors.
+    """
+    source = PUBLISHED_CHECKPOINTS.get(source, source)
+    if Path(source).is_dir():
+        config_file = str(Path(source) / CONFIG_FILE)
+        weights_file = str(Path(source) / weights_name)
+    else:
+        config_file = hf_hub_download(source, CONFIG_FILE)
+        weights_file = hf_hub_download(source, weights_name)
+
+    with open(config_file, "r", encoding="utf-8") as handle:
+        hyperparameters = json.load(handle)
+    checkpoint = torch.load(weights_file, map_location="cpu", weights_only=True)
+    return hyperparameters, checkpoint["generator"]
+
+
+def build_model_files(
+    source: str = "v2_24khz_100band_256x",
+    weights_name: str = WEIGHTS_FILE,
+    dtype: torch.dtype = torch.float32,
+) -> tuple[BigVGANConfig, dict[str, torch.Tensor]]:
+    r"""
+    Reads a published BigVGAN repository and returns what [`BigVGANModel`] needs to load it.
+
+    Args:
+        source (`str`, *optional*, defaults to `"v2_24khz_100band_256x"`):
+            Key of [`PUBLISHED_CHECKPOINTS`], repository id, or local directory holding a `config.json` and a
+            generator weight file.
+        weights_name (`str`, *optional*, defaults to `"bigvgan_generator.pt"`):
+            Name of the weight file to read.
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+
+    Returns:
+        `tuple[BigVGANConfig, dict[str, torch.Tensor]]`: The configuration and the renamed tensors.
+    """
+    hyperparameters, state_dict = load_hyperparameters_and_weights(source, weights_name=weights_name)
+    config = build_config(hyperparameters)
+    converted = convert_state_dict(state_dict, config)
+    return config, {key: value.to(dtype).contiguous() for key, value in converted.items()}
+
+
+def build_feature_extractor(config: BigVGANConfig) -> BigVGANFeatureExtractor:
+    r"""
+    Builds the [`BigVGANFeatureExtractor`] matching a configuration.
+
+    Args:
+        config ([`BigVGANConfig`]):
+            Configuration of the converted model.
+
+    Returns:
+        [`BigVGANFeatureExtractor`]: The extractor.
+    """
+    return BigVGANFeatureExtractor(
+        feature_size=config.model_in_dim,
+        sampling_rate=config.sampling_rate,
+        hop_length=config.hop_length,
+        win_length=config.win_length,
+        n_fft=config.n_fft,
+        fmin=config.mel_fmin,
+        fmax=config.mel_fmax,
+    )
+
+
+def convert(
+    source: str = "v2_24khz_100band_256x",
+    output_dir: str = "bigvgan-converted",
+    weights_name: str = WEIGHTS_FILE,
+    dtype: torch.dtype = torch.float32,
+) -> None:
+    r"""
+    Converts a published BigVGAN repository into a directory [`BigVGANModel.from_pretrained`] can load.
+
+    Args:
+        source (`str`, *optional*, defaults to `"v2_24khz_100band_256x"`):
+            Key of [`PUBLISHED_CHECKPOINTS`], repository id, or local directory holding a `config.json` and a
+            generator weight file.
+        output_dir (`str`, *optional*, defaults to `"bigvgan-converted"`):
+            Directory the converted config, weights and feature extractor are written to.
+        weights_name (`str`, *optional*, defaults to `"bigvgan_generator.pt"`):
+            Name of the weight file to read.
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    config, converted = build_model_files(source, weights_name=weights_name, dtype=dtype)
+    config.save_pretrained(output_path)
+    save_file(converted, str(output_path / "model.safetensors"), metadata={"format": "pt"})
+    build_feature_extractor(config).save_pretrained(output_path)
+
+
+__all__ = [
+    "PUBLISHED_CHECKPOINTS",
+    "build_config",
+    "build_feature_extractor",
+    "build_model_files",
+    "convert",
+    "convert_state_dict",
+    "load_hyperparameters_and_weights",
+]
