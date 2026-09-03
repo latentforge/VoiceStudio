@@ -1,11 +1,14 @@
 """Checkpoint conversion for Vocos."""
 
+import json
 from pathlib import Path
 
 import torch
 import yaml
 from huggingface_hub import hf_hub_download
 from safetensors.torch import save_file
+from transformers.utils import CONFIG_NAME
+from transformers.utils.hub import cached_file
 
 from .configuration_vocos import VocosConfig
 from .feature_extraction_vocos import VocosFeatureExtractor
@@ -24,6 +27,56 @@ _HEAD = "ISTFTHead"
 
 # Buffers of the analysis front end and of the inverse STFT, which the model rebuilds from its configuration.
 _DISCARDED_PREFIXES = ("feature_extractor.mel_spec.", "head.istft.")
+
+
+def is_published_layout(source: str) -> bool:
+    r"""
+    Returns whether `source` is a published Vocos repository rather than a directory [`convert`] wrote.
+
+    The published repositories carry a `config.yaml` naming three classes and no `config.json` at all, so the
+    discriminator is a `config.json` declaring this model's `model_type`. `PreTrainedConfig.from_pretrained`
+    draws no such distinction of its own: `cached_file` returns `None` for the missing file and the
+    configuration silently falls back to its defaults.
+
+    Args:
+        source (`str`):
+            Key of [`PUBLISHED_CHECKPOINTS`], repository id, or local directory.
+
+    Returns:
+        `bool`: Whether `source` holds the published layout.
+    """
+    if source in PUBLISHED_CHECKPOINTS:
+        return True
+    config_file = cached_file(
+        source,
+        CONFIG_NAME,
+        _raise_exceptions_for_missing_entries=False,
+        _raise_exceptions_for_connection_errors=False,
+    )
+    if config_file is None:
+        return True
+    with open(config_file, "r", encoding="utf-8") as handle:
+        return json.load(handle).get("model_type") != VocosConfig.model_type
+
+
+def build_feature_extractor(config: VocosConfig) -> VocosFeatureExtractor:
+    r"""
+    Builds the [`VocosFeatureExtractor`] matching a configuration.
+
+    Args:
+        config ([`VocosConfig`]):
+            Configuration of the converted model.
+
+    Returns:
+        [`VocosFeatureExtractor`]: The extractor.
+    """
+    return VocosFeatureExtractor(
+        feature_size=config.input_channels,
+        sampling_rate=config.sampling_rate,
+        hop_length=config.hop_length,
+        n_fft=config.n_fft,
+        padding=config.padding,
+    )
 
 
 def build_config(hyperparameters: dict, num_quantizers: int | None = None, **overrides) -> VocosConfig:
@@ -106,6 +159,27 @@ def convert_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.T
     return {key: value.contiguous() for key, value in state_dict.items() if not key.startswith(_DISCARDED_PREFIXES)}
 
 
+def load_hyperparameters(source: str) -> dict:
+    r"""
+    Reads the `config.yaml` of a Vocos repository or local directory.
+
+    Args:
+        source (`str`):
+            Key of [`PUBLISHED_CHECKPOINTS`], repository id, or local directory holding the file.
+
+    Returns:
+        `dict`: The parsed configuration.
+    """
+    source = PUBLISHED_CHECKPOINTS.get(source, source)
+    if Path(source).is_dir():
+        config_file = str(Path(source) / "config.yaml")
+    else:
+        config_file = hf_hub_download(source, "config.yaml")
+
+    with open(config_file, "r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
 def load_hyperparameters_and_weights(source: str) -> tuple[dict, dict[str, torch.Tensor]]:
     r"""
     Reads the `config.yaml` and `pytorch_model.bin` of a Vocos repository or local directory.
@@ -117,16 +191,12 @@ def load_hyperparameters_and_weights(source: str) -> tuple[dict, dict[str, torch
     Returns:
         `tuple[dict, dict[str, torch.Tensor]]`: The parsed configuration and the checkpoint's tensors.
     """
+    hyperparameters = load_hyperparameters(source)
     source = PUBLISHED_CHECKPOINTS.get(source, source)
     if Path(source).is_dir():
-        config_file = str(Path(source) / "config.yaml")
         weights_file = str(Path(source) / "pytorch_model.bin")
     else:
-        config_file = hf_hub_download(source, "config.yaml")
         weights_file = hf_hub_download(source, "pytorch_model.bin")
-
-    with open(config_file, "r", encoding="utf-8") as handle:
-        hyperparameters = yaml.safe_load(handle)
     return hyperparameters, torch.load(weights_file, map_location="cpu", weights_only=True)
 
 
@@ -178,20 +248,17 @@ def convert(source: str = "mel", output_dir: str = "vocos-converted", dtype: tor
     save_file(converted, str(output_path / "model.safetensors"), metadata={"format": "pt"})
 
     if config.feature_extractor_type == "mel":
-        VocosFeatureExtractor(
-            feature_size=config.input_channels,
-            sampling_rate=config.sampling_rate,
-            hop_length=config.hop_length,
-            n_fft=config.n_fft,
-            padding=config.padding,
-        ).save_pretrained(output_path)
+        build_feature_extractor(config).save_pretrained(output_path)
 
 
 __all__ = [
     "PUBLISHED_CHECKPOINTS",
     "build_config",
+    "build_feature_extractor",
     "build_model_files",
     "convert",
     "convert_state_dict",
+    "is_published_layout",
+    "load_hyperparameters",
     "load_hyperparameters_and_weights",
 ]

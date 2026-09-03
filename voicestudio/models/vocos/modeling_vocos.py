@@ -364,6 +364,36 @@ class VocosModel(VocosPreTrainedModel):
         self.mel_spectrogram = VocosMelSpectrogram(config)
         self.post_init()
 
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        r"""
+        Loads a Vocos checkpoint, from a published repository as it stands or from a directory
+        [`~weight_conversion.convert`] wrote.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                `"charactr/vocos-mel-24khz"`, `"charactr/vocos-encodec-24khz"`, either key of
+                `PUBLISHED_CHECKPOINTS`, or any repository id or directory holding one of the two layouts.
+            model_args (`tuple`, *optional*):
+                Positional arguments of [`~PreTrainedModel.from_pretrained`].
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~PreTrainedModel.from_pretrained`].
+
+        Returns:
+            [`VocosModel`]: The loaded model.
+        """
+        from .weight_conversion import build_model_files, is_published_layout
+
+        if (
+            pretrained_model_name_or_path is not None
+            and kwargs.get("config") is None
+            and kwargs.get("state_dict") is None
+            and is_published_layout(pretrained_model_name_or_path)
+        ):
+            config, state_dict = build_model_files(pretrained_model_name_or_path)
+            return super().from_pretrained(None, *model_args, config=config, state_dict=state_dict, **kwargs)
+        return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+
     def codes_to_features(self, audio_codes: torch.Tensor) -> torch.Tensor:
         r"""
         Sums the codebook embeddings of every frame of a code grid into the features the backbone consumes.

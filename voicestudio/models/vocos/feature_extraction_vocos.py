@@ -94,6 +94,29 @@ class VocosFeatureExtractor(SequenceFeatureExtractor):
         self.padding = padding
         self.clip_value = clip_value
 
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+        r"""
+        Loads the extractor of a Vocos checkpoint, from a published repository as it stands or from a directory
+        [`~weight_conversion.convert`] wrote.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                `"charactr/vocos-mel-24khz"`, `"charactr/vocos-encodec-24khz"`, either key of
+                `PUBLISHED_CHECKPOINTS`, or any repository id or directory holding one of the two layouts.
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~FeatureExtractionMixin.from_pretrained`].
+
+        Returns:
+            [`VocosFeatureExtractor`]: The extractor.
+        """
+        from .weight_conversion import build_config, build_feature_extractor, is_published_layout, load_hyperparameters
+
+        if pretrained_model_name_or_path is not None and is_published_layout(pretrained_model_name_or_path):
+            config = build_config(load_hyperparameters(pretrained_model_name_or_path))
+            return build_feature_extractor(config)
+        return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
+
     def _get_filters(self, device, dtype) -> torch.Tensor:
         key = (self.n_fft, self.feature_size, self.sampling_rate, device, dtype)
         if key not in _MEL_FILTER_CACHE:

@@ -17,20 +17,10 @@ Original model and code: [gemelo-ai/vocos](https://github.com/gemelo-ai/vocos)
 
 ## Usage
 
-The published repositories are a `config.yaml` naming three classes and a `pytorch_model.bin` of their weights, so
-they need a one-time conversion before they load:
-
-```python
-from voicestudio.models.vocos.weight_conversion import convert
-
-convert("mel", "vocos-mel-24khz-converted")
-convert("encodec", "vocos-encodec-24khz-converted")
-```
-
-`convert` accepts either key of `PUBLISHED_CHECKPOINTS` (`"mel"` for
-[charactr/vocos-mel-24khz](https://huggingface.co/charactr/vocos-mel-24khz), `"encodec"` for
-[charactr/vocos-encodec-24khz](https://huggingface.co/charactr/vocos-encodec-24khz)), a repository id, or a local
-directory holding those two files.
+`from_pretrained` takes either published repository id as it stands. The repositories hold a `config.yaml`
+naming three classes and a `pytorch_model.bin` rather than a `config.json` and a `model.safetensors`, so
+`VocosModel.from_pretrained` reads that `config.yaml` and builds the configuration itself; no conversion step
+comes first.
 
 The mel checkpoint vocodes a log mel spectrogram, and its `VocosFeatureExtractor` computes one from a waveform:
 
@@ -39,8 +29,10 @@ import soundfile as sf
 
 from voicestudio.models.vocos import VocosFeatureExtractor, VocosModel
 
-model = VocosModel.from_pretrained("vocos-mel-24khz-converted").eval()
-extractor = VocosFeatureExtractor.from_pretrained("vocos-mel-24khz-converted")
+model_id = "charactr/vocos-mel-24khz"
+
+model = VocosModel.from_pretrained(model_id).eval()
+extractor = VocosFeatureExtractor.from_pretrained(model_id)
 
 waveform, sampling_rate = sf.read("reference.wav", dtype="float32")
 inputs = extractor(waveform, sampling_rate=sampling_rate)
@@ -59,7 +51,7 @@ from transformers import EncodecModel
 from voicestudio.models.vocos import VocosModel
 
 codec = EncodecModel.from_pretrained("facebook/encodec_24khz").eval()
-model = VocosModel.from_pretrained("vocos-encodec-24khz-converted").eval()
+model = VocosModel.from_pretrained("charactr/vocos-encodec-24khz").eval()
 
 with torch.no_grad():
     audio_codes = codec.encode(torch.as_tensor(waveform).reshape(1, 1, -1), bandwidth=6.0).audio_codes[0]
@@ -74,6 +66,17 @@ Two arguments above are load-bearing:
 - `attention_mask`, which `VocosFeatureExtractor` returns for a padded batch, is not a model argument. The
   backbone is fully convolutional and the head's overlap add runs over the whole frame axis, so padded frames
   become padded samples that the caller has to trim.
+
+`weight_conversion.convert` still writes a converted directory, for a checkpoint that has to be materialized
+once and loaded many times or shipped elsewhere. It takes either key of `PUBLISHED_CHECKPOINTS` (`"mel"`,
+`"encodec"`), a repository id, or a local directory holding the two published files, and both `from_pretrained`
+calls above read the directory it writes as readily as the published repository:
+
+```python
+from voicestudio.models.vocos.weight_conversion import convert
+
+convert("mel", "vocos-mel-24khz-converted")
+```
 
 
 ## Training
@@ -166,12 +169,14 @@ and `encodec==0.1.1`, and `requirements-train.txt` adds `pytorch_lightning`, `js
 
 ## Verification
 
-`convert` then `from_pretrained` on the real `charactr/vocos-mel-24khz` weights reports no missing, unexpected or
-mismatched keys across all 80 tensors and 13531650 parameters, and on `charactr/vocos-encodec-24khz` across all 81
-tensors and 10081410 parameters. The extra tensor of the second is `feature_extractor.codebook_weights`, a
-16384 by 128 table, which is 2097152 of those parameters. It is a real trained parameter and not a buffer, so
-`_keys_to_ignore_on_load_unexpected` names only `feature_extractor.mel_spec.` and `head.istft.window`, the mel
-filterbank, the analysis window and the inverse STFT window, and never the whole `feature_extractor.` prefix.
+`from_pretrained` straight onto the published repository ids, with no conversion call before it, reports no
+missing, unexpected or mismatched keys on either: all 80 tensors and 13531650 parameters for
+`charactr/vocos-mel-24khz`, and all 81 tensors and 10081410 parameters for `charactr/vocos-encodec-24khz`. The
+extra tensor of the second is `feature_extractor.codebook_weights`, a 16384 by 128 table, which is 2097152 of
+those parameters. It is a real trained parameter and not a buffer, so `_keys_to_ignore_on_load_unexpected` names
+only `feature_extractor.mel_spec.` and `head.istft.window`, the mel filterbank, the analysis window and the
+inverse STFT window, and never the whole `feature_extractor.` prefix. Read back after a direct load it is a
+16384 by 128 tensor with standard deviation 1.64, which is what catches it going missing.
 
 The migrated modules were checked against the upstream classes themselves, run from the same weights.
 `VocosBackbone` plus `VocosISTFTHead` agree with upstream's `VocosBackbone` plus `ISTFTHead` to 1.5e-08 on outputs
