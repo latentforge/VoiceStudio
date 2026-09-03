@@ -11,6 +11,8 @@ Model weights live under `.cache/` in the repository checkout, which is gitignor
 
 - `.cache/huggingface` is `HF_HOME`, holding everything `huggingface_hub` downloads.
 - `.cache/torch` is `TORCH_HOME`.
+- `.cache/huggingface/converted` holds checkpoints converted from a published layout, keyed by the
+  source repository and its resolved commit. Delete it to force a reconversion; nothing else reads it.
 
 Both are mapped in two places so they apply everywhere, not only inside the editor.
 `.vscode/settings.json` sets them for VS Code integrated terminals, and `.env` sets
@@ -286,7 +288,18 @@ bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts
 conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
 `Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
 
-One item left open:
+Four items left open:
+
+- **The conversion cache roughly doubles disk per converted model**, about 20 GB locally today.
+  VoxInstruct's entry is 5.6 GB against 4.4 GB of parameters, because the mT5 shared table is one
+  tensor under two names and safetensors stores no aliases. Dropping the duplicate would surface as
+  a missing key, since `_tied_weights_keys` is `None` on both VoxInstruct classes.
+- **An interrupted conversion leaves its staging directory** in the cache. It is never read, and
+  nothing prunes it.
+- **`CACHE_VERSION` is a manual lever.** A conversion that changes what it writes without a bump
+  serves a stale entry. Keying on the conversion module's own source would make that automatic at
+  the cost of invalidating on unrelated edits.
+
 
 - **Qwen3-TTS audio tokenizer reports `encoder.upsample.conv.weight` MISSING.** The key is real but
   the weight is not: `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`'s `speech_tokenizer/model.safetensors`
@@ -368,11 +381,13 @@ depth instead. `transformers`'s own `convert_qwen3_tts_to_hf` still drops the fi
 requires that path to be `None` (`modeling_utils.py:4153` raises otherwise), so a route 2 load keeps
 only the `GenerationConfig.from_model_config(config)` built in `__init__`. In parler_tts that lost the
 published `max_length` of 2580 and produced 0.139 seconds of audio that transcribed to nothing, with
-a clean load report, the right parameter count and no NaN. `read_generation_config` in
-`parler_tts/weight_conversion.py` is the fix.
+a clean load report, the right parameter count and no NaN. `e04b36f7` closed it structurally instead: a route 2 load now converts once into a cached
+directory and hands `from_pretrained` that directory, so the ordinary path resolves
+`generation_config.json` as usual and the `read_generation_config` workaround was removed.
 
 Every other folder was then audited, and none needed one. `vox_instruct`, `f5_tts`, `prompt_tts_pp`,
-`cosyvoice_v1`, `vocos` and `bigvgan` take the route 2 shape but their published repositories ship no
+`cosyvoice_v1`, `vocos` and `bigvgan` take the route 2 shape; `dia2` does not, since its override
+builds only the config and a registered mapping does the tensor work inside the loading path but their published repositories ship no
 `generation_config.json` at all; `vocos`, `bigvgan` and both PromptTTS++ classes report
 `can_generate()` false, so the question does not arise for them. `breeze_tts`, `qwen3_tts`, `dia2`
 and `spark_tts` keep the path and resolve theirs normally.
