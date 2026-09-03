@@ -286,7 +286,7 @@ bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts
 conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
 `Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
 
-Four items left open:
+Two items left open:
 
 - **Two Parler-TTS classes are stuck on the old docstring convention.**
   `ParlerTTSPreTrainedModel` and `ParlerTTSModel` still use `add_start_docstrings` rather than
@@ -297,31 +297,6 @@ Four items left open:
   an upstream that has moved is arguably not the edit H7 prohibits, but that is a call for a human.
 
 
-- **CosyVoice's vocoder objective is half implemented.** `CosyVoiceV1HiFTGenerator.compute_loss`
-  now returns the 45 times mel term and the f0 term, which is what could be written without a
-  discriminator. Upstream's generator turn is `generator_loss` plus 2.0 times `feature_loss`, which
-  doubles again inside, plus 45 times `mel_loss` plus 1.0 times `tpr_loss` at tau 0.04 plus the f0
-  L1, alternating with a discriminator turn of `discriminator_loss` plus `tpr_loss` under its own
-  optimizer. The three adversarial terms and that whole second turn stay open for the same reason
-  Vocos's do: transformers carries no discriminator inside a model class, and none appears in a
-  published checkpoint. `discriminator.py` was deleted rather than renamed, with every dropped class
-  named in the folder README.
-- **`convert("base", ...)` crashes for CosyVoice v2 and v3.** Both converters compute
-  `resolved = PUBLISHED_CHECKPOINTS.get(source, source)` and then use it to locate the tokenizer
-  directory, but for a shorthand key it stays the bare repo id rather than the local directory
-  `load_upstream_checkpoints` downloaded to, so the tokenizer load raises `HFValidationError`.
-  Passing a local directory, which is what the READMEs show, works. Found while verifying the
-  special-token fix and not touched, since it is unrelated to it.
-- **Vocos trains without its discriminators.** Upstream's generator loss is five terms: MPD hinge
-  loss over periods 2, 3, 5, 7 and 11, `mrd_loss_coeff` times MRD hinge loss over FFT sizes 2048,
-  1024 and 512, feature matching for each, and `mel_loss_coeff` times mel reconstruction, with a
-  separate optimizer on the discriminators. `VocosModel.forward(labels=...)` implements the mel
-  reconstruction term alone. `pretrain_mel_steps` is 0 in both released configs, so no phase of
-  upstream training optimizes that term by itself, and a run against this loss is therefore not
-  upstream's run. The stated reasons for leaving it out are that the discriminators are
-  training-only modules absent from every published checkpoint, that no transformers model carries
-  a discriminator in its model class, and that they would pull in `einops`. That is a scope
-  decision, not a finding, and it needs a human.
 - **Qwen3-TTS audio tokenizer reports `encoder.upsample.conv.weight` MISSING.** The key is real but
   the weight is not: `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`'s `speech_tokenizer/model.safetensors`
   holds 496 tensors, none named `encoder.upsample.*` and none of the required `(512, 1, 4)` shape,
@@ -368,6 +343,22 @@ real time factor of each model under `cache_implementation="static"` with a `com
 which ones fall out of the static path and why, and fix those. Restoring a vendored capture is a
 last resort. Breeze TTS 2's `models/stream_runtime/` is not a candidate at all, since it is built
 entirely on the third party `qwen_tts` package and H11 forbids taking that dependency back.
+
+## Decided: GAN discriminators stay unimplemented
+
+Vocos and CosyVoice both train their vocoder against a discriminator, and neither discriminator is
+implemented here. Vocos is missing the MPD and MRD hinge losses and their feature matching, leaving
+only the mel reconstruction term; CosyVoice is missing the same three plus the whole discriminator
+turn, leaving the 45 times mel term and the f0 term. Spark-TTS BiCodec, PromptTTS++ and BigVGAN have
+the same shape.
+
+This was accepted rather than resolved. The discriminators are training-only modules that appear in
+no published checkpoint, no `transformers` model carries a discriminator inside its model class, and
+they pull in dependencies the migrations otherwise removed. Nothing about inference or about fine
+tuning the rest of a model is affected. What is affected is training a vocoder from scratch, which
+would not reproduce the released weights against these objectives, and `pretrain_mel_steps` is 0 in
+both released Vocos configs, so upstream never optimizes the reconstruction term alone either. The
+folder READMEs name every dropped class.
 
 ## Sibling inheritance map
 
