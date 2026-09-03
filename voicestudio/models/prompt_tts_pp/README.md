@@ -23,17 +23,9 @@ Original model and code: [line/promptttspp](https://github.com/line/promptttspp)
 
 ## Usage
 
-The only public weights are the ones bundled inside the model's Hugging Face Space, in the upstream trainer's
-`.ckpt` format, so they need a one time conversion. Called without paths, `convert` downloads them from the Space:
-
-```python
-from voicestudio.models.prompt_tts_pp.weight_conversion import convert
-
-convert(output_dir="prompt-tts-pp-converted")
-```
-
-The acoustic model, the tokenizers and the feature extractor land in the output directory, the vocoder in its
-`vocoder` subdirectory:
+`from_pretrained` takes the repository the model is published in as it stands. No model repository holds these
+weights: the only public ones are bundled inside `line-corporation/promptttspp`, the model's own Hugging Face
+Space, so that is the repository id all three calls take.
 
 ```python
 import torch
@@ -43,12 +35,19 @@ from voicestudio.models.prompt_tts_pp import (
     PromptTTSPPProcessor,
 )
 
-model_id = "prompt-tts-pp-converted"
+model_id = "line-corporation/promptttspp"
 
 processor = PromptTTSPPProcessor.from_pretrained(model_id)
 model = PromptTTSPPForConditionalGeneration.from_pretrained(model_id).eval()
-vocoder = PromptTTSPPBigVGan.from_pretrained(f"{model_id}/vocoder").eval()
+vocoder = PromptTTSPPBigVGan.from_pretrained(model_id).eval()
 ```
+
+The Space holds the acoustic model as `pretrained_model/checkpoint/proposed/last.ckpt`, the f0 aware vocoder as
+`pretrained_model/checkpoint/bigvgan_f0_full/last.ckpt` and the mel spectrogram statistics of the training set as
+`pretrained_model/checkpoint/stats.yaml`, all three in the upstream trainer's own format and with no
+`config.json` anywhere. The three calls above read them there, renaming the tensors and folding the vocoder's
+weight norm reparameterization on the way in. An `Auto` class cannot open them, since it resolves a `config.json`
+to pick a model class before any model class is loaded, so the concrete classes above are the entry point.
 
 ```python
 import soundfile as sf
@@ -70,9 +69,14 @@ sf.write("output.wav", waveform.squeeze(0).numpy(), processor.feature_extractor.
 contour at 20 Hz, exponentiates it, zeroes the frames the model called unvoiced, and undoes the mel
 standardization. The vocoder needs both the spectrogram and that f0, not the spectrogram alone.
 
-Text goes through `g2p_en`, which is an optional backend: install it, or build the tokenizer with
+Text goes through `g2p_en`, which is an optional backend: install it, or load the processor with
 `phonemize=False` and pass a whitespace separated sequence of the Montreal Forced Aligner phoneme symbols
 directly.
+
+```python
+processor = PromptTTSPPProcessor.from_pretrained(model_id, phonemize=False)
+inputs = processor(text="DH AH0 K W IH1 K B R AW1 N F AA1 K S .", style_prompt="A man speaks slowly in a low tone.")
+```
 
 The speaker can also come from a recording instead of a description, in which case the global style token encoder
 reads the style embedding off the reference mel spectrogram:
@@ -84,6 +88,21 @@ inputs = processor(text="The quick brown fox jumps over the lazy dog.", audio=re
 `style_noise_scale` scales the noise added around the style mixture density network's mean, and
 `use_max_style=False` samples a mixture component instead of taking the most probable one. Both only apply to the
 style prompt path.
+
+`weight_conversion.convert` still writes a converted directory, for a checkpoint that has to be materialized once
+and loaded many times or shipped elsewhere. The acoustic model, the tokenizers and the feature extractor land in
+the output directory and the vocoder in its `vocoder` subdirectory, and all three classes load the result without
+reaching the Space again:
+
+```python
+from voicestudio.models.prompt_tts_pp.weight_conversion import convert
+
+convert(output_dir="prompt-tts-pp-converted")
+
+processor = PromptTTSPPProcessor.from_pretrained("prompt-tts-pp-converted")
+model = PromptTTSPPForConditionalGeneration.from_pretrained("prompt-tts-pp-converted").eval()
+vocoder = PromptTTSPPBigVGan.from_pretrained("prompt-tts-pp-converted/vocoder").eval()
+```
 
 
 ## Training
