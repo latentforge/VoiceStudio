@@ -1,221 +1,290 @@
-# Copyright (c) 2025 SparkAudio
-#               2025 Xinsheng Wang (w.xinshawn@gmail.com)
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-"""
-Description:
-    This script contains a collection of functions designed to handle various
-    file reading and writing operations. It provides utilities to read from files,
-    write data to files, and perform file manipulation tasks.
-"""
+"""Checkpoint conversion for Spark-TTS."""
 
-
-import os
-import json
-import json
-import csv
-
-from tqdm import tqdm
-from typing import List, Dict, Any, Set, Union
+import re
+import shutil
 from pathlib import Path
-from omegaconf import OmegaConf, DictConfig
+
+import torch
+import yaml
+from huggingface_hub import snapshot_download
+from safetensors.torch import load_file, save_file
+from transformers import AutoTokenizer, Qwen2Config, Wav2Vec2Model
+
+from ..spark_tts_bicodec.configuration_spark_tts_bicodec import SparkTTSBiCodecConfig
+from .configuration_spark_tts import SparkTTSConfig
+from .feature_extraction_spark_tts import SparkTTSFeatureExtractor
 
 
-def resolve_symbolic_link(symbolic_link_path: Path) -> Path:
+# The published `SparkAudio/Spark-TTS-0.5B` repo is three independently saved models in three subfolders plus two
+# YAML files, none of which `from_pretrained` can read. BiCodec is stored as the plain `nn.Module` tree of the
+# original `sparktts` package, with weight-normalized convolutions kept as separate `weight_g`/`weight_v` tensors,
+# an `nn.Sequential` wave generator addressed by index, and the two ConvNeXt resampling stages nested under
+# `downsample` for both the down-sampling encoder and the up-sampling prenet/postnet.
+_BICODEC_RENAMES = (
+    (r"^encoder\.encoder\.", "semantic_encoder.backbone."),
+    (r"^encoder\.downsample\.(\d+)\.0\.", r"semantic_encoder.resample_layers.\1.sampler."),
+    (r"^encoder\.downsample\.(\d+)\.1\.", r"semantic_encoder.resample_layers.\1.backbone."),
+    (r"^encoder\.project\.", "semantic_encoder.project."),
+    (r"^quantizer\.in_project\.", "quantizer.in_proj."),
+    (r"^quantizer\.out_project\.", "quantizer.out_proj."),
+    (r"^(prenet|postnet)\.downsample\.(\d+)\.0\.", r"\1.resample_layers.\2.sampler."),
+    (r"^(prenet|postnet)\.downsample\.(\d+)\.1\.", r"\1.resample_layers.\2.backbone."),
+    (r"^(prenet|postnet)\.vocos_backbone\.", r"\1.backbone."),
+    (r"^speaker_encoder\.speaker_encoder\.layer1\.", "speaker_encoder.encoder.layer1."),
+    (r"^speaker_encoder\.speaker_encoder\.conv\.", "speaker_encoder.encoder.mfa_conv."),
+    (r"^speaker_encoder\.speaker_encoder\.(pool|bn|linear)\.", r"speaker_encoder.encoder.\1."),
+    (
+        r"^speaker_encoder\.perceiver_sampler\.layers\.(\d+)\.0\.",
+        r"speaker_encoder.perceiver_resampler.layers.\1.attn.",
+    ),
+    (
+        r"^speaker_encoder\.perceiver_sampler\.layers\.(\d+)\.1\.0\.",
+        r"speaker_encoder.perceiver_resampler.layers.\1.ff.fc1.",
+    ),
+    (
+        r"^speaker_encoder\.perceiver_sampler\.layers\.(\d+)\.1\.2\.",
+        r"speaker_encoder.perceiver_resampler.layers.\1.ff.fc2.",
+    ),
+    (r"^speaker_encoder\.perceiver_sampler\.", "speaker_encoder.perceiver_resampler."),
+    (r"\.convnext\.(\d+)\.", r".layers.\1."),
+    (r"\.de_conv_upsampler\.", ".upsampler."),
+    (r"\.conv_downsampler\.", ".downsampler."),
+)
+
+_SE_RES2BLOCK_PARTS = {"0": "conv1", "1": "res2conv", "2": "conv2", "3": "se"}
+
+_WAVE_GENERATOR_RES_UNIT_PARTS = {"0": "snake1", "1": "conv1", "2": "snake2", "3": "conv2"}
+
+_TOKENIZER_FILES = (
+    "added_tokens.json",
+    "merges.txt",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+)
+
+
+def _rename_bicodec_key(key: str) -> str:
     """
-    Resolves the absolute path of a symbolic link.
+    Rewrite one original BiCodec parameter path into its [`SparkTTSBiCodecModel`] equivalent.
 
     Args:
-        symbolic_link_path (Path): The path to the symbolic link.
+        key (`str`):
+            Parameter path as stored in `BiCodec/model.safetensors`.
 
     Returns:
-        Path: The absolute path that the symbolic link points to.
+        `str`: The corresponding path on [`SparkTTSBiCodecModel`].
     """
+    match = re.match(r"^speaker_encoder\.speaker_encoder\.layer(\d+)\.se_res2block\.(\d+)\.(.*)$", key)
+    if match is not None:
+        layer_index, part_index, suffix = match.groups()
+        part = _SE_RES2BLOCK_PARTS[part_index]
+        return f"speaker_encoder.encoder.layers.{int(layer_index) - 2}.{part}.{suffix}"
 
-    link_directory = os.path.dirname(symbolic_link_path)
-    target_path_relative = os.readlink(symbolic_link_path)
-    return os.path.join(link_directory, target_path_relative)
+    match = re.match(r"^decoder\.model\.(\d+)\.block\.(\d+)(?:\.block\.(\d+))?\.(.*)$", key)
+    if match is not None:
+        block_index, inner_index, unit_index, suffix = match.groups()
+        block = f"wave_generator.blocks.{int(block_index) - 1}"
+        if unit_index is None:
+            return f"{block}.{'snake' if inner_index == '0' else 'conv_t'}.{suffix}"
+        part = _WAVE_GENERATOR_RES_UNIT_PARTS[unit_index]
+        return f"{block}.res_unit{int(inner_index) - 1}.{part}.{suffix}"
+
+    match = re.match(r"^decoder\.model\.(\d+)\.(.*)$", key)
+    if match is not None:
+        index, suffix = match.groups()
+        return {"0": "wave_generator.conv_in", "5": "wave_generator.snake_out", "6": "wave_generator.conv_out"}[
+            index
+        ] + f".{suffix}"
+
+    for pattern, replacement in _BICODEC_RENAMES:
+        key = re.sub(pattern, replacement, key)
+    return key
 
 
-def write_jsonl(metadata: List[dict], file_path: Path) -> None:
-    """Writes a list of dictionaries to a JSONL file.
+def _fold_weight_norm(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """
+    Merge every `weight_g`/`weight_v` pair into the single `weight` tensor the module tree declares.
+
+    The original BiCodec applies weight normalization at construction time and strips it again right after loading a
+    checkpoint, so the folded tensors are exactly the ones it runs with.
 
     Args:
-    metadata : List[dict]
-        A list of dictionaries, each representing a piece of meta.
-    file_path : Path
-        The file path to save the JSONL file
-
-    This function writes each dictionary in the list to a new line in the specified file.
-    """
-    with open(file_path, "w", encoding="utf-8") as f:
-        for meta in tqdm(metadata, desc="writing jsonl"):
-            # Convert dictionary to JSON string and write it to the file with a newline
-            json_str = json.dumps(meta, ensure_ascii=False) + "\n"
-            f.write(json_str)
-    print(f"jsonl saved to {file_path}")
-
-
-def read_jsonl(file_path: Path) -> List[dict]:
-    """
-    Reads a JSONL file and returns a list of dictionaries.
-
-    Args:
-    file_path : Path
-        The path to the JSONL file to be read.
+        state_dict (`dict[str, torch.Tensor]`):
+            Weights as stored in `BiCodec/model.safetensors`.
 
     Returns:
-    List[dict]
-        A list of dictionaries parsed from each line of the JSONL file.
+        `dict[str, torch.Tensor]`: The same weights with weight normalization folded in.
     """
-    metadata = []
-    # Open the file for reading
-    with open(file_path, "r", encoding="utf-8") as f:
-        # Split the file into lines
-        lines = f.read().splitlines()
-    # Process each line
-    for line in lines:
-        # Convert JSON string back to dictionary and append to list
-        meta = json.loads(line)
-        metadata.append(meta)
-    # Return the list of metadata
-    return metadata
-
-def read_json_as_jsonl(file_path: Path) -> List[dict]:
-    metadata = []
-    with open(file_path, 'r', encoding='utf-8') as infile:
-        data = json.load(infile) 
-    for k in sorted(data.keys()):
-        meta = {'index': k}
-        meta.update(data[k])
-        metadata.append(meta)
-    return metadata
+    folded = {}
+    for key, value in state_dict.items():
+        if key.endswith(".weight_v"):
+            prefix = key[: -len(".weight_v")]
+            magnitude = state_dict[f"{prefix}.weight_g"]
+            norm = value.norm(dim=tuple(range(1, value.ndim)), keepdim=True)
+            folded[f"{prefix}.weight"] = value * magnitude / norm
+        elif not key.endswith(".weight_g"):
+            folded[key] = value
+    return folded
 
 
-
-def decode_unicode_strings(meta: Dict[str, Any]) -> Dict[str, Any]:
-    processed_meta = {}
-    for k, v in meta.items():
-        if isinstance(v, str):
-            processed_meta[k] = v.encode("utf-8").decode("unicode_escape")
-        else:
-            processed_meta[k] = v
-    return processed_meta
-
-
-def load_config(config_path: Path) -> DictConfig:
-    """Loads a configuration file and optionally merges it with a base configuration.
+def _build_bicodec_config(bicodec_config: dict, semantic_model_config, sampling_rate: int) -> SparkTTSBiCodecConfig:
+    """
+    Build a [`SparkTTSBiCodecConfig`] from the `audio_tokenizer` section of the original `BiCodec/config.yaml`.
 
     Args:
-    config_path (Path): Path to the configuration file.
-    """
-    # Load the initial configuration from the given path
-    config = OmegaConf.load(config_path)
+        bicodec_config (`dict`):
+            The `audio_tokenizer` mapping of `BiCodec/config.yaml`.
+        semantic_model_config ([`PreTrainedConfig`]):
+            Configuration of the self-supervised model bundled in the checkpoint.
+        sampling_rate (`int`):
+            Sample rate declared by the repo-level `config.yaml`.
 
-    # Check if there is a base configuration specified and merge if necessary
-    if config.get("base_config", None) is not None:
-        base_config = OmegaConf.load(config["base_config"])
-        config = OmegaConf.merge(base_config, config)
-
-    return config
-
-
-
-def jsonl_to_csv(jsonl_file_path: str, csv_file_path: str) -> None:
-    """
-    Converts a JSONL file to a CSV file.
-    
-    This function reads a JSONL file, determines all unique keys present in the file,
-    and writes the data to a CSV file with columns for all these keys.
-    """
-    
-    all_keys = set()
-    data_rows = []
-    
-    # Read the JSONL file once to extract keys and collect data
-    with open(jsonl_file_path, 'r') as file:
-        for line in file:
-            data = json.loads(line.strip())
-            data_rows.append(data)
-            all_keys.update(data.keys())
-    
-    # Convert the set of keys to a sorted list for consistent column order
-    sorted_keys = sorted(all_keys)
-    
-    # Write the data to a CSV file
-    with open(csv_file_path, 'w', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=sorted_keys)
-        
-        # Write the header row
-        writer.writeheader()
-        
-        # Write each row of data
-        for data in data_rows:
-            writer.writerow(data)
-    
-    print(f"CSV file has been created at {csv_file_path}")
-
-
-def save_metadata(data, filename, headers=None):
-    """
-    Save metadata to a file.
-    
-    Args:
-        data (list of dict): Metadata to be saved.
-        filename (str): Name of the file to save the metadata.
-        headers (list of str): The order of column names to be saved; defaults to the keys from the first dictionary in data if not provided.
-    """
-    # Set headers to keys from the first dictionary in data if not explicitly provided
-    if headers is None:
-        headers = list(data[0].keys())
-    
-    with open(filename, "w", encoding="utf-8") as file:
-        # Write the headers to the file
-        file.write("|".join(headers) + "\n")
-        for entry in data:
-            # Retrieve values in the order of headers, replacing any '|' characters with a space to prevent formatting errors
-            formatted_values = [str(entry.get(key, "")).replace("|", " ") for key in headers]
-            # Write the formatted values to the file
-            file.write("|".join(formatted_values) + "\n")
-
-
-def read_metadata(filename, headers=None):
-    """
-    Read metadata from a file.
-    
-    Args:
-        filename (str): The file from which to read the metadata.
-    
     Returns:
-        list of dict: The metadata read from the file.
-        list of str: The headers used in the file.
+        [`SparkTTSBiCodecConfig`]: The equivalent `transformers` configuration.
     """
-    with open(filename, "r", encoding="utf-8") as file:
-        lines = file.readlines()
+    encoder = bicodec_config["encoder"]
+    decoder = bicodec_config["decoder"]
+    quantizer = bicodec_config["quantizer"]
+    speaker_encoder = bicodec_config["speaker_encoder"]
+    prenet = bicodec_config["prenet"]
+    postnet = bicodec_config["postnet"]
 
-    data = []
-    # Set headers from the first line of the file if not provided
-    if headers is None:
-        headers = lines[0].strip().split("|")
-        lines = lines[1:]
+    return SparkTTSBiCodecConfig(
+        semantic_model_config=semantic_model_config,
+        sampling_rate=sampling_rate,
+        hop_length=bicodec_config["mel_params"]["hop_length"],
+        hidden_size=quantizer["input_dim"],
+        vocos_dim=encoder["vocos_dim"],
+        vocos_intermediate_dim=encoder["vocos_intermediate_dim"],
+        encoder_num_layers=encoder["vocos_num_layers"],
+        encoder_sample_ratios=encoder["sample_ratios"],
+        prenet_num_layers=prenet["vocos_num_layers"],
+        prenet_sample_ratios=prenet.get("sample_ratios", [1, 1]),
+        prenet_use_tanh_at_final=prenet.get("use_tanh_at_final", False),
+        postnet_num_layers=postnet["vocos_num_layers"],
+        postnet_sample_ratios=postnet.get("sample_ratios", [1, 1]),
+        postnet_use_tanh_at_final=postnet.get("use_tanh_at_final", False),
+        codebook_size=quantizer["codebook_size"],
+        codebook_dim=quantizer["codebook_dim"],
+        commitment_weight=quantizer["commitment"],
+        codebook_loss_weight=quantizer["codebook_loss_weight"],
+        threshold_ema_dead_code=quantizer["threshold_ema_dead_code"],
+        num_mel_bins=bicodec_config["mel_params"]["num_mels"],
+        speaker_latent_dim=speaker_encoder["latent_dim"],
+        num_speaker_tokens=speaker_encoder["token_num"],
+        fsq_levels=speaker_encoder["fsq_levels"],
+        fsq_num_quantizers=speaker_encoder["fsq_num_quantizers"],
+        wave_generator_hidden_size=decoder["channels"],
+        upsample_rates=decoder["rates"],
+        upsample_kernel_sizes=decoder["kernel_sizes"],
+    )
 
-    for line in lines:
-        line = line.strip()
-        # Skip empty lines
-        if not line:
-            continue
-        # Split the line by '|' and pair with headers to form a dictionary
-        entry_data = dict(zip(headers, line.split("|")))
-        data.append(entry_data)
-    
-    return data, headers
+
+def convert(checkpoint_path, output_dir):
+    """
+    Convert a published Spark-TTS checkpoint into one that loads directly with
+    [`SparkTTSForConditionalGeneration`] and [`SparkTTSProcessor`].
+
+    The language model, its tokenizer and the feature extractor are written to `output_dir`; BiCodec and the
+    self-supervised model it reads features from are written to `output_dir/audio_tokenizer`, which is where
+    [`SparkTTSProcessor`] loads its `audio_tokenizer` from.
+
+    Args:
+        checkpoint_path (`str`):
+            A Hugging Face repo id or a local directory holding the published checkpoint.
+        output_dir (`str`):
+            Directory the converted checkpoint is written to.
+
+    Returns:
+        `str`: The `output_dir` that was written.
+
+    Raises:
+        ValueError: If the checkpoint rounds the reference excerpt to a hop the mel spectrogram does not use, or if
+            the resulting BiCodec weights do not match [`SparkTTSBiCodecModel`]'s parameter tree.
+    """
+    source = Path(checkpoint_path)
+    if not source.is_dir():
+        source = Path(snapshot_download(checkpoint_path))
+    target = Path(output_dir)
+    audio_tokenizer_target = target / "audio_tokenizer"
+    audio_tokenizer_target.mkdir(parents=True, exist_ok=True)
+
+    repo_config = yaml.safe_load((source / "config.yaml").read_text())
+    bicodec_config = yaml.safe_load((source / "BiCodec" / "config.yaml").read_text())["audio_tokenizer"]
+
+    # The repo-level `latent_hop_length`, which rounds the reference excerpt, and the codec's own mel hop size are
+    # two separate knobs upstream that happen to agree. `SparkTTSFeatureExtractor` exposes a single `hop_length`.
+    hop_length = bicodec_config["mel_params"]["hop_length"]
+    if repo_config["latent_hop_length"] != hop_length:
+        raise ValueError(
+            f"This checkpoint sets latent_hop_length={repo_config['latent_hop_length']} but a mel hop size of "
+            f"{hop_length}. SparkTTSFeatureExtractor uses one `hop_length` for both."
+        )
+
+    semantic_model = Wav2Vec2Model.from_pretrained(source / "wav2vec2-large-xlsr-53")
+    audio_tokenizer_config = _build_bicodec_config(bicodec_config, semantic_model.config, repo_config["sample_rate"])
+
+    bicodec_state_dict = _fold_weight_norm(load_file(source / "BiCodec" / "model.safetensors"))
+    converted = {_rename_bicodec_key(key): value for key, value in bicodec_state_dict.items()}
+    converted.update({f"semantic_model.{key}": value for key, value in semantic_model.state_dict().items()})
+
+    from ..spark_tts_bicodec.modeling_spark_tts_bicodec import SparkTTSBiCodecModel
+
+    expected = dict(SparkTTSBiCodecModel(audio_tokenizer_config).state_dict())
+    if set(converted) != set(expected):
+        raise ValueError(
+            f"Converted BiCodec weights do not match SparkTTSBiCodecModel: "
+            f"missing {sorted(set(expected) - set(converted))}, unexpected {sorted(set(converted) - set(expected))}."
+        )
+    mismatched = {key: (tuple(value.shape), tuple(expected[key].shape)) for key, value in converted.items() if value.shape != expected[key].shape}
+    if mismatched:
+        raise ValueError(f"Converted BiCodec weights have the wrong shape: {mismatched}.")
+
+    audio_tokenizer_config.save_pretrained(audio_tokenizer_target)
+    save_file(
+        {key: value.contiguous() for key, value in converted.items()},
+        audio_tokenizer_target / "model.safetensors",
+        metadata={"format": "pt"},
+    )
+
+    text_config = Qwen2Config.from_pretrained(source / "LLM").to_dict()
+    for key in ("model_type", "architectures", "transformers_version"):
+        text_config.pop(key, None)
+    config = SparkTTSConfig(
+        **text_config,
+        sampling_rate=repo_config["sample_rate"],
+        ref_segment_duration=repo_config["ref_segment_duration"],
+        volume_normalize=repo_config["volume_normalize"],
+        architectures=["SparkTTSForConditionalGeneration"],
+    )
+    config.save_pretrained(target)
+    shutil.copy(source / "LLM" / "model.safetensors", target / "model.safetensors")
+    for name in _TOKENIZER_FILES:
+        if (source / "LLM" / name).is_file():
+            shutil.copy(source / "LLM" / name, target / name)
+
+    from .processing_spark_tts import SparkTTSProcessor
+
+    feature_extractor = SparkTTSFeatureExtractor(
+        sampling_rate=repo_config["sample_rate"],
+        volume_normalize=repo_config["volume_normalize"],
+        ref_segment_duration=repo_config["ref_segment_duration"],
+        hop_length=hop_length,
+        n_fft=bicodec_config["mel_params"]["n_fft"],
+        win_length=bicodec_config["mel_params"]["win_length"],
+        num_mel_bins=bicodec_config["mel_params"]["num_mels"],
+        mel_fmin=bicodec_config["mel_params"]["mel_fmin"],
+        mel_fmax=bicodec_config["mel_params"]["mel_fmax"],
+    )
+    SparkTTSProcessor(
+        feature_extractor=feature_extractor,
+        tokenizer=AutoTokenizer.from_pretrained(source / "LLM"),
+        audio_tokenizer=SparkTTSBiCodecModel.from_pretrained(audio_tokenizer_target),
+    ).save_pretrained(target)
+
+    return str(target)
+
+
+__all__ = ["convert"]
