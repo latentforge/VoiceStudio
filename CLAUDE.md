@@ -287,6 +287,41 @@ from this document's examples.
   `generation_<model>.py` into `modeling_<model>.py`) just because this document's
   examples didn't happen to name that file.
 
+### 4.5 Auditing a folder against the conventions
+
+Run this list against a folder before calling its migration finished, and against every folder when
+auditing the repository. It exists because a partial sweep reported the folders clean several times
+while real problems sat in plain sight.
+
+| Check | How |
+|---|---|
+| Nothing but code in the folder | `ls -A` the folder and read every line. Do not grep for expected names |
+| Flat, no nested package | `find <folder> -mindepth 1 -type d` |
+| File names | Every `.py` is `__init__.py`, `<kind>_<model>.py` or `weight_conversion.py` (see 4.1, 4.2) |
+| License headers | Present where this project wrote or modified code, absent on pure relays (see 6, H9) |
+| Config declaration | `config: XConfig` annotation, not `config_class = X` |
+| `__all__` | Present in every non-relay modeling file |
+| `@auto_docstring` | Applied where `transformers` applies it, and the model registered in `HARDCODED_CONFIG_FOR_MODELS` if it is not in `CONFIG_MAPPING_NAMES`, or decoration silently emits a placeholder |
+| Loads from the official repo id | `from_pretrained("owner/repo")` with no prior conversion call (see 9.2, H17) |
+| Trainable | `forward()` takes `labels` and returns upstream's own objective (see 3, H5) |
+| Verified | Real weights, generated audio transcribed back (see 2.5, H13) |
+| Dependencies | Every third-party import is removed, declared, or reported (see 9.1, H11) |
+| Sibling inheritance | Nothing on `PROJECT.md`'s sibling map is reimplemented without a stated reason (see 2.1) |
+
+Three habits, each of which produced a wrong answer here:
+
+- **List, do not guess names.** Grepping for `LICENSE` and `INFO.md` missed `MODEL_LICENSE`, a
+  `LICENCE` spelled the British way, two `.gitignore` files and two `uv.lock` files. `ls -A` finds
+  them all.
+- **Count, then read what the count means.** `transformers` has 285 `modular_*.py` files and this
+  repository has none, which is correct rather than a gap, because a modular file is where
+  inheritance happens before the modeling file is generated flat from it. `loss_utils.py` holds only
+  functions, yet seven models keep a structured loss as an `nn.Module` attribute. `llama` and `qwen3`
+  define no `_init_weights`. A substring match on `config_class` also hits `generation_config_class`.
+- **Check whether a temporary measure is still needed.** The `.bak` suffix on each vendored
+  `requirements.txt` existed to keep a dependency list readable until that model's dependencies were
+  removed. They stayed long after that was done.
+
 ### 4.4 Claiming a convention
 
 Before asserting that `transformers` does or does not do something, `grep` its
