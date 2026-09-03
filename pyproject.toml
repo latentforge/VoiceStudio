@@ -8,7 +8,7 @@ version = "1.1.0"
 description = "VoiceStudio: A unified toolkit for voice cloning, designing and editing"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 authors = [
     { name = "LatentForge", email = "brew.airesearch@gmail.com" }
 ]
@@ -41,25 +41,13 @@ dependencies = [
     "transformers>=5.3.0",
     "hf-xet>=1.1.8",
     "tqdm>=4.67.1",
-    # -----------------------------------------
-    # Model Namespace Packages
-    # -----------------------------------------
-    #"voicestudio-parler-tts",  # Apache 2.0 License
-    #"voicestudio-qwen3-tts",  # Apache 2.0 License
-    #"voicestudio-chroma",  # Apache 2.0 License
-    #"voicestudio-spark-tts",  # Apache 2.0 License
-    #"voicestudio-cosyvoice",  # Apache 2.0 License
-    #"voicestudio-f5-tts",  # MIT License
-    # -----------------------------------------
-    # Audio Processing Dependencies
-    # -----------------------------------------
-    #"vocos",  # for F5 TTS
 ]
 [project.optional-dependencies]
 all = [
     "voicestudio[train]",
     "voicestudio[eval]",
     "voicestudio[flash-prebuilt]",
+    "voicestudio[native]",
     "voicestudio[omni]",
     "voicestudio[onnx]",
     "voicestudio[web]",
@@ -72,14 +60,14 @@ train = [
     "ipywidgets>=8.1.7",
 ]
 eval = [
-    "pyworld>=0.3.5",
-    "pysptk>=1.0.1",
-    "jiwer>=4.0.0",
-    "speechbrain",
-    "utmosv2",
+    "pyworld>=0.3.5",  # f0 extraction for CosyVoice's vocoder objective
+    "jiwer>=4.0.0",  # word error rate, the transcription check in CLAUDE.md section 2.5
 ]
 flash = [ "flash-attn" ]
 flash-prebuilt = [ "flash-attn" ]
+native = [  # on-device inference
+    "torchnative",
+]
 omni = [  # for Chroma, whose processor subclasses Qwen2_5OmniProcessor
     "pillow",
     "torchvision",
