@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 
@@ -27,9 +28,18 @@ CACHE_VERSION = 1
 # checkpoint is resident at a time.
 MAX_SHARD_SIZE = 2 * 1024**3
 
+# Seconds a staging directory goes untouched before a sweep takes it for an interrupted conversion. This has to
+# stay above the longest a running conversion leaves its staging directory alone, which is the time it spends
+# downloading and reading its source before the first shard is written.
+STAGING_MAX_AGE = 6 * 60 * 60
+
 # Layout `huggingface_hub` gives a downloaded file, whose two components pin the repository and the commit
 # the file was read from.
 _SNAPSHOT = re.compile(r"(?:^|/)(?P<repo>(?:models|datasets|spaces)--[^/]+)/snapshots/(?P<revision>[^/]+)(?:/|$)")
+
+# Name `tempfile.mkdtemp` builds for a staging directory, a cache key followed by a random suffix. A finished
+# entry is the bare key, so the dot is what tells the two apart.
+_STAGING = re.compile(r"^[0-9a-f]{32}\.")
 
 
 def cache_root() -> Path:
@@ -107,6 +117,35 @@ def cache_key(parts: Iterable) -> str:
     return digest.hexdigest()[:32]
 
 
+def sweep_staging(directory) -> None:
+    r"""
+    Removes the staging directories interrupted conversions left in one model's cache folder.
+
+    A conversion that runs to completion renames its staging directory into place, so one still carrying a
+    staging name either belongs to a conversion running right now or to one that died. The two are told apart by
+    when the directory and its contents were last written: a running conversion keeps extending the shard it is
+    on, so nothing older than `STAGING_MAX_AGE` can belong to one.
+
+    Args:
+        directory (`str` or `os.PathLike`):
+            Cache folder of one model, holding its converted checkpoints and any staging directory beside them.
+    """
+    directory = Path(directory)
+    if not directory.is_dir():
+        return
+
+    now = time.time()
+    for entry in directory.iterdir():
+        if _STAGING.match(entry.name) is None or not entry.is_dir():
+            continue
+        try:
+            touched = max(path.stat().st_mtime for path in (entry, *entry.rglob("*")))
+        except OSError:
+            continue
+        if now - touched > STAGING_MAX_AGE:
+            shutil.rmtree(entry, ignore_errors=True)
+
+
 def cached_conversion(name: str, parts: Iterable, write: Callable[[Path], None]) -> Path:
     r"""
     Returns a directory holding the converted checkpoint `parts` names, running `write` to produce it the first
@@ -128,6 +167,7 @@ def cached_conversion(name: str, parts: Iterable, write: Callable[[Path], None])
         `Path`: The directory holding the converted checkpoint.
     """
     directory = cache_root() / name / cache_key(parts)
+    sweep_staging(directory.parent)
     if directory.is_dir():
         return directory
 
@@ -255,10 +295,12 @@ __all__ = [
     "CACHE_DIR_NAME",
     "CACHE_VERSION",
     "MAX_SHARD_SIZE",
+    "STAGING_MAX_AGE",
     "CheckpointWriter",
     "cache_key",
     "cache_root",
     "cached_conversion",
     "file_identity",
     "source_identity",
+    "sweep_staging",
 ]
