@@ -1,18 +1,17 @@
 """Generation mixin for Chroma."""
 
-import torch
-from typing import List, Tuple, Optional, Dict, Union, TYPE_CHECKING
 from dataclasses import dataclass
-from transformers.generation.stopping_criteria import MaxLengthCriteria, StoppingCriteriaList
+from typing import TYPE_CHECKING, Any, Optional, Union
+
+import torch
+
+from transformers.generation import GenerationConfig, GenerationMixin, GenerationMode
 from transformers.generation.logits_process import LogitsProcessorList
-from transformers.generation.utils import GenerateNonBeamOutput
-from transformers.generation import (
-    GenerateDecoderOnlyOutput,
-    GenerationConfig,
-    GenerationMixin,
-    GenerationMode,
-)
+from transformers.generation.stopping_criteria import MaxLengthCriteria, StoppingCriteriaList
+from transformers.generation.utils import GenerateDecoderOnlyOutput, GenerateNonBeamOutput
+from transformers.models.csm.generation_csm import CsmGenerateOutput
 from transformers.utils import logging
+
 
 if TYPE_CHECKING:
     from transformers.generation.streamers import BaseStreamer
@@ -20,14 +19,36 @@ if TYPE_CHECKING:
 logger = logging.get_logger(__name__)
 
 
-def multinomial_sample_one_no_sync(probs):
-    """Does multinomial sampling without a cuda synchronization."""
+def multinomial_sample_one_no_sync(probs: torch.Tensor) -> torch.Tensor:
+    """
+    Samples one index per row without forcing a CUDA synchronization.
+
+    Args:
+        probs (`torch.FloatTensor` of shape `(batch_size, vocab_size)`):
+            Categorical distribution to sample from.
+
+    Returns:
+        `torch.Tensor` of shape `(batch_size, 1)`: The sampled indices.
+    """
     q = torch.empty_like(probs).exponential_(1)
     return torch.argmax(probs / q, dim=-1, keepdim=True).to(dtype=torch.int)
 
 
-def sample_topk(logits: torch.Tensor, topk: int, temperature: float):
-    """Sample from logits using top-k sampling with temperature."""
+def sample_topk(logits: torch.Tensor, topk: int, temperature: float) -> torch.Tensor:
+    """
+    Samples one codebook id per row with top-k filtering and temperature.
+
+    Args:
+        logits (`torch.FloatTensor` of shape `(batch_size, vocab_size)`):
+            Unnormalized codebook 0 scores.
+        topk (`int`):
+            Number of highest scoring ids kept before sampling.
+        temperature (`float`):
+            Scale applied to the logits before filtering.
+
+    Returns:
+        `torch.Tensor` of shape `(batch_size, 1)`: The sampled codebook 0 ids.
+    """
     logits = logits / temperature
 
     filter_value: float = -float("Inf")
@@ -36,41 +57,34 @@ def sample_topk(logits: torch.Tensor, topk: int, temperature: float):
     scores_processed = torch.nn.functional.log_softmax(scores_processed, dim=-1)
     probs = torch.nn.functional.softmax(scores_processed, dim=-1)
 
-    sample_token = multinomial_sample_one_no_sync(probs)
-    return sample_token
+    return multinomial_sample_one_no_sync(probs)
 
 
 @dataclass
-class ChromaGenerateOutput(GenerateDecoderOnlyOutput):
+class ChromaGenerateOutput(CsmGenerateOutput):
     """
-    Outputs of ChromaForConditionalGeneration.generate.
+    Outputs of [`~ChromaForConditionalGeneration.generate`].
+
     Args:
-        sequences (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
-            The generated sequences. The second dimension (sequence_length) is either equal to `max_length` or shorter
-            if all batches finished early due to the `eos_token_id`.
-        scores (`tuple(torch.FloatTensor)` *optional*, returned when `output_scores=True`):
-            Processed prediction scores of the language modeling head (scores for each vocabulary token before SoftMax)
-            at each generation step. Tuple of `torch.FloatTensor` with up to `max_new_tokens` elements (one element for
-            each generated token), with each tensor of shape `(batch_size, config.vocab_size)`.
-        logits (`tuple(torch.FloatTensor)` *optional*, returned when `output_logits=True`):
-            Unprocessed prediction scores of the language modeling head (scores for each vocabulary token before SoftMax)
-            at each generation step. Tuple of `torch.FloatTensor` with up to `max_new_tokens` elements (one element for
-            each generated token), with each tensor of shape `(batch_size, config.vocab_size)`.
+        sequences (`torch.LongTensor` of shape `(batch_size, num_frames, audio_num_codebooks)`):
+            The generated codebook ids, one row per audio frame.
+        scores (`tuple(torch.FloatTensor)`, *optional*, returned when `output_scores=True`):
+            Processed codebook 0 scores of each generation step.
+        logits (`tuple(torch.FloatTensor)`, *optional*, returned when `output_logits=True`):
+            Unprocessed codebook 0 scores of each generation step.
         attentions (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `output_attentions=True`):
-            Tuple (one element for each generated token) of tuples (one element for each layer of the decoder) of
-            `torch.FloatTensor` of shape `(batch_size, num_heads, generated_length, sequence_length)`.
+            Backbone attentions of each generation step.
         hidden_states (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `output_hidden_states=True`):
-            Tuple (one element for each generated token) of tuples (one element for each layer of the decoder) of
-            `torch.FloatTensor` of shape `(batch_size, generated_length, hidden_size)`.
+            Backbone hidden states of each generation step.
         past_key_values (`Cache`, *optional*, returned when `use_cache=True`):
-            Returns the model cache, used to speed up decoding. Different models have a different cache format, check
-        audio (`list(torch.FloatTensor)` of length `batch_size`):
-            The generated audio.
+            The backbone cache.
+        audio (`list(torch.FloatTensor)` of length `batch_size`, *optional*):
+            The waveform the codec reconstructed from `sequences`, returned when `output_audio=True`.
     """
-    audio: Optional[List[torch.Tensor]] = None
 
 
 class ChromaGenerationMixin(GenerationMixin):
+    # Copied from transformers.models.csm.generation_csm.CsmGenerationMixin._get_stopping_criteria with Csm->Chroma
     def _get_stopping_criteria(self, *args, **kwargs) -> StoppingCriteriaList:
         criteria = super()._get_stopping_criteria(*args, **kwargs)
 
@@ -85,49 +99,52 @@ class ChromaGenerationMixin(GenerationMixin):
         return kept_criteria
 
     def _prepare_generation_config(
-        self, generation_config: Optional[GenerationConfig], use_model_defaults: Optional[bool] = None, **kwargs: Dict
-    ) -> Tuple[GenerationConfig, Dict]:
+        self, generation_config: Optional[GenerationConfig], **kwargs: Any
+    ) -> tuple[GenerationConfig, dict]:
         """
-        This method overrides [~generation.utils.GenerationMixin._prepare_generation_config].
-        It ensures that the decoder generation config is initialized and that passed args as depth_decoder_* are properly handled.
-        """
-        # extract depth decoder kwargs and remove them from the main kwargs
-        depth_decoder_kwargs = {
-            k[len("decoder_"):]: v for k, v in kwargs.items() if k.startswith("decoder_")
-        }
+        This method overrides [`~generation.utils.GenerationMixin._prepare_generation_config`]. It ensures that the
+        decoder generation config is initialized and that args passed as `decoder_*` are routed to it.
 
-        # remove the decoder keys from the original kwargs
+        Args:
+            generation_config ([`~generation.GenerationConfig`], *optional*):
+                Base parametrization of this `generate` call.
+            kwargs (`dict[str, Any]`, *optional*):
+                Ad hoc generation config overrides. Keys prefixed with `decoder_` are stripped of their prefix and
+                applied to the decoder generation config instead.
+
+        Returns:
+            `tuple[GenerationConfig, dict]`: The prepared generation config and the remaining model kwargs.
+
+        Raises:
+            ValueError: If the decoder is asked to emit a number of tokens other than
+                `audio_num_codebooks - 1`.
+        """
+        decoder_kwargs = {k[len("decoder_") :]: v for k, v in kwargs.items() if k.startswith("decoder_")}
         kwargs = {k: v for k, v in kwargs.items() if not k.startswith("decoder_")}
 
-        # initialize the generation config
-        generation_config, model_kwargs = super()._prepare_generation_config(
-            generation_config, use_model_defaults, **kwargs
-        )
-        self.decoder.generation_config.update(**depth_decoder_kwargs)
+        generation_config, model_kwargs = super()._prepare_generation_config(generation_config, **kwargs)
+        self.decoder.generation_config.update(**decoder_kwargs)
 
-        # ensure the depth decoder generation config is valid
-        decoder_min_new_tokens = getattr(self.decoder.generation_config, "min_new_tokens") or (
-            self.decoder.config.audio_num_codebooks - 1
-        )
-        decoder_max_new_tokens = getattr(self.decoder.generation_config, "max_new_tokens") or (
-            self.decoder.config.audio_num_codebooks - 1
-        )
+        num_residual_codebooks = self.decoder.config.audio_num_codebooks - 1
+        decoder_min_new_tokens = getattr(self.decoder.generation_config, "min_new_tokens") or num_residual_codebooks
+        decoder_max_new_tokens = getattr(self.decoder.generation_config, "max_new_tokens") or num_residual_codebooks
 
-        if {decoder_min_new_tokens, decoder_max_new_tokens} != {self.decoder.config.audio_num_codebooks - 1}:
+        if {decoder_min_new_tokens, decoder_max_new_tokens} != {num_residual_codebooks}:
             raise ValueError(
-                f"decoder_generation_config's min_new_tokens ({decoder_min_new_tokens}) and max_new_tokens ({decoder_max_new_tokens}) must be equal to self.config.num_codebooks - 1 ({self.decoder.config.audio_num_codebooks - 1})"
+                f"decoder generation config's min_new_tokens ({decoder_min_new_tokens}) and max_new_tokens "
+                f"({decoder_max_new_tokens}) must both equal audio_num_codebooks - 1 ({num_residual_codebooks})"
             )
         elif self.decoder.generation_config.return_dict_in_generate:
             self.decoder.generation_config.return_dict_in_generate = False
 
-        # Monkey patch the get_generation_mode method to support Chroma model
         original_get_generation_mode = generation_config.get_generation_mode
 
         def patched_get_generation_mode(assistant_model=None):
             generation_mode = original_get_generation_mode(assistant_model)
             if generation_mode not in [GenerationMode.GREEDY_SEARCH, GenerationMode.SAMPLE]:
                 raise ValueError(
-                    f"Generation mode {generation_mode} is not supported for Chroma model. Please set generation parameters to use greedy or sampling generation."
+                    f"Generation mode {generation_mode} is not supported for Chroma. Please set generation "
+                    "parameters to use greedy or sampling generation."
                 )
 
             return generation_mode
@@ -138,25 +155,41 @@ class ChromaGenerationMixin(GenerationMixin):
 
     def _sample(
         self,
-        input_ids: Optional[torch.LongTensor] = None,
-        generation_config: Optional[GenerationConfig] = None,
+        input_ids: torch.LongTensor,
         logits_processor: Optional[LogitsProcessorList] = None,
         stopping_criteria: Optional[StoppingCriteriaList] = None,
-        synced_gpus: Optional[bool] = None,
+        generation_config: Optional[GenerationConfig] = None,
+        synced_gpus: bool = False,
         streamer: Optional["BaseStreamer"] = None,
         **model_kwargs,
     ) -> Union[GenerateNonBeamOutput, torch.LongTensor]:
         """
-        只支持sample和greedy, 拿到backbone的hidden_states, logits
+        This method overrides [`~generation.utils.GenerationMixin._sample`]. One step samples codebook 0 from the
+        backbone, hands it plus the backbone hidden state to the decoder, and uses the resulting full frame as the
+        next backbone input.
+
         Args:
-            input_ids:
-            generation_config:
-            logits_processor:
-            stopping_criteria:
-            synced_gpus:
-            streamer:
-            **model_kwargs:
+            input_ids (`torch.LongTensor`):
+                Prompt text ids on the first step, codebook ids of the previous frame afterwards.
+            logits_processor (`LogitsProcessorList`, *optional*):
+                Processors applied to the codebook 0 logits before they are stored in `scores`.
+            stopping_criteria (`StoppingCriteriaList`, *optional*):
+                Criteria evaluated against the frames generated so far. Only [`MaxLengthCriteria`] is honored.
+            generation_config ([`~generation.GenerationConfig`], *optional*):
+                Parametrization of this `generate` call.
+            synced_gpus (`bool`, *optional*, defaults to `False`):
+                Whether the loop runs until `max_length` on every rank.
+            streamer ([`~generation.streamers.BaseStreamer`], *optional*):
+                Streamer fed with every generated frame.
+            model_kwargs (`dict[str, Any]`, *optional*):
+                Model state carried across steps, including the backbone and reasoner caches.
+
         Returns:
+            [`~generation.GenerateDecoderOnlyOutput`] or `torch.LongTensor`: The generated frames of shape
+            `(batch_size, num_frames, audio_num_codebooks)`.
+
+        Raises:
+            ValueError: If the decoder returns a frame that does not cover `audio_num_codebooks` codebooks.
         """
         pad_token_id = self.config.codebook_pad_token_id
         has_eos_stopping_criteria = generation_config._eos_token_tensor is not None
@@ -174,66 +207,46 @@ class ChromaGenerationMixin(GenerationMixin):
         decoder_attentions = () if (return_dict_in_generate and output_attentions) else None
         decoder_hidden_states = () if (return_dict_in_generate and output_hidden_states) else None
 
-        # keep track of which sequences are already finished
         batch_size, cur_len = input_ids.shape[:2]
         this_peer_finished = False
         unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
-        model_kwargs = self._get_initial_cache_position(cur_len, input_ids.device, model_kwargs)
 
         if input_ids.ndim == 2 and model_kwargs.get("inputs_embeds") is None:
+            # the prompt text ids are not part of the returned frames, so they must not count towards max_length
             for criterion in stopping_criteria:
                 if isinstance(criterion, MaxLengthCriteria):
                     criterion.max_length -= cur_len
 
-        # 累积每一帧，最终返回完整的 [B, T, num_codebooks]
         generated_frames = []
 
-        # 获取ChromaForConditionalGeneration的forward方法
         model_forward = self.__call__
-        compile_forward = self._valid_auto_compile_criteria(model_kwargs, generation_config)
-        if compile_forward:
+        if self._valid_auto_compile_criteria(model_kwargs, generation_config):
             model_forward = self.get_compiled_call(generation_config.compile_config)
 
         is_prefill = True
-        while self._has_unfinished_sequences(
-            this_peer_finished,
-            synced_gpus,
-            device=input_ids.device,
-        ):
-            # 调用ChromaForConditionalGeneration的prepare_inputs_for_generation方法，组装输入用于forward
-            # 处理thinker以及prompt_audio  prompt_text
+        while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
-            # prepare variable output controls (note: some models won't accept all output controls)
             model_inputs.update({"output_attentions": output_attentions} if output_attentions else {})
-            # *************** Chroma specific ***************
             model_inputs.update({"output_hidden_states": True})
-            # ============================================
 
-            # 调用ChromaForConditionalGeneration的forward方法
             if is_prefill:
                 backbone_outputs = self(**model_inputs, return_dict=True)
                 is_prefill = False
             else:
                 backbone_outputs = model_forward(**model_inputs, return_dict=True)
 
-            # 获取backbone的hidden_states
             next_token_logits = backbone_outputs.logits[:, -1, :].clone().float()
             next_token_logits = next_token_logits.to(input_ids.device)
             next_token_scores = logits_processor(input_ids, next_token_logits)
 
             backbone_last_hidden_state = backbone_outputs.hidden_states[-1][:, -1, :]
 
-            # 更新decoder部分进行generate的config
-            model_kwargs = self._update_model_kwargs_for_generation(
-                backbone_outputs,
-                model_kwargs,
-            )
+            model_kwargs = self._update_model_kwargs_for_generation(backbone_outputs, model_kwargs)
 
             if synced_gpus and this_peer_finished:
                 continue
 
-            # Acquire backbone scores, attentions and hidden_states when required
             if return_dict_in_generate:
                 if output_scores:
                     scores += (next_token_scores,)
@@ -241,18 +254,14 @@ class ChromaGenerationMixin(GenerationMixin):
                     raw_logits += (next_token_logits,)
                 if output_attentions:
                     decoder_attentions += (backbone_outputs.attentions,)
-
                 if output_hidden_states:
                     decoder_hidden_states += (backbone_outputs.hidden_states,)
 
-            # Do sample
             if do_sample:
                 next_tokens = sample_topk(next_token_logits, top_k, temperature)
             else:
-                next_tokens = torch.argmax(next_token_logits, dim=-1)
-                next_tokens = next_tokens.unsqueeze(1)  # [B, 1]
+                next_tokens = torch.argmax(next_token_logits, dim=-1).unsqueeze(1)
 
-            # decoder generate
             frame_codes = self.decoder.generate(
                 input_ids=next_tokens,
                 backbone_last_hidden_state=backbone_last_hidden_state.clone(),
@@ -264,7 +273,6 @@ class ChromaGenerationMixin(GenerationMixin):
                 top_k=top_k,
             )
 
-            # 确保形状正确
             if frame_codes.shape[-1] != self.config.decoder_config.audio_num_codebooks:
                 raise ValueError(
                     f"Generated codebooks shape {frame_codes.shape[-1]} does not match expected "
@@ -273,43 +281,38 @@ class ChromaGenerationMixin(GenerationMixin):
 
             next_tokens = frame_codes
 
-            # finished sentences should have their next token be a padding token
             if has_eos_stopping_criteria:
                 next_tokens = next_tokens * unfinished_sequences.unsqueeze(-1) + pad_token_id * (
                     1 - unfinished_sequences.unsqueeze(-1)
                 )
 
-            # 累积当前帧，形状为 [B, 1, num_codebooks]
             if next_tokens.sum() != 0:
                 generated_frames.append(next_tokens.unsqueeze(1))
 
-            # update generated ids, model inputs, and length for next step
             input_ids = next_tokens[:, None, :]
-
-            # ============================================
 
             if streamer is not None:
                 streamer.put(next_tokens.cpu())
 
-            # *************** Chroma specific ***************
-            # for the eos stopping criteria, is it expected that the eos token is the same for each codebook !!!!
+            # the eos token is expected to be the same in every codebook of a finished frame
             unfinished_sequences = unfinished_sequences & ~(
                 input_ids[:, -1, :-1] == self.config.codebook_eos_token_id
             ).all(-1)
-            unfinished_sequences = unfinished_sequences & ~stopping_criteria(torch.cat(generated_frames, dim=1), scores)
+            if generated_frames:
+                unfinished_sequences = unfinished_sequences & ~stopping_criteria(
+                    torch.cat(generated_frames, dim=1), scores
+                )
             this_peer_finished = unfinished_sequences.max() == 0
             cur_len += 1
 
-            # This is needed to properly delete outputs.logits which may be very large for first iteration
             del backbone_outputs
-
             del frame_codes
 
         if streamer is not None:
             streamer.end()
 
+        sequences = torch.cat(generated_frames, dim=1) if len(generated_frames) > 0 else input_ids
         if return_dict_in_generate:
-            sequences = torch.cat(generated_frames, dim=1) if len(generated_frames) > 0 else input_ids
             return GenerateDecoderOnlyOutput(
                 sequences=sequences,
                 scores=scores,
@@ -318,9 +321,7 @@ class ChromaGenerationMixin(GenerationMixin):
                 hidden_states=decoder_hidden_states,
                 past_key_values=model_kwargs.get("past_key_values"),
             )
-        else:
-            sequences = torch.cat(generated_frames, dim=1) if len(generated_frames) > 0 else input_ids
-            return sequences
+        return sequences
 
     def generate(
         self,
@@ -334,64 +335,61 @@ class ChromaGenerationMixin(GenerationMixin):
         streamer: Optional["BaseStreamer"] = None,
         output_audio: Optional[bool] = False,
         bos_token_id: Optional[int] = 0,
-        **kwargs: dict
-    ) -> Union[GenerateNonBeamOutput, torch.LongTensor]:
+        **kwargs: Any,
+    ) -> Union[GenerateNonBeamOutput, torch.LongTensor, list[torch.FloatTensor]]:
         r"""
-        This method overrides [`~generation.utils.GenerationMixin.generate`] to match the specifics of the Chroma model.
-        Indeed, Chroma model requires a custom generation sampling step:
+        This method overrides [`~generation.utils.GenerationMixin.generate`] to match the specifics of the Chroma
+        model, which requires a custom generation sampling step:
+
         1. Infer the backbone model to sample the first codebook token
-        2. Call generate on the depth decoder with the first codebook token as `input_ids` to sample the next codebook tokens
-        3. Use these generated codebook tokens as `input_ids` to sample the next first codebook token using the backbone model
+        2. Call generate on the decoder with the first codebook token as `input_ids` to sample the remaining
+           codebook tokens
+        3. Use these generated codebook tokens as `input_ids` to sample the next first codebook token using the
+           backbone model
         4. Repeat until stopping criteria is met
+
         <Tip warning={true}>
-        Most generation-controlling parameters are set in `generation_config` which, if not passed, will be set to the
-        model's default generation configuration. You can override any `generation_config` by passing the corresponding
-        parameters to generate(), e.g. `.generate(inputs, do_sample=True)`.
+
+        Most generation-controlling parameters are set in `generation_config` which, if not passed, will be set to
+        the model's default generation configuration. You can override any `generation_config` by passing the
+        corresponding parameters to generate(), e.g. `.generate(inputs, do_sample=True)`.
+
         </Tip>
-        Parameters:
-            inputs_ids (`torch.Tensor` of shape (batch_size, seq_length), *optional*):
-                The sequence used as a prompt for the backbone model.
-            input_values (`torch.Tensor` of shape (batch_size, channels, max_concatenated_audio_length), *optional*):
-                The batched audio input values, where each batch entry contains the concatenation of all audio segments for that entry.
-                These values will be encoded into codebook tokens using the codec model and merged with the text input ids provided in `input_ids`.
-            input_values_cutoffs (`torch.Tensor` of shape (batch_size, max_num_audio), *optional*):
-                Specify the end positions of audio segments within each batch entry, relative to the concatenated audio input.
-                If a batch entry has fewer segments than the maximum, it is padded with -1. For example, in a batch of 2 sequences
-                where the first contains 2 audio segments of length l1, and the second contains 1 audio segment of length l2,
-                the input_values_cutoffs would be: [[l1, 2 * l1], [l2, -1]].
+
+        Args:
+            input_ids (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+                The reference transcript ids used to build the backbone prompt.
+            input_values (`torch.Tensor` of shape `(batch_size, channels, max_concatenated_audio_length)`,
+                *optional*):
+                The batched reference waveforms, encoded into codebook tokens by the codec model and merged with
+                the text prompt.
+            input_values_cutoffs (`torch.Tensor` of shape `(batch_size, max_num_audio)`, *optional*):
+                Specify the end positions of audio segments within each batch entry, relative to the concatenated
+                audio input. If a batch entry has fewer segments than the maximum, it is padded with -1.
             generation_config ([`~generation.GenerationConfig`], *optional*):
-                The generation configuration to be used as base parametrization for the generation call. `**kwargs`
-                passed to generate matching the attributes of `generation_config` will override them. If
-                `generation_config` is not provided, the default will be used, which has the following loading
-                priority: 1) from the `generation_config.json` model file, if it exists; 2) from the model
-                configuration. Please note that unspecified parameters will inherit [`~generation.GenerationConfig`]'s
-                default values, whose documentation should be checked to parameterize generation.
+                The generation configuration to be used as base parametrization for the generation call.
             logits_processor (`LogitsProcessorList`, *optional*):
                 Custom logits processors that complement the default logits processors built from arguments and
-                generation config. If a logit processor is passed that is already created with the arguments or a
-                generation config an error is thrown. This feature is intended for advanced users.
+                generation config.
             stopping_criteria (`StoppingCriteriaList`, *optional*):
                 Custom stopping criteria that complements the default stopping criteria built from arguments and a
-                generation config. If a stopping criteria is passed that is already created with the arguments or a
-                generation config an error is thrown. If your stopping criteria depends on the `scores` input, make
-                sure you pass `return_dict_in_generate=True, output_scores=True` to `generate`. This feature is
-                intended for advanced users.
+                generation config.
             synced_gpus (`bool`, *optional*):
-                Whether to continue running the while loop until max_length. Unless overridden, this flag will be set
-                to `True` if using `FullyShardedDataParallel` or DeepSpeed ZeRO Stage 3 with multiple GPUs to avoid
-                deadlocking if one GPU finishes generating before other GPUs. Otherwise, defaults to `False`.
-            streamer (`BaseStreamer`, *optional*):
-                Streamer object that will be used to stream the generated sequences. Generated tokens are passed
-                through `streamer.put(token_ids)` and the streamer is responsible for any further processing.
-            output_audio (`bool`, *optional*):
-                Whether to return the generated audio.
+                Whether to continue running the while loop until `max_length`.
+            streamer ([`~generation.streamers.BaseStreamer`], *optional*):
+                Streamer object that will be used to stream the generated frames.
+            output_audio (`bool`, *optional*, defaults to `False`):
+                Whether the generated codebook ids are decoded to a waveform by the codec model.
+            bos_token_id (`int`, *optional*, defaults to 0):
+                Codebook id the backbone sequence is seeded with.
             kwargs (`dict[str, Any]`, *optional*):
-                Ad hoc parametrization of `generation_config` and/or additional model-specific kwargs that will be
-                forwarded to the `forward` function of the model. Depth decoder specific kwargs should be prefixed with *depth_decoder_*.
-        Return:
-            [`ChromaGenerateOutput`] or `torch.LongTensor` or `list[torch.FloatTensor]`: A [`ChromaGenerateOutput`]
-            (if `return_dict_in_generate=True` or when `config.return_dict_in_generate=True`) or a `torch.LongTensor` when `output_audio=False`
-            or a `list[torch.FloatTensor]` otherwise.
+                Ad hoc parametrization of `generation_config` and additional model-specific kwargs forwarded to
+                `forward`. Decoder specific kwargs should be prefixed with `decoder_`.
+
+        Returns:
+            [`ChromaGenerateOutput`] or `torch.LongTensor` or `list[torch.FloatTensor]`: A
+            [`ChromaGenerateOutput`] if `return_dict_in_generate=True`, a `list[torch.FloatTensor]` if
+            `output_audio=True`, and the generated codebook ids otherwise.
         """
         generate_output = super().generate(
             input_ids=input_ids,
@@ -410,15 +408,11 @@ class ChromaGenerationMixin(GenerationMixin):
         if output_audio:
             generated_audio_codes = generate_output.sequences if generate_returned_dict else generate_output
 
-            # infer the codec model
             audio = []
             with torch.no_grad():
                 for audio_codes_batch in generated_audio_codes:
                     eos_idxs = (audio_codes_batch == self.config.codebook_eos_token_id).all(dim=-1).nonzero()
-                    if eos_idxs.numel() != 0:
-                        cutoff_idx = eos_idxs.min()
-                    else:
-                        cutoff_idx = audio_codes_batch.shape[0]
+                    cutoff_idx = eos_idxs.min() if eos_idxs.numel() != 0 else audio_codes_batch.shape[0]
 
                     audio_codes_batch = audio_codes_batch[:cutoff_idx]
                     codec_decode_output = self.codec_model.decode(audio_codes_batch.transpose(0, 1).unsqueeze(0))
@@ -428,5 +422,10 @@ class ChromaGenerationMixin(GenerationMixin):
             return ChromaGenerateOutput(audio=audio, **generate_output)
         elif output_audio:
             return audio
-        else:
-            return generate_output
+        return generate_output
+
+
+__all__ = [
+    "ChromaGenerateOutput",
+    "ChromaGenerationMixin",
+]
