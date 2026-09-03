@@ -336,6 +336,30 @@ the sampling parameters and the generation length are wrong. It cleared Higgs TT
 "RMS 0.091, max abs 0.69, plausible speech-level amplitude" on the same `max_length=53` truncation
 that this repo later caught by transcribing the audio.
 
+## Future direction: inference performance
+
+No model here has been tuned for inference speed, and the migrations deliberately did not carry
+upstream's optimized paths across. Breeze TTS 2 is the clearest case, since its upstream README
+advertises 40 ms to first audio and a 0.32 real time factor measured on a hand written CUDA graph
+capture (`models/cudagraph/`, `models/fast_streaming.py`, `models/warmup_profile.py`,
+`configs/fast.json`), all of which `2cc89500` removed. Those graphs replay the same kernels this
+code already runs, so nothing about accuracy changed, but that headline number does not reproduce
+today. The same gap applies to every autoregressive codec language model here, which spend most of
+their wall clock launching many small kernels per audio frame rather than computing.
+
+The route back is the `transformers` one, not the vendored code. A static cache and CUDA graph
+capture are selected by the caller through `GenerationConfig`, not implemented per model:
+`cache_implementation` takes `"static"` or `"offloaded_static"` and is validated against
+`ALL_CACHE_IMPLEMENTATIONS`, `generation/utils.py` branches on it at line 1980, and `compile_config`
+takes a `CompileConfig`. So a model's obligation is to stay compatible with that path, with static
+shapes and no per-step Python branching on tensor values, rather than to ship a capture of its own.
+
+What is owed, when inference speed becomes a requirement rather than a nice to have: measure the
+real time factor of each model under `cache_implementation="static"` with a `compile_config`, find
+which ones fall out of the static path and why, and fix those. Restoring a vendored capture is a
+last resort. Breeze TTS 2's `models/stream_runtime/` is not a candidate at all, since it is built
+entirely on the third party `qwen_tts` package and H11 forbids taking that dependency back.
+
 ## Sibling inheritance map
 
 Principle 1 asks for inheritance between models inside `voicestudio/models/`, not only from
