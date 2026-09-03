@@ -1,0 +1,102 @@
+"""Processor class for CosyVoice v3."""
+
+from typing import Optional
+
+from ..cosyvoice_v2.processing_cosyvoice_v2 import CosyVoiceV2FeatureExtractor, CosyVoiceV2Processor
+
+
+# The tokens upstream's `CosyVoice3Tokenizer` adds to the Qwen2 tokenizer. The first nineteen are
+# v2's; the rest are the end of system marker, the ARPAbet phoneme set and the pinyin syllable set
+# the v3 text frontend emits.
+SPECIAL_TOKENS = [
+    "<|im_start|>", "<|im_end|>", "<|endofprompt|>",
+    "[breath]", "<strong>", "</strong>", "[noise]",
+    "[laughter]", "[cough]", "[clucking]", "[accent]",
+    "[quick_breath]",
+    "<laughter>", "</laughter>",
+    "[hissing]", "[sigh]", "[vocalized-noise]",
+    "[lipsmack]", "[mn]", "<|endofsystem|>",
+    "[AA]", "[AA0]", "[AA1]", "[AA2]", "[AE]", "[AE0]", "[AE1]", "[AE2]", "[AH]", "[AH0]", "[AH1]", "[AH2]",
+    "[AO]", "[AO0]", "[AO1]", "[AO2]", "[AW]", "[AW0]", "[AW1]", "[AW2]", "[AY]", "[AY0]", "[AY1]", "[AY2]",
+    "[B]", "[CH]", "[D]", "[DH]", "[EH]", "[EH0]", "[EH1]", "[EH2]", "[ER]", "[ER0]", "[ER1]", "[ER2]", "[EY]",
+    "[EY0]", "[EY1]", "[EY2]", "[F]", "[G]", "[HH]", "[IH]", "[IH0]", "[IH1]", "[IH2]", "[IY]", "[IY0]", "[IY1]",
+    "[IY2]", "[JH]", "[K]", "[L]", "[M]", "[N]", "[NG]", "[OW]", "[OW0]", "[OW1]", "[OW2]", "[OY]", "[OY0]",
+    "[OY1]", "[OY2]", "[P]", "[R]", "[S]", "[SH]", "[T]", "[TH]", "[UH]", "[UH0]", "[UH1]", "[UH2]", "[UW]",
+    "[UW0]", "[UW1]", "[UW2]", "[V]", "[W]", "[Y]", "[Z]", "[ZH]",
+    "[a]", "[ai]", "[an]", "[ang]", "[ao]", "[b]", "[c]", "[ch]", "[d]", "[e]", "[ei]", "[en]", "[eng]", "[f]",
+    "[g]", "[h]", "[i]", "[ian]", "[in]", "[ing]", "[iu]", "[ià]", "[iàn]", "[iàng]", "[iào]", "[iá]", "[ián]",
+    "[iáng]", "[iáo]", "[iè]", "[ié]", "[iòng]", "[ióng]", "[iù]", "[iú]", "[iā]", "[iān]", "[iāng]", "[iāo]",
+    "[iē]", "[iě]", "[iōng]", "[iū]", "[iǎ]", "[iǎn]", "[iǎng]", "[iǎo]", "[iǒng]", "[iǔ]", "[j]", "[k]", "[l]",
+    "[m]", "[n]", "[o]", "[ong]", "[ou]", "[p]", "[q]", "[r]", "[s]", "[sh]", "[t]", "[u]", "[uang]", "[ue]",
+    "[un]", "[uo]", "[uà]", "[uài]", "[uàn]", "[uàng]", "[uá]", "[uái]", "[uán]", "[uáng]", "[uè]", "[ué]", "[uì]",
+    "[uí]", "[uò]", "[uó]", "[uā]", "[uāi]", "[uān]", "[uāng]", "[uē]", "[uě]", "[uī]", "[uō]", "[uǎ]", "[uǎi]",
+    "[uǎn]", "[uǎng]", "[uǐ]", "[uǒ]", "[vè]", "[w]", "[x]", "[y]", "[z]", "[zh]", "[à]", "[ài]", "[àn]", "[àng]",
+    "[ào]", "[á]", "[ái]", "[án]", "[áng]", "[áo]", "[è]", "[èi]", "[èn]", "[èng]", "[èr]", "[é]", "[éi]", "[én]",
+    "[éng]", "[ér]", "[ì]", "[ìn]", "[ìng]", "[í]", "[ín]", "[íng]", "[ò]", "[òng]", "[òu]", "[ó]", "[óng]", "[óu]",
+    "[ù]", "[ùn]", "[ú]", "[ún]", "[ā]", "[āi]", "[ān]", "[āng]", "[āo]", "[ē]", "[ēi]", "[ēn]", "[ēng]", "[ě]",
+    "[ěi]", "[ěn]", "[ěng]", "[ěr]", "[ī]", "[īn]", "[īng]", "[ō]", "[ōng]", "[ōu]", "[ū]", "[ūn]", "[ǎ]", "[ǎi]",
+    "[ǎn]", "[ǎng]", "[ǎo]", "[ǐ]", "[ǐn]", "[ǐng]", "[ǒ]", "[ǒng]", "[ǒu]", "[ǔ]", "[ǔn]", "[ǘ]", "[ǚ]", "[ǜ]",
+]
+
+
+class CosyVoiceV3FeatureExtractor(CosyVoiceV2FeatureExtractor):
+    r"""
+    Constructs a CosyVoice v3 feature extractor, which is v2's unchanged: the flow matching model of
+    both versions is conditioned on the same 24 kHz, 80 bin log mel spectrogram.
+
+    Args:
+        kwargs:
+            Forwarded to [`CosyVoiceV2FeatureExtractor`].
+    """
+
+
+class CosyVoiceV3Processor(CosyVoiceV2Processor):
+    r"""
+    Constructs a CosyVoice v3 processor, which wraps the Qwen2 text tokenizer, the 24 kHz mel
+    spectrogram extractor of the flow matching model, the supervised semantic speech tokenizer and
+    the speaker encoder into a single object.
+
+    It differs from v2's only in the tokenizer's added vocabulary, which gains the end of system
+    marker and the phoneme and pinyin sets the v3 text frontend emits, and in the file name of the
+    speech tokenizer graph. That graph is ONNX only, so `onnxruntime` is imported lazily and the
+    paths that derive a prompt from a waveform raise without it.
+
+    Args:
+        feature_extractor ([`CosyVoiceV3FeatureExtractor`]):
+            Mel spectrogram extractor of the flow matching model.
+        tokenizer ([`Qwen2TokenizerFast`]):
+            Text tokenizer, loaded from the `CosyVoice-BlankEN` directory of the released checkpoint.
+        speech_token_model_path (`str`, *optional*):
+            Path of `speech_tokenizer_v3.onnx`.
+        speaker_encoder_model_path (`str`, *optional*):
+            Path of `campplus.onnx`.
+        speaker_info_path (`str`, *optional*):
+            Path of a `spk2info.pt`. The released v3 directory ships none.
+        kwargs:
+            Forwarded to [`CosyVoiceV2Processor`].
+    """
+
+    @staticmethod
+    def add_special_tokens(tokenizer, tokens: Optional[list[str]] = None) -> int:
+        r"""
+        Adds upstream's v3 special tokens to a tokenizer, in upstream's order.
+
+        Args:
+            tokenizer (`PreTrainedTokenizerBase`):
+                Tokenizer to extend.
+            tokens (`list[str]`, *optional*):
+                Tokens to add. Defaults to [`SPECIAL_TOKENS`].
+
+        Returns:
+            `int`: The number of tokens the tokenizer did not already carry.
+        """
+        return tokenizer.add_special_tokens(
+            {
+                "eos_token": "<|endoftext|>",
+                "pad_token": "<|endoftext|>",
+                "additional_special_tokens": SPECIAL_TOKENS if tokens is None else tokens,
+            }
+        )
+
+
+__all__ = ["SPECIAL_TOKENS", "CosyVoiceV3FeatureExtractor", "CosyVoiceV3Processor"]
