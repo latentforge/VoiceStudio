@@ -151,7 +151,10 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
 - **The unused module library.** `promptttspp/modules/` also ships a continuous normalizing flow, a ConvNeXt
   stack, a Glow, a multi receptive field net, a score based SDE, a plain transformer, a U-Net, a second conformer
   implementation and a copy of nnsvs' diffusion and denoiser. None of them is referenced by the released model
-  configuration, and none was migrated.
+  configuration, and none was migrated. The same holds for the part of the vendored espnet subset under
+  `promptttspp/modules/esp/transformer/` that the conformer encoder never reaches: the transformer encoder and
+  decoder, the light and dynamic convolutions, the convolutional subsampling, the plain position wise feed
+  forward and the weight initializers.
 - **The f0 free BigVGAN.** `promptttspp/vocoders/bigvgan.py` also defines the vocoder variant that takes only a
   spectrogram, selected by `egs/proposed/bin/conf/vocoder/bigvgan.yaml`. Its residual blocks are migrated, since
   the f0 aware variant is built out of them, but the variant itself is not: the released vocoder checkpoint is
