@@ -51,7 +51,7 @@ inputs = processor(
 audio_codes = model.generate(**inputs)
 ```
 
-or leave `transcript` out and the processor derives it itself, running a Whisper model over each `audio` entry with `WhisperForConditionalGeneration`'s native `return_token_timestamps` (the same cross-attention dynamic-time-warping technique `whisper-timestamped` uses upstream, without adding it as a dependency):
+or leave `transcript` out and the processor derives it itself, running a Whisper model over each `audio` entry. Whisper decodes the clip with its own segment timestamps, then every segment is aligned again against the cross-attentions inside a window around those timestamps, the two-pass scheme `whisper-timestamped` uses upstream, inlined rather than added as a dependency:
 
 ```python
 inputs = processor(
@@ -63,6 +63,8 @@ audio_codes = model.generate(**inputs)
 ```
 
 The Whisper checkpoint defaults to `openai/whisper-large-v3`, matching what upstream used, and is only loaded the first time this path runs. Set `processor.whisper_checkpoint` to a different hub id or local path before calling `processor(...)` to use a different one.
+
+`processor.refine_whisper_precision` is the margin in seconds each segment's window is widened by on both sides before it is aligned again. It defaults to `0.5`, the same default `whisper-timestamped` ships, and must be a non-negative multiple of `0.02`, the 20 ms a Whisper cross-attention frame covers. Setting it to `None` skips the second pass and keeps the single whole-window alignment; boundaries then differ by up to about the margin.
 
 `generate` decodes one script at a time. Classifier-free guidance runs the conditional and unconditional branches as a batch of two, so `guidance_scale=1.0` halves the compute at the cost of guidance.
 
@@ -80,7 +82,7 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
 
 - **Term weights and masking of the training loss.** No upstream trainer, loss module, collator or evaluation script exists (the `nari-labs/dia2` GitHub tree is inference only), and no paper or technical report has been published. The three cross-entropy terms are therefore summed with weight 1.0 each, and no term is masked beyond the caller's own `-100` labels. If the real recipe weights the depth decoder term per codebook, or masks padding frames, this diverges from it.
 - **Codebook logit width during training.** At generation time the upstream depth decoder slices its logits to `[..., :min(audio_pad_token_id, audio_bos_token_id)]`, which the migration reproduces by masking those two ids in `generate`. The training path leaves the full `vocab_size` head width in the cross-entropy, so the two beginning-of-stream and padding classes stay in the softmax denominator.
-- **Windowed refinement of the automatic word alignment.** Upstream `dia2/runtime/voice_clone.py` ran `whisper_timestamped.transcribe(model, audio_path, language=language)` with that package's defaults, which include `refine_whisper_precision=0.5`: a first pass reads Whisper's own segment-level timestamp tokens, then a second, windowed dynamic-time-warping pass refines each word boundary within that margin. `Dia2Processor._transcribe` calls `WhisperForConditionalGeneration.generate(..., return_token_timestamps=True)` instead, which runs only the first, unrefined whole-clip dynamic-time-warping pass over the cross-attentions (the same `alignment_heads` calibration and `transformers.models.whisper.tokenization_whisper._combine_tokens_into_words` word grouping `whisper_timestamped` itself uses, traced in both packages' source). Word boundaries from the two paths can therefore differ by up to about the refinement margin.
+- **Word grouping and the timing of trailing punctuation.** `Dia2Processor._transcribe` groups tokens into words with `transformers.models.whisper.tokenization_whisper._combine_tokens_into_words`, the port of OpenAI Whisper's own `split_to_word_tokens` plus `merge_punctuations`. Upstream `whisper_timestamped` groups them with its own `split_tokens_on_spaces` / `split_tokens_on_unicode`, over a punctuation set of its own, and then ends a word one token early when its last token is punctuation (`num_punctuations_per_tokens` in `perform_word_alignment`). A word whose text ends in punctuation therefore keeps the punctuation's own span in its `end` here, where upstream would cut it before.
 - **CUDA graph capture and `torch.compile` paths.** Upstream `dia2/runtime/generator.py` could capture the backbone step and each depth stage into CUDA graphs and compile them. `generate` runs eagerly.
 - **Word timestamps in the generation result.** Upstream carried each consumed word's text and frame through the state machine and returned `(word, seconds)` pairs. `Dia2TextStreamState.word_start_frames` keeps the frames, but `generate` returns only the codes.
 - **Audio file I/O, CLI, Gradio app and progress logger.** `dia2/runtime/audio_io.py`, `dia2/audio/grid.py:write_wav`, `dia2/cli.py`, `gradio_app.py` and `dia2/runtime/logger.py` are dropped along with `sphn`, `soundfile` and `gradio`.
@@ -94,4 +96,4 @@ Two things outside this folder are still needed and were deliberately not touche
 - `voicestudio/models/__init__.py` needs a `from .dia2 import *` line.
 - `PROJECT.md` needs a Dia2 status entry carrying the gaps listed above.
 
-No new dependency is required. The migration removes `numpy`, `sphn`, `soundfile`, `whisper-timestamped` and `gradio` from what this model needs, leaving `torch`, `torchaudio`, `transformers`, `safetensors` and `huggingface_hub`; automatic word alignment resamples conditioning audio for Whisper with `torchaudio.functional.resample`, already a base dependency of the project.
+No new dependency is required. The migration removes `sphn`, `soundfile`, `whisper-timestamped` and `gradio` from what this model needs, leaving `torch`, `torchaudio`, `transformers`, `numpy`, `safetensors` and `huggingface_hub`; automatic word alignment resamples conditioning audio for Whisper with `torchaudio.functional.resample`, already a base dependency of the project.
