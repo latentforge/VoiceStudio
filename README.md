@@ -8,58 +8,25 @@ A unified toolkit for voice cloning, designing and editing.
 
 ---
 
-## Overview
+## 🎯 Overview
 
 VoiceStudio collects nineteen speech synthesis models, vocoders and codecs into one repository behind
 one API. Each is implemented directly against the `transformers` model API as a `PreTrainedConfig`, a
-`PreTrainedModel` and a `Processor`: loaded with `from_pretrained`, driven by `generate`, trained
-through `forward(labels=...)`. There is no wrapper layer, no per-model runtime, and no vendored copy
-of an upstream inference stack sitting beside the library.
+`PreTrainedModel` and a `Processor`, so it loads with `from_pretrained`, runs with `generate` and
+trains through `forward(labels=...)`. There is no wrapper layer and no vendored inference stack.
 
-**One API, and models that compose.** Every model takes its inputs from its own `Processor` and
-returns audio or audio codes the same processor decodes, so switching models is switching a class
-name. Because the pieces are ordinary `transformers` submodels, they also compose across folders:
-Parler-TTS owns a `DacModel`, Chroma owns a `MimiModel` and a Qwen2.5-Omni thinker, VoxInstruct owns
-a `VocosModel`, and F5-TTS owns whichever of `VocosModel` or `BigVGANModel` its checkpoint was
-trained against.
-
-**Inheritance instead of reimplementation.** A model is rebased onto the closest existing lineage
-rather than carrying a parallel copy of it. What the folders here actually inherit from spans
-`llama`, `qwen2`, `qwen3`, `csm`, `mimi`, `encodec`, `dac`, `xcodec2`, `whisper`, `hubert`,
-`wav2vec2`, `mt5`, `t5gemma2`, `speecht5`, `musicgen`, `bert`, `fastspeech2_conformer` and
-`qwen2_5_omni`. They also inherit from each other: CosyVoice v2 subclasses v1 and v3 subclasses v2,
-CosyVoice v3's diffusion transformer layers come from F5-TTS, and PromptTTS++'s vocoder is BigVGAN's
-with a source filter path added.
-
-**Trainable, not inference only.** Every top-level model accepts `labels` and returns a loss through
-the standard `ModelOutput` pattern. The objective is read out of the upstream project's own trainer,
-loss module, collator or evaluation script rather than guessed from the model's shape, down to the
-term weights, the masking, and which modules upstream freezes. Where a term could not be carried
-across, the gap is written down instead of being papered over; the Status column below says which
-models that applies to.
-
-**Verified against published weights.** A dummy tensor passing through a `forward` proves nothing, so
-it is not what "verified" means here. Each model is loaded from its real published checkpoint, made
-to speak, and the audio is transcribed back and compared against the text it was given. Where an
-upstream class can be run side by side, the migration is also checked numerically against it: F5-TTS's
-backbone diverges by 1.2e-05 to 3.0e-04 on activations of magnitude 13, CosyVoice v2's flow matching
-stack is bit exact, Vocos agrees to 1.5e-08 on mel features, and OmniVoice's forward agrees to
-4.8e-07 against an independent reimplementation of it.
-
-**Fewer dependencies, not more.** A migration ends an upstream import rather than adding one. The
-runtime requirement is `torch`, `torchaudio`, `torchcodec`, `numpy`, `librosa`, `transformers`,
-`hf-xet` and `tqdm`. Along the way `descript-audio-codec`, `vocos`, `encodec`, `fairseq`,
-`torchdiffeq`, `whisper-timestamped`, `diffusers`, `matcha-tts`, `einops`, `omegaconf`,
-`hyperpyyaml`, `openai-whisper`, `peft`, `pydub`, `gradio`, `speechbrain` and `audiotools`, among
-others, were replaced by a native `transformers` class or by inlining the few dozen lines actually
-used. The handful that survived are optional rather than required: `onnxruntime`, because CosyVoice
-v1's speech tokenizer and speaker encoder are published as ONNX graphs and nothing else, plus
-`pillow` and `torchvision`, which reach Chroma through `Qwen2_5OmniProcessor`. Each lives in an
-extra, or is imported lazily at the point of use and named in the error if it is absent.
+**Key Features:**
+- **One API**: switching models is switching a class name; every model takes its inputs from its own `Processor` and returns audio the same processor decodes
+- **Composable**: models hold each other as ordinary submodels, so Parler-TTS owns a `DacModel`, Chroma a `MimiModel`, and F5-TTS whichever of `VocosModel` or `BigVGANModel` its checkpoint was trained against
+- **Inheritance over reimplementation**: rebased onto `llama`, `qwen3`, `csm`, `mimi`, `dac`, `speecht5` and a dozen more, and onto each other, rather than carrying parallel copies
+- **Trainable, not inference only**: every model returns a loss, with the objective read out of the upstream project's own trainer rather than guessed from its shape
+- **Verified against published weights**: loaded from the real checkpoint, made to speak, and the audio transcribed back and compared to the text it was given
+- **Direct loading**: `from_pretrained` on the official repository id, with no conversion step for the caller to run
+- **Fewer dependencies**: a migration ends an upstream import rather than adding one, leaving `torch`, `transformers` and six others
 
 ---
 
-## Installation
+## 🛠️ Installation
 
 Python 3.11 or newer, and PyTorch 2.8 or newer.
 
@@ -91,7 +58,7 @@ Optional extras, selected with `uv sync --extra <name>` or all at once with `uv 
 
 ---
 
-## Usage
+## 🚀 Usage
 
 Models that ship in `transformers-tts` load straight from their published repository:
 
@@ -130,7 +97,7 @@ what was not carried over from upstream.
 
 ---
 
-## Models
+## 📊 Models
 
 Every model below loads real published weights and has been run against them. Follow the model name
 for its folder README, which documents its usage, its objective and its open items.
@@ -218,7 +185,7 @@ tokenizer reports one missing key for a module that is never called.
 
 ---
 
-## Contributing
+## 🤝 Contributing
 
 Issues and pull requests are welcome at
 [github.com/LatentForge/VoiceStudio](https://github.com/LatentForge/VoiceStudio/issues).
@@ -239,7 +206,7 @@ Areas where help is most useful:
 
 ---
 
-## License
+## 📝 License
 
 Apache License 2.0. See [LICENSE](LICENSE).
 
@@ -253,7 +220,7 @@ an access request. Review a checkpoint's licence before using it.
 
 ---
 
-## Acknowledgments
+## 🙏 Acknowledgments
 
 This repository is other people's research, brought under one API. The models come from:
 
@@ -282,7 +249,7 @@ And the libraries the code is built out of:
 
 ---
 
-## Links
+## 🔗 Links
 
 - Repository: [github.com/LatentForge/VoiceStudio](https://github.com/LatentForge/VoiceStudio)
 - Group homepage: [latentforge.github.io](https://latentforge.github.io/)
