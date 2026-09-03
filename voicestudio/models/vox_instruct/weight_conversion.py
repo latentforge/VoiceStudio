@@ -2,6 +2,7 @@
 
 import importlib.abc
 import importlib.util
+import json
 import re
 import sys
 import types
@@ -15,6 +16,8 @@ from transformers.models.auto.tokenization_auto import AutoTokenizer
 from transformers.models.encodec.configuration_encodec import EncodecConfig
 from transformers.models.hubert.configuration_hubert import HubertConfig
 from transformers.models.mt5.configuration_mt5 import MT5Config
+from transformers.utils import CONFIG_NAME
+from transformers.utils.hub import cached_file
 
 from ..vocos.weight_conversion import build_model_files as build_vocoder_files
 from .configuration_vox_instruct import VoxInstructARConfig, VoxInstructConfig, VoxInstructNARConfig
@@ -99,17 +102,65 @@ def placeholder_packages(*names: str):
             del sys.modules[loaded]
 
 
-def _resolve(source: str) -> Path:
-    """Returns a local directory holding the released layout, downloading the repository if needed."""
+# Every file of the released layout that is read, which leaves the 48 kHz EnCodec checkpoint and the mT5 weights
+# out: the text encoder's own weights come from the two stage checkpoints, only its `config.json` is read here.
+_REQUIRED_FILES = (
+    AR_CHECKPOINT,
+    NAR_CHECKPOINT,
+    SEMANTIC_CHECKPOINT,
+    SEMANTIC_KMEANS,
+    AUDIO_CHECKPOINT,
+    AUDIO_CONFIG,
+    TEXT_ENCODER_CONFIG,
+    f"{VOCODER_DIR}/config.yaml",
+    f"{VOCODER_DIR}/pytorch_model.bin",
+)
+
+
+def is_published_layout(source: str) -> bool:
+    r"""
+    Returns whether `source` is a released VoxInstruct checkpoint rather than a directory [`convert`] wrote.
+
+    The release is a `models/VoxInstruct/pretrained` tree of two `torch.save` stage checkpoints, a `fairseq`
+    HuBERT checkpoint, a scikit-learn k-means codebook, a standalone EnCodec checkpoint and a Vocos repository,
+    with no `config.json` at its root, so the discriminator is a `config.json` declaring this model's
+    `model_type`.
+
+    Args:
+        source (`str`):
+            Repository id or local directory.
+
+    Returns:
+        `bool`: Whether `source` holds the released layout.
+    """
+    config_file = cached_file(
+        source,
+        CONFIG_NAME,
+        _raise_exceptions_for_missing_entries=False,
+        _raise_exceptions_for_connection_errors=False,
+    )
+    if config_file is None:
+        return True
+    return json.loads(Path(config_file).read_text()).get("model_type") != VoxInstructConfig.model_type
+
+
+def resolve(source: str) -> Path:
+    r"""
+    Returns a local directory holding the released layout, downloading the files [`convert_state_dict`] and
+    [`build_config`] read if `source` is a repository id.
+
+    Args:
+        source (`str`):
+            Local directory or Hugging Face repository holding the released `models/VoxInstruct/pretrained`
+            layout.
+
+    Returns:
+        `Path`: The local directory.
+    """
     path = Path(source)
     if path.is_dir():
         return path
-    return Path(
-        snapshot_download(
-            source,
-            allow_patterns=[f"{CHECKPOINT_ROOT}/**"],
-        )
-    )
+    return Path(snapshot_download(source, allow_patterns=list(_REQUIRED_FILES)))
 
 
 def convert_text_encoder_key(key: str) -> str:
@@ -326,7 +377,7 @@ def convert(
     Raises:
         RuntimeError: If the converted state dictionary does not cover the model exactly.
     """
-    directory = _resolve(source)
+    directory = resolve(source)
     config = build_config(directory)
     state_dict = convert_state_dict(directory, config)
 

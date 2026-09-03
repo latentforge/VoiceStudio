@@ -85,6 +85,34 @@ class VoxInstructProcessor(ProcessorMixin):
         self.language_mapping = language_mapping if language_mapping is not None else {"en": 0, "zh": 1}
         super().__init__(feature_extractor, tokenizer, **kwargs)
 
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, tokenizer_id: str = "google/mt5-small", **kwargs):
+        r"""
+        Loads a VoxInstruct processor, from the released layout as it stands or from a directory
+        [`~weight_conversion.convert`] wrote.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                `"niobures/VoxInstruct"`, another repository holding the released
+                `models/VoxInstruct/pretrained` tree, or a repository id or directory holding a converted
+                checkpoint.
+            tokenizer_id (`str`, *optional*, defaults to `"google/mt5-small"`):
+                Repository holding a serialized fast tokenizer for the mT5 sentencepiece vocabulary. The
+                `spiece.model` the release ships is byte for byte the one of `google/mt5-base`, whose repository
+                carries no serialized fast tokenizer of its own. Ignored by a converted directory.
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~ProcessorMixin.from_pretrained`].
+
+        Returns:
+            [`VoxInstructProcessor`]: The processor.
+        """
+        from .weight_conversion import build_config, build_processor, is_published_layout, resolve
+
+        if pretrained_model_name_or_path is not None and is_published_layout(pretrained_model_name_or_path):
+            directory = resolve(pretrained_model_name_or_path)
+            return build_processor(directory, build_config(directory), tokenizer_id)
+        return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
+
     @property
     def semantic_token_offset(self) -> int:
         """Token id of the first semantic token."""

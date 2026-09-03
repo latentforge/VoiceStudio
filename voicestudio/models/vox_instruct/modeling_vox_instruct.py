@@ -620,6 +620,39 @@ class VoxInstructForConditionalGeneration(VoxInstructPreTrainedModel, VoxInstruc
         self.post_init()
         self.freeze_encoders()
 
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        r"""
+        Loads a VoxInstruct checkpoint, from the released layout as it stands or from a directory
+        [`~weight_conversion.convert`] wrote.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                `"niobures/VoxInstruct"`, another repository holding the released
+                `models/VoxInstruct/pretrained` tree, or a repository id or directory holding a converted
+                checkpoint.
+            model_args (`tuple`, *optional*):
+                Positional arguments of [`~PreTrainedModel.from_pretrained`].
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~PreTrainedModel.from_pretrained`].
+
+        Returns:
+            [`VoxInstructForConditionalGeneration`]: The loaded model.
+        """
+        from .weight_conversion import build_config, convert_state_dict, is_published_layout, resolve
+
+        if (
+            pretrained_model_name_or_path is not None
+            and kwargs.get("config") is None
+            and kwargs.get("state_dict") is None
+            and is_published_layout(pretrained_model_name_or_path)
+        ):
+            directory = resolve(pretrained_model_name_or_path)
+            config = build_config(directory)
+            state_dict = convert_state_dict(directory, config)
+            return super().from_pretrained(None, *model_args, config=config, state_dict=state_dict, **kwargs)
+        return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+
     def get_input_embeddings(self):
         return self.ar.get_input_embeddings()
 

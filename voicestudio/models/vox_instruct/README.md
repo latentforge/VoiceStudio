@@ -7,15 +7,7 @@ Original model and code: [thuhcsi/VoxInstruct](https://github.com/thuhcsi/VoxIns
 
 ## Usage
 
-The released checkpoint is two `torch.save` files of a bespoke module tree, plus a `fairseq` HuBERT checkpoint, a scikit-learn k-means codebook and a standalone EnCodec checkpoint. One conversion turns all five into a single directory:
-
-```python
-from voicestudio.models.vox_instruct.weight_conversion import convert
-
-convert("niobures/VoxInstruct", "voxinstruct-converted")
-```
-
-`niobures/VoxInstruct` mirrors the Google Drive folder the upstream README points at; a local copy of that folder works as `source` too.
+`from_pretrained` takes the released checkpoint's repository id as it stands:
 
 ```python
 import torch
@@ -23,7 +15,7 @@ import soundfile as sf
 
 from voicestudio.models.vox_instruct import VoxInstructForConditionalGeneration, VoxInstructProcessor
 
-model_id = "voxinstruct-converted"
+model_id = "niobures/VoxInstruct"
 
 processor = VoxInstructProcessor.from_pretrained(model_id)
 model = VoxInstructForConditionalGeneration.from_pretrained(model_id, dtype=torch.bfloat16).to("cuda").eval()
@@ -43,6 +35,13 @@ outputs = model.generate(
 sf.write("output.wav", outputs.audio_values.float().cpu().numpy().reshape(-1), processor.feature_extractor.sampling_rate)
 ```
 
+`niobures/VoxInstruct` mirrors the Google Drive folder the upstream README points at; a local copy of that folder
+works as `model_id` too. The release is a `models/VoxInstruct/pretrained` tree with no `config.json` or
+`model.safetensors` at its root, so `from_pretrained` merges its parts itself: two `torch.save` files of a
+bespoke module tree, a `fairseq` HuBERT checkpoint, a scikit-learn k-means codebook, a standalone EnCodec
+checkpoint and a Vocos repository. Only the nine files it reads are downloaded, which leaves the mT5 weights and
+the 48 kHz EnCodec checkpoint of the release behind.
+
 `language` selects the pronunciation tendency, `"en"` or `"zh"`. `generate` also takes `vocoder`, `"vocos"` by
 default, which is what upstream's `infer.sh` runs; `vocoder="encodec"` decodes the same codes with the EnCodec
 decoder instead, which is upstream's `--vocoder encodec` alternative. The three guidance scales are independent: one pushes the semantic span away from the branch that drops the instruction, and two push the first codebook away from the branches that drop the instruction and the semantic span. Each scale left at `1.0` saves one forward pass per decoding step. The values above are the ones `infer.sh` uses upstream.
@@ -61,6 +60,16 @@ inputs = processor(
 ```
 
 Two constraints come from the model, not from this code: the transcript of the speech prompt has to appear in the quoted part of the instruction, and `language` has to match the prompt. `generate` decodes one instruction at a time.
+
+`weight_conversion.convert` still writes a converted directory, for a checkpoint that has to be materialized once
+and loaded many times or shipped elsewhere, and both `from_pretrained` calls above read it as readily as the
+released layout:
+
+```python
+from voicestudio.models.vox_instruct.weight_conversion import convert
+
+convert("niobures/VoxInstruct", "voxinstruct-converted")
+```
 
 
 ## Training
@@ -91,7 +100,9 @@ The two stages are trained separately upstream, one script each, and they stay s
 
 ## Verification
 
-`convert` then `from_pretrained` on the released checkpoint reports no missing, unexpected or mismatched keys across all 1109 tensors and 1105019876 parameters, of which the composed `VocosModel` is 81 tensors and 10081410 parameters. The extra tensor over a bare backbone and head is `vocoder.feature_extractor.codebook_weights`, the 16384 by 128 table that turns a frame's eight codebook entries into the 128 channel embedding the backbone reads. It is a trained parameter of `charactr/vocos-encodec-24khz` and not a buffer, so it is loaded rather than left at random init.
+`from_pretrained` straight onto `niobures/VoxInstruct`, with no conversion call before it, reports no missing, unexpected or mismatched keys across all 1109 tensors and 1105019876 parameters, of which the composed `VocosModel` is 81 tensors and 10081410 parameters. The extra tensor over a bare backbone and head is `vocoder.feature_extractor.codebook_weights`, the 16384 by 128 table that turns a frame's eight codebook entries into the 128 channel embedding the backbone reads. It is a trained parameter of `charactr/vocos-encodec-24khz` and not a buffer, so it is loaded rather than left at random init.
+
+The four buffers no released file carries, and which therefore have to survive meta-device initialisation, were read back after that load: `semantic_encoder.cluster_centers`, `vocoder.head.window`, `vocoder.mel_spectrogram.window` and `vocoder.mel_spectrogram.filters` are all finite and non-zero. Generating `A man with a normal voice to say: "Fire a whole platoon, Major."` from that load and transcribing the result back with `openai/whisper-small.en` gives `Fire a whole platoon, Major.` word for word.
 
 On the codes this model generates, `VocosModel` in float32 agrees with upstream `vocos`'s own `VocosBackbone` plus `ISTFTHead`, run from the same released weights, bit for bit, at a maximum absolute difference of 0.0 on a waveform whose magnitude is 0.86.
 
@@ -119,6 +130,6 @@ Three things outside this folder are still needed and were deliberately not touc
 
 - `voicestudio/models/__init__.py` needs a `from .vox_instruct import *` line, and a `from .vocos import *` line for the vocoder this model composes.
 - `PROJECT.md` needs a VoxInstruct status entry carrying the gaps listed above.
-- Nothing in `pyproject.toml` or `uv.lock` changes. The migration removes `fairseq`, `encodec`, `vocos`, `peft`, `einops`, `matplotlib`, `scipy`, `accelerate`, `flash-attn`, `sentencepiece` and `protobuf` from what this model needs. `vocos` is gone because the vocoder is now `VocosModel` from `voicestudio/models/vocos`, composed here the way `ParlerTTSConfig` composes its `audio_encoder`: `VoxInstructConfig.vocoder_config` is a `VocosConfig`, `VoxInstructForConditionalGeneration.vocoder` is the model it builds, and `weight_conversion` reads the released `pretrained/vocos-encodec-24khz` folder into it. What remains is `torch`, `torchaudio`, `transformers`, `numpy`, `huggingface_hub`, and, at conversion time only, `joblib` and `scikit-learn` to read the k-means codebook, all of which the project already installs.
+- Nothing in `pyproject.toml` or `uv.lock` changes. The migration removes `fairseq`, `encodec`, `vocos`, `peft`, `einops`, `matplotlib`, `scipy`, `accelerate`, `flash-attn`, `sentencepiece` and `protobuf` from what this model needs. `vocos` is gone because the vocoder is now `VocosModel` from `voicestudio/models/vocos`, composed here the way `ParlerTTSConfig` composes its `audio_encoder`: `VoxInstructConfig.vocoder_config` is a `VocosConfig`, `VoxInstructForConditionalGeneration.vocoder` is the model it builds, and `weight_conversion` reads the released `pretrained/vocos-encodec-24khz` folder into it. What remains is `torch`, `torchaudio`, `transformers`, `numpy`, `huggingface_hub`, and, on the path that reads the released layout, `joblib` and `scikit-learn` for the k-means codebook, all of which the project already installs. That path is `weight_conversion`, which `from_pretrained` imports only when the source it is given is the released layout, so loading a converted directory never imports either.
 
 `VoxInstructProcessor` deliberately does not set `feature_extractor_class`. Setting it sends `ProcessorMixin.from_pretrained` down a deprecated lookup that scans `IMAGE_PROCESSOR_MAPPING`, which is a dummy object in an environment without `PIL` and `torchvision`, and the processor then fails to load. Registering `VoxInstructFeatureExtractor` with `AutoFeatureExtractor`, which this package's `__init__.py` does, is the path `transformers` 5 asks for anyway.
