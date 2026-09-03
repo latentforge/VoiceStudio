@@ -26,6 +26,17 @@ _IMPLIED_TASK_TO_MODEL_TYPE = {
     "voice_design": "voice_design",
 }
 
+# `non_streaming_mode` for each task. True puts the whole text in the talker's prefill; False
+# puts only its first token there and feeds one further text token per generated codec frame,
+# so the model starts speaking before it has seen the rest of the sentence. Qwen3-TTS uses the
+# streaming form for voice cloning only.
+_IMPLIED_TASK_TO_NON_STREAMING_MODE = {
+    "base": False,
+    "voice_clone": False,
+    "custom_voice": True,
+    "voice_design": True,
+}
+
 
 def _load_audio_tokenizer(
     pretrained_model_name_or_path, subfolder: str, **kwargs
@@ -71,6 +82,10 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
     match the loaded checkpoint's task. [`~Qwen3TTSProcessor.encode_voice_design`] and
     [`~Qwen3TTSProcessor.encode_custom_voice`] skip that inference and only accept the arguments valid
     for their task.
+
+    The returned [`BatchFeature`] also carries the task's `non_streaming_mode`, so that splatting it
+    into [`Qwen3TTSForConditionalGeneration.generate`] runs the text through the talker the way
+    Qwen3-TTS runs it for that task.
 
     Args:
         task (`str`, *optional*):
@@ -150,7 +165,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         self._check_task(implied_task)
 
         conversation = self._build_conversation(text=text, speaker=speaker, instruct=instruct, language=language)
-        return self.apply_chat_template(conversation, return_tensors=return_tensors)
+        return self._encode_conversation(conversation, implied_task, return_tensors)
 
     def encode_voice_design(
         self,
@@ -177,7 +192,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         """
         self._check_task("voice_design")
         conversation = self._build_conversation(text=text, instruct=instruct, language=language)
-        return self.apply_chat_template(conversation, return_tensors=return_tensors)
+        return self._encode_conversation(conversation, "voice_design", return_tensors)
 
     def encode_custom_voice(
         self,
@@ -207,7 +222,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         """
         self._check_task("custom_voice")
         conversation = self._build_conversation(text=text, speaker=speaker, instruct=instruct, language=language)
-        return self.apply_chat_template(conversation, return_tensors=return_tensors)
+        return self._encode_conversation(conversation, "custom_voice", return_tensors)
 
     def encode_voice_clone(self, *args, **kwargs):
         """
@@ -220,6 +235,11 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
         raise NotImplementedError(
             "Voice cloning from reference audio is not supported by the transformers-tts Qwen3TTSProcessor."
         )
+
+    def _encode_conversation(self, conversation, implied_task, return_tensors):
+        inputs = self.apply_chat_template(conversation, return_tensors=return_tensors)
+        inputs["non_streaming_mode"] = _IMPLIED_TASK_TO_NON_STREAMING_MODE[implied_task]
+        return inputs
 
     def _build_conversation(self, text, speaker=None, instruct=None, language=None):
         texts = text if isinstance(text, list) else [text]
