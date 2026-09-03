@@ -6,10 +6,11 @@ from pathlib import Path
 
 import torch
 from huggingface_hub import hf_hub_download
-from safetensors.torch import load_file, save_file
+from safetensors.torch import load_file
 from transformers.utils import CONFIG_NAME
 from transformers.utils.hub import cached_file
 
+from ...utils.checkpoint_cache import CheckpointWriter, cached_conversion, file_identity, source_identity
 from ..bigvgan.weight_conversion import build_model_files as build_bigvgan_files
 from ..vocos.weight_conversion import build_model_files as build_vocos_files
 from .configuration_f5_tts import F5TTSConfig
@@ -166,6 +167,9 @@ _DISCARDED_KEYS = (
     "mel_spec.mel_stft.spectrogram.window",
 )
 
+# The file each vocoder repository declares its architecture in, which is what names its revision.
+_VOCODER_CONFIG_FILES = {"vocos": "config.yaml", "bigvgan": "config.json"}
+
 _UNET_LAYER = re.compile(r"^layers\.(\d+)\.(\d)\.")
 
 
@@ -299,13 +303,42 @@ def build_config(architecture: str, text_vocab_size: int, **overrides) -> F5TTSC
     return F5TTSConfig(text_vocab_size=text_vocab_size, **fields)
 
 
-def convert_state_dict(state_dict: dict[str, torch.Tensor], config: F5TTSConfig) -> dict[str, torch.Tensor]:
+def convert_key(key: str, config: F5TTSConfig) -> str | None:
     r"""
-    Renames a published F5-TTS state dict onto [`F5TTSForConditionalGeneration`]'s parameter names.
+    Maps one key of a published F5-TTS checkpoint onto its [`F5TTSForConditionalGeneration`] name.
 
     Every module of the released backbones keeps its upstream name, so the rename is the `ema_model.transformer.`
     prefix becoming `model.` plus, for the `"unett"` backbone, the flat `layers.{i}.{j}` index pair gaining the
     `layer` `ModuleList` that holds it here.
+
+    Args:
+        key (`str`):
+            Key of a published checkpoint, with or without the exponential moving average prefix.
+        config ([`F5TTSConfig`]):
+            Configuration built from the matching architecture.
+
+    Returns:
+        `str` or `None`: The corresponding key of [`F5TTSForConditionalGeneration`], or `None` for a training
+        time buffer the model does not carry.
+
+    Raises:
+        ValueError: If the key has no destination in this model.
+    """
+    name = key.removeprefix("ema_model.")
+    if name in _DISCARDED_KEYS or name == "transformer.rotary_embed.inv_freq":
+        return None
+    if not name.startswith("transformer."):
+        raise ValueError(f"The published checkpoint holds a tensor this model has no destination for: {key}")
+
+    name = name.removeprefix("transformer.")
+    if config.backbone == "unett":
+        name = _UNET_LAYER.sub(lambda match: f"layers.{match.group(1)}.layer.{match.group(2)}.", name)
+    return "model." + name
+
+
+def convert_state_dict(state_dict: dict[str, torch.Tensor], config: F5TTSConfig) -> dict[str, torch.Tensor]:
+    r"""
+    Renames a published F5-TTS state dict onto [`F5TTSForConditionalGeneration`]'s parameter names.
 
     Args:
         state_dict (`dict[str, torch.Tensor]`):
@@ -319,25 +352,11 @@ def convert_state_dict(state_dict: dict[str, torch.Tensor], config: F5TTSConfig)
     Raises:
         ValueError: If the checkpoint holds a tensor this model has no destination for.
     """
-    converted: dict[str, torch.Tensor] = {}
-    leftover: list[str] = []
-
+    converted = {}
     for key, value in state_dict.items():
-        name = key.removeprefix("ema_model.")
-        if name in _DISCARDED_KEYS or name == "transformer.rotary_embed.inv_freq":
-            continue
-        if not name.startswith("transformer."):
-            leftover.append(key)
-            continue
-
-        name = name.removeprefix("transformer.")
-        if config.backbone == "unett":
-            name = _UNET_LAYER.sub(lambda match: f"layers.{match.group(1)}.layer.{match.group(2)}.", name)
-        converted["model." + name] = value.contiguous()
-
-    if leftover:
-        raise ValueError(f"The published checkpoint holds tensors this model has no destination for: {leftover}")
-
+        name = convert_key(key, config)
+        if name is not None:
+            converted[name] = value.contiguous()
     return converted
 
 
@@ -362,17 +381,105 @@ def load_checkpoint(path: str) -> dict[str, torch.Tensor]:
     return checkpoint["model_state_dict"]
 
 
-def build_model_files(
+def resolve_sources(source: str, subfolder: str | None = None, vocab_file: str | None = None) -> tuple[str, str, str]:
+    r"""
+    Resolves the three files a published F5-TTS or E2-TTS checkpoint is read out of.
+
+    Args:
+        source (`str`):
+            Key of [`PUBLISHED_CHECKPOINTS`], key of [`DEFAULT_CHECKPOINTS`], or a repository id or local
+            directory holding the published tree.
+        subfolder (`str`, *optional*):
+            Name of the directory holding the checkpoint to read. Defaults to the entry of
+            [`DEFAULT_CHECKPOINTS`] the repository names.
+        vocab_file (`str`, *optional*):
+            Local vocabulary file to read instead of the published one.
+
+    Returns:
+        `tuple[str, str, str]`: The name of the published checkpoint, the local path of its weights and the
+        local path of its vocabulary.
+    """
+    checkpoint_name = resolve_checkpoint(source, subfolder)
+    checkpoint = PUBLISHED_CHECKPOINTS[checkpoint_name]
+    repo_id = checkpoint["repo_id"] if source in PUBLISHED_CHECKPOINTS or source in DEFAULT_CHECKPOINTS else source
+    return (
+        checkpoint_name,
+        resolve_file(repo_id, checkpoint["weights_file"]),
+        vocab_file or resolve_file(checkpoint["vocab_repo_id"], checkpoint["vocab_file"]),
+    )
+
+
+def write_checkpoint(
+    source: str = "SWivid/F5-TTS",
+    directory: str = "f5-tts-converted",
+    subfolder: str | None = None,
+    vocab_file: str | None = None,
+    vocoder: str | None = None,
+    dtype: torch.dtype = torch.float32,
+) -> F5TTSConfig:
+    r"""
+    Reads a published F5-TTS or E2-TTS checkpoint and writes what
+    [`F5TTSForConditionalGeneration.from_pretrained`] reads into `directory`, with the vocoder of the mel front
+    end it was trained against read out of that vocoder's own repository and prefixed onto the same weights.
+
+    The vocoder is written out and dropped before the backbone is read, and the backbone is copied over a tensor
+    at a time, so neither the whole checkpoint nor the whole composed model is ever resident.
+
+    Args:
+        source (`str`, *optional*, defaults to `"SWivid/F5-TTS"`):
+            Key of [`PUBLISHED_CHECKPOINTS`], key of [`DEFAULT_CHECKPOINTS`], or a repository id or local
+            directory holding the published tree.
+        directory (`str`, *optional*, defaults to `"f5-tts-converted"`):
+            Directory the converted config and weights are written to.
+        subfolder (`str`, *optional*):
+            Name of the directory holding the checkpoint to read. Defaults to the entry of
+            [`DEFAULT_CHECKPOINTS`] the repository names.
+        vocab_file (`str`, *optional*):
+            Local vocabulary file to read instead of the published one.
+        vocoder (`str`, *optional*):
+            Repository id or local directory holding the published vocoder. Defaults to the entry of
+            [`VOCODER_SOURCES`] the checkpoint's mel front end names.
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+
+    Returns:
+        [`F5TTSConfig`]: The configuration that was written.
+    """
+    checkpoint_name, checkpoint_path, vocab_file = resolve_sources(source, subfolder, vocab_file)
+    vocoder_source, build_vocoder_files = VOCODER_SOURCES[PUBLISHED_CHECKPOINTS[checkpoint_name]["mel_spec_type"]]
+    vocoder_config, vocoder_state_dict = build_vocoder_files(vocoder or vocoder_source, dtype=dtype)
+
+    config = build_config(
+        checkpoint_name, text_vocab_size=read_text_vocab_size(vocab_file), vocoder_config=vocoder_config
+    )
+
+    with CheckpointWriter(directory) as writer:
+        for key in list(vocoder_state_dict):
+            writer.add("vocoder." + key, vocoder_state_dict.pop(key))
+        writer.flush()
+
+        state_dict = load_checkpoint(checkpoint_path)
+        for key in list(state_dict):
+            name = convert_key(key, config)
+            value = state_dict.pop(key)
+            if name is not None:
+                writer.add(name, value.to(dtype))
+
+    config.save_pretrained(directory)
+    return config
+
+
+def converted_checkpoint(
     source: str = "SWivid/F5-TTS",
     subfolder: str | None = None,
     vocab_file: str | None = None,
     vocoder: str | None = None,
     dtype: torch.dtype = torch.float32,
-) -> tuple[F5TTSConfig, dict[str, torch.Tensor]]:
+) -> Path:
     r"""
-    Reads a published F5-TTS or E2-TTS checkpoint and returns what [`F5TTSForConditionalGeneration`] needs to load
-    it, with the vocoder of the mel front end it was trained against read out of that vocoder's own repository and
-    prefixed onto the same state dict.
+    Returns a directory holding the converted form of a published F5-TTS or E2-TTS checkpoint, which
+    [`~PreTrainedModel.from_pretrained`] reads the ordinary way, converting it the first time it is asked for
+    and reusing that conversion afterwards.
 
     Args:
         source (`str`, *optional*, defaults to `"SWivid/F5-TTS"`):
@@ -390,25 +497,26 @@ def build_model_files(
             Dtype the converted weights are cast to.
 
     Returns:
-        `tuple[F5TTSConfig, dict[str, torch.Tensor]]`: The configuration and the renamed tensors.
+        `Path`: The directory holding the converted checkpoint.
     """
-    checkpoint_name = resolve_checkpoint(source, subfolder)
-    checkpoint = PUBLISHED_CHECKPOINTS[checkpoint_name]
-    repo_id = checkpoint["repo_id"] if source in PUBLISHED_CHECKPOINTS or source in DEFAULT_CHECKPOINTS else source
-
-    checkpoint_path = resolve_file(repo_id, checkpoint["weights_file"])
-    vocab_file = vocab_file or resolve_file(checkpoint["vocab_repo_id"], checkpoint["vocab_file"])
-
-    vocoder_source, build_vocoder_files = VOCODER_SOURCES[checkpoint["mel_spec_type"]]
-    vocoder_config, vocoder_state_dict = build_vocoder_files(vocoder or vocoder_source, dtype=dtype)
-
-    config = build_config(
-        checkpoint_name, text_vocab_size=read_text_vocab_size(vocab_file), vocoder_config=vocoder_config
+    checkpoint_name, checkpoint_path, vocab_file = resolve_sources(source, subfolder, vocab_file)
+    mel_spec_type = PUBLISHED_CHECKPOINTS[checkpoint_name]["mel_spec_type"]
+    vocoder_source = vocoder or VOCODER_SOURCES[mel_spec_type][0]
+    vocoder_config_file = resolve_file(vocoder_source, _VOCODER_CONFIG_FILES[mel_spec_type])
+    parts = [
+        checkpoint_name,
+        str(dtype),
+        file_identity(checkpoint_path),
+        file_identity(vocab_file),
+        source_identity(vocoder_source, vocoder_config_file),
+    ]
+    return cached_conversion(
+        "f5_tts",
+        parts,
+        lambda directory: write_checkpoint(
+            source, directory, subfolder=subfolder, vocab_file=vocab_file, vocoder=vocoder, dtype=dtype
+        ),
     )
-    converted = convert_state_dict(load_checkpoint(checkpoint_path), config)
-    converted = {key: value.to(dtype) for key, value in converted.items()}
-    converted.update({"vocoder." + key: value for key, value in vocoder_state_dict.items()})
-    return config, converted
 
 
 def build_processor(
@@ -456,7 +564,8 @@ def convert(
     r"""
     Writes a published F5-TTS or E2-TTS checkpoint into a directory of its own, which
     [`F5TTSForConditionalGeneration.from_pretrained`] and [`F5TTSProcessor.from_pretrained`] read without
-    reaching the hub for the checkpoint, the vocabulary or the vocoder again.
+    reaching the hub for the checkpoint, the vocabulary or the vocoder again, for a checkpoint that is shipped
+    elsewhere or kept outside the conversion cache [`converted_checkpoint`] holds.
 
     Args:
         source (`str`, *optional*, defaults to `"SWivid/F5-TTS"`):
@@ -475,15 +584,8 @@ def convert(
         dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
             Dtype the converted weights are cast to.
     """
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    config, converted = build_model_files(
-        source, subfolder=subfolder, vocab_file=vocab_file, vocoder=vocoder, dtype=dtype
-    )
-    build_processor(source, subfolder=subfolder, vocab_file=vocab_file).save_pretrained(output_path)
-    config.save_pretrained(output_path)
-    save_file(converted, str(output_path / "model.safetensors"), metadata={"format": "pt"})
+    write_checkpoint(source, output_dir, subfolder=subfolder, vocab_file=vocab_file, vocoder=vocoder, dtype=dtype)
+    build_processor(source, subfolder=subfolder, vocab_file=vocab_file).save_pretrained(output_dir)
 
 
 __all__ = [
@@ -492,14 +594,17 @@ __all__ = [
     "PUBLISHED_CHECKPOINTS",
     "VOCODER_SOURCES",
     "build_config",
-    "build_model_files",
     "build_processor",
     "convert",
+    "convert_key",
     "convert_state_dict",
+    "converted_checkpoint",
     "is_published_layout",
     "load_checkpoint",
     "read_text_vocab_size",
     "resolve_architecture",
     "resolve_checkpoint",
     "resolve_file",
+    "resolve_sources",
+    "write_checkpoint",
 ]

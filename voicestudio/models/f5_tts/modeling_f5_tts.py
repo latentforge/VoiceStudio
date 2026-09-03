@@ -1310,7 +1310,7 @@ class F5TTSForConditionalGeneration(F5TTSPreTrainedModel, F5TTSGenerationMixin):
             [`F5TTSForConditionalGeneration`]: The loaded model, with the vocoder frozen again after loading
             replaced the parameters created by `__init__`.
         """
-        from .weight_conversion import build_model_files, is_published_layout
+        from .weight_conversion import converted_checkpoint, is_published_layout
 
         subfolder = kwargs.get("subfolder") or None
         if (
@@ -1320,10 +1320,8 @@ class F5TTSForConditionalGeneration(F5TTSPreTrainedModel, F5TTSGenerationMixin):
             and is_published_layout(pretrained_model_name_or_path, subfolder)
         ):
             kwargs.pop("subfolder", None)
-            config, state_dict = build_model_files(pretrained_model_name_or_path, subfolder=subfolder)
-            outputs = super().from_pretrained(None, *model_args, config=config, state_dict=state_dict, **kwargs)
-        else:
-            outputs = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+            pretrained_model_name_or_path = converted_checkpoint(pretrained_model_name_or_path, subfolder=subfolder)
+        outputs = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
         model = outputs[0] if isinstance(outputs, tuple) else outputs
         model.freeze_vocoder()
         return outputs
