@@ -299,11 +299,20 @@ named `self.criterion`, defined in their own `modeling_*.py`. A migration was ne
 changed to match a convention that does not exist.
 
 ### 4.3 Copied-from / modular mechanism
-Use the `transformers` "Copied from ..." and `modular_<model>.py` mechanisms to
-avoid duplicating code between model files, the same way `transformers` itself does.
+Use the `transformers` "Copied from ..." mechanism to avoid duplicating code between
+model files, the same way `transformers` itself does.
 
 - Do not hand-edit a generated file behind a `modular_<model>.py` source.
-- Do not edit inside a `# Copied from ...` block — edit the source it copies from.
+- Do not edit inside a `# Copied from ...` block, edit the source it copies from.
+
+`modular_<model>.py` itself does not apply to this repository, and its absence here is
+not a gap. Inside `transformers`, the modular file is where inheritance happens and
+`modeling_<model>.py` is generated from it with everything flattened, which is why
+`modular_qwen3.py` declares `Qwen3Attention(LlamaAttention)` while the generated
+`modeling_qwen3.py` inherits across no model at all. A project that consumes
+`transformers` as a library has no generation step, so its `modeling_<model>.py` plays
+the modular role and inherits directly. That is what `cosyvoice_v3` does from `f5_tts`
+and `spark_tts_bicodec` from `xcodec2`, and it is correct.
 
 ---
 
