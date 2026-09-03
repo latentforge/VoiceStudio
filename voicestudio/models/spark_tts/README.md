@@ -325,8 +325,12 @@ needs, and adds nothing. `einops` and `einx` are not installed in this environme
 work; every `rearrange`, `pack`, `unpack`, `reduce` and `get_at` call in the FSQ, the perceiver resampler and the
 quantizer is now a plain `view`/`reshape`/`transpose`/`stack`. `omegaconf` is replaced by `yaml` inside
 `weight_conversion`, and audio file I/O is left to the caller. What remains is `torch`, `torchaudio`,
-`transformers`, `numpy`, `safetensors`, `huggingface_hub` and `pyyaml`, all of which the project already depends on.
-`pyproject.toml` and `uv.lock` need no change.
+`transformers`, `numpy`, `safetensors` and `huggingface_hub`, every one of them already a `pyproject.toml`
+dependency, plus `pyyaml`, which `transformers` and `huggingface_hub` both require and which only
+`weight_conversion` imports. `pyproject.toml` and `uv.lock` need no change.
+
+Nothing outside `weight_conversion` reads YAML: the published checkpoint's two YAML files are parsed once, offline,
+into `SparkTTSConfig` and `SparkTTSBiCodecConfig`, and the model, the config and the processor only ever see JSON.
 
 
 ## Repository integration
@@ -337,5 +341,3 @@ Two things outside this folder are still needed and were deliberately not touche
   `from .spark_tts_bicodec import *` line. Importing `spark_tts` alone already registers the codec, since it
   imports it, so the second line only matters for `from voicestudio.models import SparkTTSBiCodecModel`.
 - `PROJECT.md` needs a Spark-TTS status entry carrying the gaps listed above.
-
-`pyproject.toml` and `uv.lock` need no change; see `## Dependencies` above.
