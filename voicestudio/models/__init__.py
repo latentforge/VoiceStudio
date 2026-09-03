@@ -6,6 +6,7 @@ from .f5_tts import *
 from .higgs_tts2 import *
 from .higgs_tts3 import *
 from .parler_tts import *
+from .prompt_tts_pp import *
 from .qwen3_tts import *
 from .spark_tts import *
 from .spark_tts_bicodec import *
