@@ -10,13 +10,18 @@ A unified toolkit for voice cloning, designing and editing.
 
 ## 🎯 Overview
 
-VoiceStudio collects nineteen speech synthesis models, vocoders and codecs into one repository behind
-one API. Each is implemented directly against the `transformers` model API as a `PreTrainedConfig`, a
-`PreTrainedModel` and a `Processor`, so it loads with `from_pretrained`, runs with `generate` and
-trains through `forward(labels=...)`. There is no wrapper layer and no vendored inference stack.
+Speech synthesis research is held back by its own tooling. Every model arrives as its own repository,
+with its own runtime, its own checkpoint format, its own inference script and its own pinned
+dependency set, and most of them ship weights you can run but no path to training them. Comparing two
+models means learning two codebases; building on one means adopting it wholesale.
+
+VoiceStudio removes that tax. Every model here is an ordinary `transformers` model: a
+`PreTrainedConfig`, a `PreTrainedModel` and a `Processor`, loaded with `from_pretrained`, run with
+`generate`, trained with `forward(labels=...)`. Swapping one for another is changing a class name.
+Comparing them is a loop. Fine tuning one is the training code you already have.
 
 **Key Features:**
-- **One API**: switching models is switching a class name; every model takes its inputs from its own `Processor` and returns audio the same processor decodes
+- **One API**: every model takes its inputs from its own `Processor` and returns audio the same processor decodes, so switching models is switching a class name
 - **Composable**: models hold each other as ordinary submodels, so Parler-TTS owns a `DacModel`, Chroma a `MimiModel`, and F5-TTS whichever of `VocosModel` or `BigVGANModel` its checkpoint was trained against
 - **Inheritance over reimplementation**: rebased onto `llama`, `qwen3`, `csm`, `mimi`, `dac`, `speecht5` and a dozen more, and onto each other, rather than carrying parallel copies
 - **Trainable, not inference only**: every model returns a loss, with the objective read out of the upstream project's own trainer rather than guessed from its shape
@@ -30,18 +35,25 @@ trains through `forward(labels=...)`. There is no wrapper layer and no vendored 
 
 Python 3.11 or newer, and PyTorch 2.8 or newer.
 
+### From source
+
 ```bash
 git clone https://github.com/LatentForge/VoiceStudio.git
 cd VoiceStudio
 uv sync
 ```
 
-`uv sync` is the supported path. The `transformers` requirement resolves through `[tool.uv.sources]`
-to [latentforge/transformers-tts](https://github.com/latentforge/transformers-tts), the branch that
-carries the speech models this repository relays and inherits from. Installation routes that ignore
-`[tool.uv.sources]`, including `pip install` and `uv pip install`, take `transformers` from PyPI
-instead, and the relayed models are not in it. The `voicestudio` distribution on PyPI is likewise
-older than this work and pins `transformers==4.57.6`, so it does not carry the models below.
+### For development
+
+```bash
+git clone https://github.com/LatentForge/VoiceStudio.git
+cd VoiceStudio
+uv sync --all-extras
+```
+
+Use `uv sync` rather than `pip install`. Several dependencies are pinned to specific sources in
+`[tool.uv.sources]`, and `pip` ignores that file. The `voicestudio` distribution on PyPI predates
+this work and does not carry the models below.
 
 Optional extras, selected with `uv sync --extra <name>` or all at once with `uv sync --all-extras`:
 
@@ -60,7 +72,7 @@ Optional extras, selected with `uv sync --extra <name>` or all at once with `uv 
 
 ## 🚀 Usage
 
-Models that ship in `transformers-tts` load straight from their published repository:
+Models that `transformers` already ships load straight from their published repository:
 
 ```python
 import soundfile as sf
@@ -175,7 +187,7 @@ and the models above hold them as submodels.
 |---|---|
 | Verified | Loads its real published checkpoint, generates audio that transcribes back to the text it was given, and its `forward(labels=...)` implements upstream's own training objective term for term. |
 | Verified, objective gap | Verified in the same way, but part of upstream's training objective is not implemented and the omission is still open. In every case but one the missing part is a GAN discriminator, which no `transformers` model class carries. Dia2 is the exception: upstream publishes no training code at all, so its three loss terms are summed unweighted. |
-| Verified, relay | The model itself ships in `transformers-tts`; the folder re-exports it, adding only a processor where one was missing. Verified against real weights in the same way. |
+| Verified, relay | The model itself ships in `transformers`; the folder re-exports it, adding only a processor where one was missing. Verified against real weights in the same way. |
 
 Year is the year the model was first published. An empty Paper cell means the release has no arXiv
 paper, only code and a model card. `PROJECT.md` carries the per-model verification evidence and the
@@ -242,8 +254,7 @@ This repository is other people's research, brought under one API. The models co
 And the libraries the code is built out of:
 
 - [Hugging Face `transformers`](https://github.com/huggingface/transformers), whose model classes
-  almost every file here inherits from, through
-  [latentforge/transformers-tts](https://github.com/latentforge/transformers-tts).
+  almost every file here inherits from.
 - [PyTorch](https://pytorch.org/), with `torchaudio` and `torchcodec`.
 - [librosa](https://github.com/librosa/librosa) and [NumPy](https://numpy.org/).
 
