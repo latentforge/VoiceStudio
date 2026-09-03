@@ -149,7 +149,7 @@ no public checkpoint at all).
   fall outside the `transformers` model layout.
 - Where a model already exists in `transformers` itself, only do an import relay — do
   not reimplement it.
-- Use `WeightConvert` for any checkpoint conversion work.
+- Convert at load time, per CLAUDE.md section 9.2 and H17. A published repository id must load with no manual conversion call.
 - Comments follow `transformers` style: terse and technical, never narrated like a diary
   entry.
 - Target `transformers` 5.0 conventions.
@@ -286,12 +286,21 @@ bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts
 conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
 `Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
 
-One item left open:
+Two items left open:
+
+- **Qwen3-TTS's code predictor runs at the wrong rope base.** The published `config.json` sets
+  `talker_config.code_predictor_config.rope_theta` to 1000000, but it reaches
+  `Qwen3TTSTalkerCodePredictorConfig` under the pre-5.0 field name and is dropped, so the code
+  predictor runs at the class default of 500000. `transformers`'s own `convert_qwen3_tts_to_hf`
+  drops it identically, so the direct load is no worse than every checkpoint converted before it,
+  and the 17 of 17 verbatim result was measured in this state. Fixing it changes generation away
+  from that calibration, so it was reported rather than fixed.
+
 
 - **Qwen3-TTS audio tokenizer reports `encoder.upsample.conv.weight` MISSING.** The key is real but
   the weight is not: `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`'s `speech_tokenizer/model.safetensors`
   holds 496 tensors, none named `encoder.upsample.*` and none of the required `(512, 1, 4)` shape,
-  so there is nothing to patch in the way `weight_conversion.py` patches the code predictor's
+  so there is nothing to patch in the way the conversion mapping registered in `modeling_qwen3_tts.py` fuses the code predictor's
   `lm_head`. The cause is a divergence in transformers-tts between
   `modular_qwen3_tts_tokenizer_multi_codebook.py`, which nulls `decoder`, `decoder_transformer` and
   `upsample` after `super().__init__(config)`, and the generated
