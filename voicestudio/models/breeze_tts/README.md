@@ -7,6 +7,8 @@ The text encoder is the native `T5Gemma2TextEncoder` and the codec is the native
 
 Original model and code: [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/breeze-tts)
 
+The released weights are not under the code's licence. `BreezeBlue/breeze-tts-2` ships a BreezeBlue Research and Non-Commercial License Agreement, version 1.0, so the checkpoint is restricted to research and non-commercial use even where this repository's code is not.
+
 
 ## Usage
 
