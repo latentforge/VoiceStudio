@@ -206,6 +206,10 @@ def convert_vocoder_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str,
                 name = new + name[len(old) :]
                 break
         name = re.sub(r"\.act(\d)\.act\.alpha$", r".activation\1.alpha", name)
+        if name.endswith(".alpha"):
+            # The snake activation keeps one `alpha` per channel, which upstream shapes to broadcast against a
+            # `(batch_size, channels, sequence_length)` tensor.
+            value = value.reshape(-1)
         converted[name] = value
     return converted
 

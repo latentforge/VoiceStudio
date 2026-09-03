@@ -9,6 +9,15 @@ network, and predicts log continuous f0 and voicing, embedding the f0 back into 
 diffusion decoder generates the mel spectrogram from those features over 100 steps, and an f0 aware BigVGAN
 vocoder turns the spectrogram and the predicted f0 into a waveform.
 
+That vocoder is stock BigVGAN plus a neural source filter excitation path, so `PromptTTSPPBigVGan`,
+`PromptTTSPPAmpBlock`, `PromptTTSPPAmpLayer` and `PromptTTSPPSnakeActivation` inherit `BigVGANModel`,
+`BigVGANAmpBlock`, `BigVGANAmpLayer` and `BigVGANSnakeActivation` from `voicestudio/models/bigvgan`. What stays
+local is the harmonic source module, the noise convolutions that inject its excitation into each upsampling
+stage, and the transposed convolution padding, which differs from BigVGAN's so that the odd upsampling rates 6
+and 5 upsample by exactly their rate. `PromptTTSPPBigVGanConfig` selects the `"snake"` nonlinearity rather than
+BigVGAN's `"snakebeta"`, and a hyperbolic tangent and a bias at the output convolution rather than BigVGAN-v2's
+clamp and no bias.
+
 Original model and code: [line/promptttspp](https://github.com/line/promptttspp)
 
 
@@ -158,14 +167,23 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
 - **The f0 free BigVGAN.** `promptttspp/vocoders/bigvgan.py` also defines the vocoder variant that takes only a
   spectrogram, selected by `egs/proposed/bin/conf/vocoder/bigvgan.yaml`. Its residual blocks are migrated, since
   the f0 aware variant is built out of them, but the variant itself is not: the released vocoder checkpoint is
-  the f0 aware one.
+  the f0 aware one. `voicestudio/models/bigvgan` is that variant for NVIDIA's own configurations, but it is not
+  a drop in replacement for this one, whose transposed convolution padding differs.
+- **The vocoder's own training objective.** `PromptTTSPPBigVGan.forward` returns a waveform, not a loss, exactly
+  as before this folder inherited `BigVGANModel`. Upstream trains the vocoder in a separate stage under its own
+  BigVGAN derived generative adversarial objective, which was not traced here, so `PromptTTSPPBigVGanConfig`
+  deliberately carries none of `BigVGANConfig`'s `mel_loss_*` fields and the inherited
+  `BigVGANModel.mel_loss` and `mel_loss_resolutions` therefore raise `AttributeError` if called. The acoustic
+  model's own `forward(labels=...)` is unaffected. Wiring a real objective into the vocoder is open work.
 
 
 ## Repository integration
 
 Three things outside this folder are still needed and were deliberately not touched:
 
-- `voicestudio/models/__init__.py` needs a `from .prompt_tts_pp import *` line.
+- `voicestudio/models/__init__.py` needs a `from .prompt_tts_pp import *` line, and a `from .bigvgan import *`
+  line for the vocoder this model inherits, though `from ..bigvgan import ...` inside this package already
+  imports it either way.
 - `PROJECT.md`'s PromptTTS++ row still describes the discarded `FastSpeech2Conformer` migration and records "no
   public checkpoint" as the reason it was never verified. Both statements are wrong: the architecture is the one
   described above, and the weights are bundled in the Space. The row needs replacing, along with the gaps listed

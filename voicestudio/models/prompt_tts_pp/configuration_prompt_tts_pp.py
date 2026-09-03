@@ -416,6 +416,20 @@ class PromptTTSPPBigVGanConfig(PreTrainedConfig):
             it, which keeps the harmonics the nonlinearity creates below the Nyquist frequency.
         anti_alias_kernel_size (`int`, *optional*, defaults to 12):
             Kernel size of the Kaiser windowed sinc filter of the anti aliasing resampling.
+        resblock_type (`str`, *optional*, defaults to `"1"`):
+            Which residual block to build after each upsampling layer, `"1"` for the block whose every dilated
+            convolution is followed by an undilated one, or `"2"` for the block that holds the dilated
+            convolutions alone.
+        activation (`str`, *optional*, defaults to `"snake"`):
+            Periodic nonlinearity of the residual blocks, `"snake"` for `x + sin(alpha * x) ** 2 / alpha` or
+            `"snakebeta"` for `x + sin(alpha * x) ** 2 / beta`.
+        snake_logscale (`bool`, *optional*, defaults to `True`):
+            Whether `alpha` is stored as its logarithm, so that the value the nonlinearity uses is its
+            exponential.
+        use_tanh_at_final (`bool`, *optional*, defaults to `True`):
+            Whether the waveform is bounded by a hyperbolic tangent. `False` clamps it to `[-1, 1]` instead.
+        use_bias_at_final (`bool`, *optional*, defaults to `True`):
+            Whether the output convolution has a bias.
         initializer_range (`float`, *optional*, defaults to 0.02):
             Standard deviation of the truncated normal initializer of the convolution weights.
 
@@ -448,6 +462,11 @@ class PromptTTSPPBigVGanConfig(PreTrainedConfig):
         resblock_dilation_sizes: list[list[int]] | None = None,
         anti_alias_ratio: int = 2,
         anti_alias_kernel_size: int = 12,
+        resblock_type: str = "1",
+        activation: str = "snake",
+        snake_logscale: bool = True,
+        use_tanh_at_final: bool = True,
+        use_bias_at_final: bool = True,
         initializer_range: float = 0.02,
         **kwargs,
     ):
@@ -484,6 +503,11 @@ class PromptTTSPPBigVGanConfig(PreTrainedConfig):
         self.resblock_dilation_sizes = resblock_dilation_sizes
         self.anti_alias_ratio = anti_alias_ratio
         self.anti_alias_kernel_size = anti_alias_kernel_size
+        self.resblock_type = resblock_type
+        self.activation = activation
+        self.snake_logscale = snake_logscale
+        self.use_tanh_at_final = use_tanh_at_final
+        self.use_bias_at_final = use_bias_at_final
         self.initializer_range = initializer_range
 
         super().__init__(**kwargs)

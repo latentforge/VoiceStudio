@@ -31,6 +31,7 @@ from transformers.models.fastspeech2_conformer.modeling_fastspeech2_conformer im
 )
 from transformers.utils import auto_docstring, logging
 
+from ..bigvgan import BigVGANAmpBlock, BigVGANAmpLayer, BigVGANModel, BigVGANSnakeActivation
 from .configuration_prompt_tts_pp import PromptTTSPPBigVGanConfig, PromptTTSPPConfig
 
 
@@ -2063,41 +2064,7 @@ class PromptTTSPPForConditionalGeneration(PromptTTSPPPreTrainedModel):
         )
 
 
-def build_anti_alias_filter(cutoff: float, half_width: float, kernel_size: int) -> torch.Tensor:
-    """
-    Builds the Kaiser windowed sinc lowpass filter of the anti aliased activation.
-
-    Args:
-        cutoff (`float`):
-            Cutoff frequency, as a fraction of the sample rate.
-        half_width (`float`):
-            Width of the transition band, as a fraction of the sample rate.
-        kernel_size (`int`):
-            Length of the filter.
-
-    Returns:
-        `torch.Tensor` of shape `(1, 1, kernel_size)`: The filter, normalized to unit sum.
-    """
-    half_size = kernel_size // 2
-    attenuation = 2.285 * (half_size - 1) * math.pi * 4 * half_width + 7.95
-    if attenuation > 50.0:
-        beta = 0.1102 * (attenuation - 8.7)
-    elif attenuation >= 21.0:
-        beta = 0.5842 * (attenuation - 21.0) ** 0.4 + 0.07886 * (attenuation - 21.0)
-    else:
-        beta = 0.0
-    window = torch.kaiser_window(kernel_size, beta=beta, periodic=False)
-
-    if kernel_size % 2 == 0:
-        time = torch.arange(-half_size, half_size) + 0.5
-    else:
-        time = torch.arange(kernel_size) - half_size
-
-    taps = 2 * cutoff * window * torch.sinc(2 * cutoff * time)
-    return (taps / taps.sum()).view(1, 1, kernel_size)
-
-
-class PromptTTSPPSnakeActivation(nn.Module):
+class PromptTTSPPSnakeActivation(BigVGANSnakeActivation):
     r"""
     Constructs the anti aliased snake activation of BigVGAN, which upsamples its input, applies the periodic
     `x + sin(alpha * x) ** 2 / alpha` nonlinearity, and lowpass filters the result back down, so that the
@@ -2110,56 +2077,8 @@ class PromptTTSPPSnakeActivation(nn.Module):
             Number of channels, each of which owns its own `alpha`.
     """
 
-    def __init__(self, config: PromptTTSPPBigVGanConfig, channels: int):
-        super().__init__()
-        ratio = config.anti_alias_ratio
-        kernel_size = config.anti_alias_kernel_size
-        self.ratio = ratio
-        self.kernel_size = kernel_size
-        self.alpha = nn.Parameter(torch.zeros(1, channels, 1))
-        self.filter = nn.Buffer(self.build_filter(), persistent=False)
 
-        self.upsample_pad = kernel_size // ratio - 1
-        self.upsample_trim_left = self.upsample_pad * ratio + (kernel_size - ratio) // 2
-        self.upsample_trim_right = self.upsample_pad * ratio + (kernel_size - ratio + 1) // 2
-        self.downsample_pad_left = kernel_size // 2 - int(kernel_size % 2 == 0)
-        self.downsample_pad_right = kernel_size // 2
-
-    def build_filter(self) -> torch.Tensor:
-        """
-        Returns:
-            `torch.Tensor` of shape `(1, 1, kernel_size)`: The resampling filter of both directions.
-        """
-        return build_anti_alias_filter(0.5 / self.ratio, 0.6 / self.ratio, self.kernel_size)
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            hidden_states (`torch.Tensor` of shape `(batch_size, channels, sequence_length)`):
-                Activation input.
-
-        Returns:
-            `torch.Tensor` of shape `(batch_size, channels, sequence_length)`: The activated input.
-        """
-        channels = hidden_states.shape[1]
-        taps = self.filter.to(hidden_states.dtype).expand(channels, -1, -1)
-
-        hidden_states = F.pad(hidden_states, (self.upsample_pad, self.upsample_pad), mode="replicate")
-        hidden_states = self.ratio * F.conv_transpose1d(
-            hidden_states, taps, stride=self.ratio, groups=channels
-        )
-        hidden_states = hidden_states[..., self.upsample_trim_left : -self.upsample_trim_right]
-
-        alpha = self.alpha.exp()
-        hidden_states = hidden_states + (1.0 / (alpha + 1e-9)) * (hidden_states * alpha).sin().pow(2)
-
-        hidden_states = F.pad(
-            hidden_states, (self.downsample_pad_left, self.downsample_pad_right), mode="replicate"
-        )
-        return F.conv1d(hidden_states, taps, stride=self.ratio, groups=channels)
-
-
-class PromptTTSPPAmpLayer(nn.Module):
+class PromptTTSPPAmpLayer(BigVGANAmpLayer):
     r"""
     Constructs one residual layer of an anti aliased multi-periodicity block, a dilated convolution and a plain
     one, each preceded by a snake activation.
@@ -2175,45 +2094,10 @@ class PromptTTSPPAmpLayer(nn.Module):
             Dilation of the first convolution.
     """
 
-    def __init__(self, config: PromptTTSPPBigVGanConfig, channels: int, kernel_size: int, dilation: int):
-        super().__init__()
-        self.conv1 = nn.Conv1d(
-            channels,
-            channels,
-            kernel_size,
-            padding=(kernel_size * dilation - dilation) // 2,
-            dilation=dilation,
-        )
-        self.conv2 = nn.Conv1d(channels, channels, kernel_size, padding=kernel_size // 2, dilation=1)
-        self.activation1 = PromptTTSPPSnakeActivation(config, channels)
-        self.activation2 = PromptTTSPPSnakeActivation(config, channels)
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            hidden_states (`torch.Tensor` of shape `(batch_size, channels, sequence_length)`):
-                Layer input.
-
-        Returns:
-            `torch.Tensor` of shape `(batch_size, channels, sequence_length)`: The layer output.
-        """
-        residual = self.conv1(self.activation1(hidden_states))
-        residual = self.conv2(self.activation2(residual))
-        return hidden_states + residual
-
-    def apply_weight_norm(self):
-        """Reparameterizes the layer's convolutions by weight and direction, as training does."""
-        weight_norm = nn.utils.parametrizations.weight_norm
-        weight_norm(self.conv1)
-        weight_norm(self.conv2)
-
-    def remove_weight_norm(self):
-        """Folds the weight norm reparameterization of the layer's convolutions back into plain weights."""
-        nn.utils.parametrize.remove_parametrizations(self.conv1, "weight")
-        nn.utils.parametrize.remove_parametrizations(self.conv2, "weight")
+    activation_class = PromptTTSPPSnakeActivation
 
 
-class PromptTTSPPAmpBlock(nn.Module):
+class PromptTTSPPAmpBlock(BigVGANAmpBlock):
     r"""
     Constructs an anti aliased multi-periodicity block, the stack of residual layers that follows one upsampling
     layer for a single kernel size.
@@ -2229,34 +2113,7 @@ class PromptTTSPPAmpBlock(nn.Module):
             Dilation of each layer of the block.
     """
 
-    def __init__(self, config: PromptTTSPPBigVGanConfig, channels: int, kernel_size: int, dilations: list[int]):
-        super().__init__()
-        self.layers = nn.ModuleList(
-            [PromptTTSPPAmpLayer(config, channels, kernel_size, dilation) for dilation in dilations]
-        )
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            hidden_states (`torch.Tensor` of shape `(batch_size, channels, sequence_length)`):
-                Block input.
-
-        Returns:
-            `torch.Tensor` of shape `(batch_size, channels, sequence_length)`: The block output.
-        """
-        for layer in self.layers:
-            hidden_states = layer(hidden_states)
-        return hidden_states
-
-    def apply_weight_norm(self):
-        """Reparameterizes the block's convolutions by weight and direction, as training does."""
-        for layer in self.layers:
-            layer.apply_weight_norm()
-
-    def remove_weight_norm(self):
-        """Folds the weight norm reparameterization of the block's convolutions back into plain weights."""
-        for layer in self.layers:
-            layer.remove_weight_norm()
+    layer_class = PromptTTSPPAmpLayer
 
 
 class PromptTTSPPSourceModule(nn.Module):
@@ -2326,93 +2183,60 @@ class PromptTTSPPSourceModule(nn.Module):
     predicted alongside it into a waveform.
     """
 )
-class PromptTTSPPBigVGan(PreTrainedModel):
+class PromptTTSPPBigVGan(BigVGANModel):
     config: PromptTTSPPBigVGanConfig
     config_class = PromptTTSPPBigVGanConfig
     base_model_prefix = "vocoder"
     main_input_name = "spectrogram"
     supports_gradient_checkpointing = False
-    _supports_sdpa = False
-    _supports_flash_attn = False
+    amp_block_class = PromptTTSPPAmpBlock
+    snake_activation_class = PromptTTSPPSnakeActivation
 
     def __init__(self, config: PromptTTSPPBigVGanConfig):
         super().__init__(config)
-        self.num_kernels = len(config.resblock_kernel_sizes)
-        self.hop_length = math.prod(config.upsample_rates)
         self.source = PromptTTSPPSourceModule(config)
 
-        self.conv_pre = nn.Conv1d(
-            config.model_in_dim, config.upsample_initial_channel, kernel_size=7, stride=1, padding=3
-        )
-
-        self.upsampler = nn.ModuleList()
         self.noise_convs = nn.ModuleList()
-        for i, (rate, kernel_size) in enumerate(zip(config.upsample_rates, config.upsample_kernel_sizes)):
-            channels = config.upsample_initial_channel // (2 ** (i + 1))
-            self.upsampler.append(
-                nn.ConvTranspose1d(
-                    config.upsample_initial_channel // (2**i),
-                    channels,
-                    kernel_size=kernel_size,
-                    stride=rate,
-                    padding=rate // 2 + rate % 2,
-                    output_padding=rate % 2,
-                )
-            )
-            if i + 1 < len(config.upsample_rates):
-                stride = math.prod(config.upsample_rates[i + 1 :])
+        for index, rate in enumerate(config.upsample_rates):
+            channels = config.upsample_initial_channel // (2 ** (index + 1))
+            if index + 1 < len(config.upsample_rates):
+                stride = math.prod(config.upsample_rates[index + 1 :])
                 self.noise_convs.append(
                     nn.Conv1d(1, channels, kernel_size=stride * 2, stride=stride, padding=stride // 2)
                 )
             else:
                 self.noise_convs.append(nn.Conv1d(1, channels, 1))
 
-        self.resblocks = nn.ModuleList()
-        for i in range(len(self.upsampler)):
-            channels = config.upsample_initial_channel // (2 ** (i + 1))
-            self.resblocks.append(
-                nn.ModuleList(
-                    [
-                        PromptTTSPPAmpBlock(config, channels, kernel_size, dilations)
-                        for kernel_size, dilations in zip(
-                            config.resblock_kernel_sizes, config.resblock_dilation_sizes
-                        )
-                    ]
-                )
-            )
-
-        self.post_activation = PromptTTSPPSnakeActivation(config, channels)
-        self.conv_post = nn.Conv1d(channels, 1, kernel_size=7, stride=1, padding=3)
-
         self.post_init()
 
-    def _init_weights(self, module):
-        """Initialize the weights."""
-        super()._init_weights(module)
-        if isinstance(module, PromptTTSPPSnakeActivation):
-            init.zeros_(module.alpha)
-            init.copy_(module.filter, module.build_filter())
+    def build_upsample_layer(
+        self, in_channels: int, out_channels: int, kernel_size: int, rate: int
+    ) -> nn.ConvTranspose1d:
+        r"""
+        Builds one transposed convolution of the upsampling stack. Its padding differs from BigVGAN's so that the
+        layer upsamples by exactly `rate` for the odd rates PromptTTS++ uses.
 
-    def apply_weight_norm(self):
-        """Reparameterizes the vocoder's convolutions by weight and direction, as training does."""
-        weight_norm = nn.utils.parametrizations.weight_norm
-        weight_norm(self.conv_pre)
-        for layer in self.upsampler:
-            weight_norm(layer)
-        for blocks in self.resblocks:
-            for block in blocks:
-                block.apply_weight_norm()
-        weight_norm(self.conv_post)
+        Args:
+            in_channels (`int`):
+                Number of channels the layer consumes.
+            out_channels (`int`):
+                Number of channels the layer produces.
+            kernel_size (`int`):
+                Kernel size of the layer.
+            rate (`int`):
+                Stride of the layer, the factor it upsamples by.
 
-    def remove_weight_norm(self):
-        """Folds the weight norm reparameterization of the vocoder's convolutions back into plain weights."""
-        nn.utils.parametrize.remove_parametrizations(self.conv_pre, "weight")
-        for layer in self.upsampler:
-            nn.utils.parametrize.remove_parametrizations(layer, "weight")
-        for blocks in self.resblocks:
-            for block in blocks:
-                block.remove_weight_norm()
-        nn.utils.parametrize.remove_parametrizations(self.conv_post, "weight")
+        Returns:
+            `nn.ConvTranspose1d`: The layer.
+        """
+        return nn.ConvTranspose1d(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            stride=rate,
+            padding=rate // 2 + rate % 2,
+            output_padding=rate % 2,
+        )
 
     @auto_docstring
     def forward(self, spectrogram: torch.FloatTensor, f0: torch.FloatTensor) -> torch.FloatTensor:
