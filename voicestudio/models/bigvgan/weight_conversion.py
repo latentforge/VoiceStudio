@@ -6,10 +6,10 @@ from pathlib import Path
 
 import torch
 from huggingface_hub import hf_hub_download
-from safetensors.torch import save_file
 from transformers.utils import CONFIG_NAME
 from transformers.utils.hub import cached_file
 
+from ...utils.checkpoint_cache import CheckpointWriter, cached_conversion, source_identity
 from .configuration_bigvgan import BigVGANConfig
 from .feature_extraction_bigvgan import BigVGANFeatureExtractor
 
@@ -194,6 +194,23 @@ def convert_state_dict(state_dict: dict[str, torch.Tensor], config: BigVGANConfi
     return converted
 
 
+def resolve_file(source: str, filename: str) -> str:
+    r"""
+    Args:
+        source (`str`):
+            Repository id, or local directory holding `filename`.
+        filename (`str`):
+            Name of the file inside the repository or directory.
+
+    Returns:
+        `str`: Local path of the file, downloading it if `source` is a repository id.
+    """
+    path = Path(source) / filename
+    if path.is_file():
+        return str(path)
+    return hf_hub_download(source, filename)
+
+
 def load_hyperparameters(source: str) -> dict:
     r"""
     Reads the `config.json` of a BigVGAN repository or local directory.
@@ -205,12 +222,7 @@ def load_hyperparameters(source: str) -> dict:
     Returns:
         `dict`: The parsed configuration.
     """
-    source = PUBLISHED_CHECKPOINTS.get(source, source)
-    if Path(source).is_dir():
-        config_file = str(Path(source) / CONFIG_FILE)
-    else:
-        config_file = hf_hub_download(source, CONFIG_FILE)
-
+    config_file = resolve_file(PUBLISHED_CHECKPOINTS.get(source, source), CONFIG_FILE)
     with open(config_file, "r", encoding="utf-8") as handle:
         return json.load(handle)
 
@@ -232,11 +244,7 @@ def load_hyperparameters_and_weights(
         `tuple[dict, dict[str, torch.Tensor]]`: The parsed configuration and the generator's tensors.
     """
     hyperparameters = load_hyperparameters(source)
-    source = PUBLISHED_CHECKPOINTS.get(source, source)
-    if Path(source).is_dir():
-        weights_file = str(Path(source) / weights_name)
-    else:
-        weights_file = hf_hub_download(source, weights_name)
+    weights_file = resolve_file(PUBLISHED_CHECKPOINTS.get(source, source), weights_name)
     checkpoint = torch.load(weights_file, map_location="cpu", weights_only=True)
     return hyperparameters, checkpoint["generator"]
 
@@ -289,6 +297,68 @@ def build_feature_extractor(config: BigVGANConfig) -> BigVGANFeatureExtractor:
     )
 
 
+def write_checkpoint(
+    source: str = "v2_24khz_100band_256x",
+    directory: str = "bigvgan-converted",
+    weights_name: str = WEIGHTS_FILE,
+    dtype: torch.dtype = torch.float32,
+) -> BigVGANConfig:
+    r"""
+    Reads a published BigVGAN repository and writes what [`BigVGANModel.from_pretrained`] reads into `directory`.
+
+    Args:
+        source (`str`, *optional*, defaults to `"v2_24khz_100band_256x"`):
+            Key of [`PUBLISHED_CHECKPOINTS`], repository id, or local directory holding a `config.json` and a
+            generator weight file.
+        directory (`str`, *optional*, defaults to `"bigvgan-converted"`):
+            Directory the converted config and weights are written to.
+        weights_name (`str`, *optional*, defaults to `"bigvgan_generator.pt"`):
+            Name of the weight file to read.
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+
+    Returns:
+        [`BigVGANConfig`]: The configuration that was written.
+    """
+    config, converted = build_model_files(source, weights_name=weights_name, dtype=dtype)
+    with CheckpointWriter(directory) as writer:
+        for key in list(converted):
+            writer.add(key, converted.pop(key))
+    config.save_pretrained(directory)
+    return config
+
+
+def converted_checkpoint(
+    source: str = "v2_24khz_100band_256x",
+    weights_name: str = WEIGHTS_FILE,
+    dtype: torch.dtype = torch.float32,
+) -> Path:
+    r"""
+    Returns a directory holding the converted form of a published BigVGAN repository, which
+    [`~PreTrainedModel.from_pretrained`] reads the ordinary way, converting it the first time it is asked for
+    and reusing that conversion afterwards.
+
+    Args:
+        source (`str`, *optional*, defaults to `"v2_24khz_100band_256x"`):
+            Key of [`PUBLISHED_CHECKPOINTS`], repository id, or local directory holding a `config.json` and a
+            generator weight file.
+        weights_name (`str`, *optional*, defaults to `"bigvgan_generator.pt"`):
+            Name of the weight file to read.
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+
+    Returns:
+        `Path`: The directory holding the converted checkpoint.
+    """
+    repository = PUBLISHED_CHECKPOINTS.get(source, source)
+    parts = [str(source), weights_name, str(dtype), source_identity(repository, resolve_file(repository, CONFIG_FILE))]
+    return cached_conversion(
+        "bigvgan",
+        parts,
+        lambda directory: write_checkpoint(source, directory, weights_name=weights_name, dtype=dtype),
+    )
+
+
 def convert(
     source: str = "v2_24khz_100band_256x",
     output_dir: str = "bigvgan-converted",
@@ -296,7 +366,8 @@ def convert(
     dtype: torch.dtype = torch.float32,
 ) -> None:
     r"""
-    Converts a published BigVGAN repository into a directory [`BigVGANModel.from_pretrained`] can load.
+    Converts a published BigVGAN repository into a directory [`BigVGANModel.from_pretrained`] can load, for a
+    checkpoint that is shipped elsewhere or kept outside the conversion cache [`converted_checkpoint`] holds.
 
     Args:
         source (`str`, *optional*, defaults to `"v2_24khz_100band_256x"`):
@@ -309,13 +380,8 @@ def convert(
         dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
             Dtype the converted weights are cast to.
     """
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    config, converted = build_model_files(source, weights_name=weights_name, dtype=dtype)
-    config.save_pretrained(output_path)
-    save_file(converted, str(output_path / "model.safetensors"), metadata={"format": "pt"})
-    build_feature_extractor(config).save_pretrained(output_path)
+    config = write_checkpoint(source, output_dir, weights_name=weights_name, dtype=dtype)
+    build_feature_extractor(config).save_pretrained(output_dir)
 
 
 __all__ = [
@@ -325,7 +391,10 @@ __all__ = [
     "build_model_files",
     "convert",
     "convert_state_dict",
+    "converted_checkpoint",
     "is_published_layout",
     "load_hyperparameters",
     "load_hyperparameters_and_weights",
+    "resolve_file",
+    "write_checkpoint",
 ]
