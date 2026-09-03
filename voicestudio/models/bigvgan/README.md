@@ -14,25 +14,17 @@ Original model and code: [NVIDIA/BigVGAN](https://github.com/NVIDIA/BigVGAN)
 
 ## Usage
 
-The published repositories are a `config.json` of training hyperparameters and a `bigvgan_generator.pt` holding
-the generator's weight normalized state dict, so they need a one-time conversion before they load:
-
-```python
-from voicestudio.models.bigvgan.weight_conversion import convert
-
-convert("v2_24khz_100band_256x", "bigvgan-v2-24khz-converted")
-```
-
-`convert` accepts any key of `PUBLISHED_CHECKPOINTS`, a repository id, or a local directory holding those two
-files. `weights_name` selects `bigvgan_generator_3msteps.pt` where a repository publishes it.
+`from_pretrained` takes any published repository id as it stands:
 
 ```python
 import soundfile as sf
 
 from voicestudio.models.bigvgan import BigVGANFeatureExtractor, BigVGANModel
 
-model = BigVGANModel.from_pretrained("bigvgan-v2-24khz-converted").eval()
-extractor = BigVGANFeatureExtractor.from_pretrained("bigvgan-v2-24khz-converted")
+model_id = "nvidia/bigvgan_v2_24khz_100band_256x"
+
+model = BigVGANModel.from_pretrained(model_id).eval()
+extractor = BigVGANFeatureExtractor.from_pretrained(model_id)
 
 waveform, sampling_rate = sf.read("reference.wav", dtype="float32")
 inputs = extractor(waveform, sampling_rate=sampling_rate)
@@ -41,14 +33,32 @@ audio = model(**inputs).audio_values
 sf.write("output.wav", audio[0].numpy(), model.config.sampling_rate)
 ```
 
-Two things about the front end are load-bearing:
+A published repository is a `config.json` of training hyperparameters and a `bigvgan_generator.pt` holding the
+generator's weight normalized state dict, neither of which `PreTrainedModel.from_pretrained` can read on its own,
+so `BigVGANModel.from_pretrained` converts them on the way in. Any key of `PUBLISHED_CHECKPOINTS`, a repository
+id, or a local directory holding those two files works as `model_id`, as does a directory
+`weight_conversion.convert` wrote.
 
+Three things about loading and the front end are load-bearing:
+
+- `weights_name` selects the generator file inside a published repository. It defaults to `bigvgan_generator.pt`,
+  which is what upstream's own loader reads; pass `weights_name="bigvgan_generator_3msteps.pt"` for the longer
+  trained weights the v2 repositories also publish.
 - `BigVGANFeatureExtractor` scales each waveform so that its largest absolute sample is 0.95 before framing it,
   because `normalize_volume` is what upstream's dataset and its demo both do to every clip they take a mel
   spectrogram of. Pass `normalize_volume=False` to turn it off, but then the mel is on a scale the checkpoint was
   not trained on.
 - `attention_mask`, which the extractor returns for a padded batch, is not a model argument. The stack is fully
   convolutional, so padded frames become padded samples that the caller has to trim.
+
+`weight_conversion.convert` still writes a converted directory, for a checkpoint that has to be materialized once
+and loaded many times or shipped elsewhere:
+
+```python
+from voicestudio.models.bigvgan.weight_conversion import convert
+
+convert("v2_24khz_100band_256x", "bigvgan-v2-24khz-converted")
+```
 
 
 ## Training
@@ -156,12 +166,20 @@ already carries. `pyproject.toml` and `uv.lock` need no change, and nothing was 
 
 ## Verification
 
-`convert` then `from_pretrained` on the real `nvidia/bigvgan_v2_24khz_100band_256x` weights reports no missing,
-unexpected or mismatched keys across all 449 tensors and 112414512 parameters. The published checkpoint holds 783
-tensors: 449 of them are these, 116 are the `weight_v` halves that the conversion folds into the weight they
-share with a `weight_g`, and 218 are the resampling filters of the anti aliased activations, which the model
-rebuilds from its configuration. Every source tensor is therefore accounted for, and `convert_state_dict` raises
-on any key it has no destination for rather than dropping it.
+`from_pretrained` straight onto the published `nvidia/bigvgan_v2_24khz_100band_256x` repository id, with no
+conversion call before it, reports no missing, unexpected or mismatched keys across all 449 tensors and 112414512
+parameters. The published checkpoint holds 783 tensors: 449 of them are these, 116 are the `weight_v` halves that
+the conversion folds into the weight they share with a `weight_g`, and 218 are the resampling filters of the anti
+aliased activations, which the model rebuilds from its configuration into the 109 `filter` buffers its 109 anti
+aliased activations hold, two upstream tensors each. Every source tensor is therefore accounted for, and
+`convert_state_dict` raises on any key it has no destination for rather than dropping it. Those 109 buffers were
+read back after the load and are all finite and non-zero, which is the check that catches a constructor-computed
+buffer coming back as uninitialised memory under meta-device initialisation.
+
+Copy synthesis through that direct load, on a LibriSpeech validation clip resampled to 24 kHz and normalised the
+way the extractor normalises it, gives a log mel L1 of 0.0913 against the 0.0887 calibration point, at a
+reconstruction to reference RMS ratio of 0.98. Re-randomising `conv_post` at the model's own initializer range
+takes it to 1.59 and re-randomising `resblocks[0]` to 0.83.
 
 The migrated model was checked against NVIDIA's own `bigvgan.BigVGAN`, run from the same weights on the same mel
 spectrogram, in float32 on the CPU. On a 5.3 second clip the two waveforms agree to a maximum absolute difference

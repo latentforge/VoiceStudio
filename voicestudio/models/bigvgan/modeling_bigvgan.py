@@ -439,6 +439,41 @@ class BigVGANModel(BigVGANPreTrainedModel):
 
         self.post_init()
 
+    @classmethod
+    def from_pretrained(
+        cls, pretrained_model_name_or_path, *model_args, weights_name="bigvgan_generator.pt", **kwargs
+    ):
+        r"""
+        Loads a BigVGAN checkpoint, from a published repository as it stands or from a directory
+        [`~weight_conversion.convert`] wrote.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                `"nvidia/bigvgan_v2_24khz_100band_256x"`, any key of `PUBLISHED_CHECKPOINTS`, or any repository id
+                or directory holding one of the two layouts.
+            model_args (`tuple`, *optional*):
+                Positional arguments of [`~PreTrainedModel.from_pretrained`].
+            weights_name (`str`, *optional*, defaults to `"bigvgan_generator.pt"`):
+                Generator weight file to read out of a published repository, which the v2 ones also publish as
+                `bigvgan_generator_3msteps.pt`. Ignored by a converted directory.
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~PreTrainedModel.from_pretrained`].
+
+        Returns:
+            [`BigVGANModel`]: The loaded model.
+        """
+        from .weight_conversion import build_model_files, is_published_layout
+
+        if (
+            pretrained_model_name_or_path is not None
+            and kwargs.get("config") is None
+            and kwargs.get("state_dict") is None
+            and is_published_layout(pretrained_model_name_or_path)
+        ):
+            config, state_dict = build_model_files(pretrained_model_name_or_path, weights_name=weights_name)
+            return super().from_pretrained(None, *model_args, config=config, state_dict=state_dict, **kwargs)
+        return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+
     def mel_loss_resolutions(self) -> list[dict]:
         r"""
         Returns:

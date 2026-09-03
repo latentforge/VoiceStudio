@@ -103,6 +103,33 @@ class BigVGANFeatureExtractor(SequenceFeatureExtractor):
         self.clip_value = clip_value
         self.normalize_volume = normalize_volume
 
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+        r"""
+        Loads the extractor of a BigVGAN checkpoint, from a published repository as it stands or from a directory
+        [`~weight_conversion.convert`] wrote.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                `"nvidia/bigvgan_v2_24khz_100band_256x"`, any key of `PUBLISHED_CHECKPOINTS`, or any repository id
+                or directory holding one of the two layouts.
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~FeatureExtractionMixin.from_pretrained`].
+
+        Returns:
+            [`BigVGANFeatureExtractor`]: The extractor.
+        """
+        from .weight_conversion import (
+            build_config,
+            build_feature_extractor,
+            is_published_layout,
+            load_hyperparameters,
+        )
+
+        if pretrained_model_name_or_path is not None and is_published_layout(pretrained_model_name_or_path):
+            return build_feature_extractor(build_config(load_hyperparameters(pretrained_model_name_or_path)))
+        return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
+
     def _get_filters(self, device, dtype) -> torch.Tensor:
         fmax = self.sampling_rate / 2.0 if self.fmax is None else self.fmax
         key = (self.n_fft, self.feature_size, self.sampling_rate, self.fmin, fmax, device, dtype)

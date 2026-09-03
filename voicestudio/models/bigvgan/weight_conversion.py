@@ -7,6 +7,8 @@ from pathlib import Path
 import torch
 from huggingface_hub import hf_hub_download
 from safetensors.torch import save_file
+from transformers.utils import CONFIG_NAME
+from transformers.utils.hub import cached_file
 
 from .configuration_bigvgan import BigVGANConfig
 from .feature_extraction_bigvgan import BigVGANFeatureExtractor
@@ -37,6 +39,37 @@ _UPSAMPLE = re.compile(r"^ups\.(\d+)\.0\.(.+)$")
 _RESBLOCK_CONV = re.compile(r"^resblocks\.(\d+)\.convs(1|2|)\.(\d+)\.(.+)$")
 _RESBLOCK_ACTIVATION = re.compile(r"^resblocks\.(\d+)\.activations\.(\d+)\.act\.(alpha|beta)$")
 _POST_ACTIVATION = re.compile(r"^activation_post\.act\.(alpha|beta)$")
+
+
+def is_published_layout(source: str) -> bool:
+    r"""
+    Returns whether `source` is a published BigVGAN repository rather than a directory [`convert`] wrote.
+
+    The published repositories carry the training script's own `config.json`, which names its fields `num_mels`,
+    `hop_size`, `win_size`, `fmin`, `fmax` and `resblock` and declares no `model_type`, so the discriminator is a
+    `config.json` declaring this model's `model_type`. `PreTrainedConfig.from_pretrained` draws no such
+    distinction of its own: the unknown fields are kept as extra attributes and every field this model reads
+    silently falls back to its default.
+
+    Args:
+        source (`str`):
+            Key of [`PUBLISHED_CHECKPOINTS`], repository id, or local directory.
+
+    Returns:
+        `bool`: Whether `source` holds the published layout.
+    """
+    if source in PUBLISHED_CHECKPOINTS:
+        return True
+    config_file = cached_file(
+        source,
+        CONFIG_NAME,
+        _raise_exceptions_for_missing_entries=False,
+        _raise_exceptions_for_connection_errors=False,
+    )
+    if config_file is None:
+        return True
+    with open(config_file, "r", encoding="utf-8") as handle:
+        return json.load(handle).get("model_type") != BigVGANConfig.model_type
 
 
 def build_config(hyperparameters: dict, **overrides) -> BigVGANConfig:
@@ -161,6 +194,27 @@ def convert_state_dict(state_dict: dict[str, torch.Tensor], config: BigVGANConfi
     return converted
 
 
+def load_hyperparameters(source: str) -> dict:
+    r"""
+    Reads the `config.json` of a BigVGAN repository or local directory.
+
+    Args:
+        source (`str`):
+            Key of [`PUBLISHED_CHECKPOINTS`], repository id, or local directory holding the file.
+
+    Returns:
+        `dict`: The parsed configuration.
+    """
+    source = PUBLISHED_CHECKPOINTS.get(source, source)
+    if Path(source).is_dir():
+        config_file = str(Path(source) / CONFIG_FILE)
+    else:
+        config_file = hf_hub_download(source, CONFIG_FILE)
+
+    with open(config_file, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
 def load_hyperparameters_and_weights(
     source: str, weights_name: str = WEIGHTS_FILE
 ) -> tuple[dict, dict[str, torch.Tensor]]:
@@ -177,16 +231,12 @@ def load_hyperparameters_and_weights(
     Returns:
         `tuple[dict, dict[str, torch.Tensor]]`: The parsed configuration and the generator's tensors.
     """
+    hyperparameters = load_hyperparameters(source)
     source = PUBLISHED_CHECKPOINTS.get(source, source)
     if Path(source).is_dir():
-        config_file = str(Path(source) / CONFIG_FILE)
         weights_file = str(Path(source) / weights_name)
     else:
-        config_file = hf_hub_download(source, CONFIG_FILE)
         weights_file = hf_hub_download(source, weights_name)
-
-    with open(config_file, "r", encoding="utf-8") as handle:
-        hyperparameters = json.load(handle)
     checkpoint = torch.load(weights_file, map_location="cpu", weights_only=True)
     return hyperparameters, checkpoint["generator"]
 
@@ -275,5 +325,7 @@ __all__ = [
     "build_model_files",
     "convert",
     "convert_state_dict",
+    "is_published_layout",
+    "load_hyperparameters",
     "load_hyperparameters_and_weights",
 ]
