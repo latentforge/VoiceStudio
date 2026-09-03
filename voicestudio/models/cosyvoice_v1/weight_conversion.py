@@ -8,6 +8,7 @@ import torch
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import HFValidationError
 
+from ...utils.checkpoint_cache import CheckpointWriter, cached_conversion, file_identity
 from .configuration_cosyvoice_v1 import CosyVoiceV1Config
 
 
@@ -338,6 +339,54 @@ def load_checkpoint(directory: "str | Path") -> dict[str, torch.Tensor]:
     return state_dict
 
 
+def write_checkpoint(directory: "str | Path", output_dir, config) -> None:
+    r"""
+    Merges the three files of a released CosyVoice directory into what
+    [`~PreTrainedModel.from_pretrained`] reads out of `output_dir`.
+
+    Each file holds one network, so they are read and written one at a time and no two of them are ever
+    resident together.
+
+    Args:
+        directory (`str` or `os.PathLike`):
+            Local directory holding [`CHECKPOINT_FILES`].
+        output_dir (`str` or `os.PathLike`):
+            Directory the converted checkpoint is written to.
+        config ([`~transformers.PreTrainedConfig`]):
+            Configuration of the released checkpoint, which is written beside the weights.
+    """
+    with CheckpointWriter(output_dir) as writer:
+        for prefix, name in CHECKPOINT_FILES.items():
+            tensors = torch.load(Path(directory) / name, map_location="cpu", weights_only=True)
+            for key in list(tensors):
+                writer.add(f"{prefix}.{key}", tensors.pop(key))
+            writer.flush()
+    config.save_pretrained(output_dir)
+
+
+def converted_checkpoint(directory: "str | Path", config) -> Path:
+    r"""
+    Returns a directory holding the converted form of a released CosyVoice directory, which
+    [`~PreTrainedModel.from_pretrained`] reads the ordinary way, converting it the first time it is asked for
+    and reusing that conversion afterwards.
+
+    Args:
+        directory (`str` or `os.PathLike`):
+            Local directory holding [`CHECKPOINT_FILES`].
+        config ([`~transformers.PreTrainedConfig`]):
+            Configuration of the released checkpoint, whose `model_type` also groups the conversion in the
+            cache, since the three released versions share a file layout.
+
+    Returns:
+        `Path`: The directory holding the converted checkpoint.
+    """
+    return cached_conversion(
+        config.model_type,
+        [file_identity(directory)],
+        lambda output_dir: write_checkpoint(directory, output_dir, config),
+    )
+
+
 def build_config(directory: "str | Path", **overrides) -> CosyVoiceV1Config:
     r"""
     Builds the [`CosyVoiceV1Config`] of a released CosyVoice v1 directory.
@@ -370,7 +419,9 @@ __all__ = [
     "TEXT_TOKENIZER_ID",
     "build_config",
     "convert_speech_tokenizer",
+    "converted_checkpoint",
     "load_checkpoint",
     "read_onnx_graph",
     "resolve_checkpoint",
+    "write_checkpoint",
 ]

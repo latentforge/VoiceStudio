@@ -17,6 +17,7 @@
 import math
 import random
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -37,7 +38,7 @@ from transformers.utils import auto_docstring
 from ..bigvgan.modeling_bigvgan import dynamic_range_compression, mel_spectrogram
 from .configuration_cosyvoice_v1 import CosyVoiceV1Config
 from .generation_cosyvoice_v1 import CosyVoiceV1GenerationMixin
-from .weight_conversion import CHECKPOINT_FILES, build_config, load_checkpoint, resolve_checkpoint
+from .weight_conversion import CHECKPOINT_FILES, build_config, converted_checkpoint, resolve_checkpoint
 
 
 IGNORE_ID = -1
@@ -2670,9 +2671,9 @@ class CosyVoiceV1PreTrainedModel(PreTrainedModel):
     supports_gradient_checkpointing = False
 
     @classmethod
-    def _released_checkpoint(cls, source, **kwargs) -> "tuple[CosyVoiceV1Config, dict[str, torch.Tensor]] | None":
+    def _released_checkpoint(cls, source, **kwargs) -> "tuple[CosyVoiceV1Config, Path] | None":
         r"""
-        Reads a released CosyVoice v1 directory.
+        Locates a released CosyVoice v1 directory.
 
         Args:
             source (`str` or `os.PathLike`, *optional*):
@@ -2681,13 +2682,13 @@ class CosyVoiceV1PreTrainedModel(PreTrainedModel):
                 Fields of `weight_conversion.DOWNLOAD_KWARGS` selecting a revision and a cache.
 
         Returns:
-            `tuple[CosyVoiceV1Config, dict[str, torch.Tensor]]` or `None`: The configuration and the
-            merged tensors, or `None` when `source` holds no released checkpoint.
+            `tuple[CosyVoiceV1Config, Path]` or `None`: The configuration and the local directory holding
+            the released files, or `None` when `source` holds no released checkpoint.
         """
         directory = resolve_checkpoint(source, tuple(CHECKPOINT_FILES.values()), **kwargs)
         if directory is None:
             return None
-        return build_config(directory), load_checkpoint(directory)
+        return build_config(directory), directory
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
@@ -2710,9 +2711,8 @@ class CosyVoiceV1PreTrainedModel(PreTrainedModel):
             released = cls._released_checkpoint(pretrained_model_name_or_path, **kwargs)
             if released is None:
                 raise
-        config, state_dict = released
-        kwargs.setdefault("config", config)
-        return super().from_pretrained(None, *model_args, state_dict=state_dict, **kwargs)
+        config, directory = released
+        return super().from_pretrained(converted_checkpoint(directory, config), *model_args, **kwargs)
 
     def _init_weights(self, module):
         std = self.config.initializer_range

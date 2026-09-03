@@ -18,6 +18,7 @@
 import math
 import random
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -49,7 +50,7 @@ from ..cosyvoice_v1.modeling_cosyvoice_v1 import (
     build_attention_bias,
     make_pad_mask,
 )
-from ..cosyvoice_v1.weight_conversion import CHECKPOINT_FILES, load_checkpoint, resolve_checkpoint
+from ..cosyvoice_v1.weight_conversion import CHECKPOINT_FILES, resolve_checkpoint
 from .configuration_cosyvoice_v2 import CosyVoiceV2Config
 from .generation_cosyvoice_v2 import CosyVoiceV2GenerationMixin
 from .weight_conversion import TEXT_MODEL_SUBDIR, build_config
@@ -1381,9 +1382,9 @@ class CosyVoiceV2PreTrainedModel(CosyVoiceV1PreTrainedModel):
     _keys_to_ignore_on_load_unexpected = [r"llm\.model\.rotary_emb\.inv_freq", r"llm\.model\.lm_head\."]
 
     @classmethod
-    def _released_checkpoint(cls, source, **kwargs) -> "tuple[CosyVoiceV2Config, dict[str, torch.Tensor]] | None":
+    def _released_checkpoint(cls, source, **kwargs) -> "tuple[CosyVoiceV2Config, Path] | None":
         r"""
-        Reads a released CosyVoice v2 directory, whose Qwen2 sub directory is fetched alongside the
+        Locates a released CosyVoice v2 directory, whose Qwen2 sub directory is fetched alongside the
         three network files because the configuration is built from it.
 
         Args:
@@ -1393,15 +1394,15 @@ class CosyVoiceV2PreTrainedModel(CosyVoiceV1PreTrainedModel):
                 Fields of `weight_conversion.DOWNLOAD_KWARGS` selecting a revision and a cache.
 
         Returns:
-            `tuple[CosyVoiceV2Config, dict[str, torch.Tensor]]` or `None`: The configuration and the
-            merged tensors, or `None` when `source` holds no released checkpoint.
+            `tuple[CosyVoiceV2Config, Path]` or `None`: The configuration and the local directory
+            holding the released files, or `None` when `source` holds no released checkpoint.
         """
         directory = resolve_checkpoint(
             source, tuple(CHECKPOINT_FILES.values()), (f"{TEXT_MODEL_SUBDIR}/*",), **kwargs
         )
         if directory is None:
             return None
-        return build_config(directory), load_checkpoint(directory)
+        return build_config(directory), directory
 
 
 @auto_docstring(
