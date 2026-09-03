@@ -50,7 +50,7 @@ decoder instead, which is upstream's `--vocoder encodec` alternative. The three 
 To carry a voice over, pass the reference waveform. The model tokenizes it twice, into semantic tokens that prime the semantic span and into EnCodec codes that prime the acoustic span:
 
 ```python
-waveform, sampling_rate = sf.read("examples/actor_ref.wav")
+waveform, sampling_rate = sf.read("actor_ref.wav")  # any reference clip; upstream ships examples/actor_ref.wav
 
 inputs = processor(
     text='“下面唱的这是西河大鼓，西河大鼓发源于河北省河间地带。欢迎大家使用 VoxInstruct 模型进行指令到语音生成。”',
