@@ -222,7 +222,7 @@ pretrained checkpoint yet; see "Runtime-verified" for that.
 | F5-TTS | Yes | Yes | Yes | `455b73f3`. Backbone checked numerically against a reimplementation of the upstream forward: max divergence 1.2e-05 to 3.0e-04 on |max| 13, growing smoothly from layer 0, so float32 accumulation order rather than structure. Three checkpoints transcribe word for word. `torchdiffeq` replaced by an inlined fixed-step solver that matches it bit for bit. |
 | Higgs TTS 2 | Yes | Yes | Yes | `62bf46ab`. Both prompts transcribe verbatim; 5.38B parameters load clean. `max_new_tokens`, `add_generation_prompt` and moving the audio tokenizer to the model device are all load-bearing. |
 | Higgs TTS 3 | Yes | Yes | Yes | `dfeb00d3` after the prompt-format and delay-pattern fix in `b4b18e5b`. Both prompts transcribe verbatim. 528 unexpected keys, all the bundled codec copy, logged as open. |
-| Parler-TTS | Yes | Yes | Yes | `992d149c` replaced the vendored `descript-audio-codec` with native `DacModel`. `b58b94cf` added the missing `ParlerTTSProcessor` and declared `sub_configs`, without which transformers 5 skipped the decoder during dtype resolution and half-precision loads crashed. Transcribes verbatim in float16 and float32. |
+| Parler-TTS | Yes | Yes | Yes | DAC conversion coverage confirmed: all 301 source `audio_encoder.model.*` tensors are consumed with zero reported unused, including 54 of 54 `in_proj`/`out_proj` keys, which `convert_dac_checkpoint`'s `apply_weight_norm` and its single `quantizer.quantizers.*` wildcard cover without special casing. Round trip 11.46 dB against the 8.82 dB baseline, and re-randomising just those 36 projection tensors collapses it to -1.10 dB, which calibrates the check against the failure mode it was looking for. `992d149c` replaced the vendored `descript-audio-codec` with native `DacModel`. `b58b94cf` added the missing `ParlerTTSProcessor` and declared `sub_configs`, without which transformers 5 skipped the decoder during dtype resolution and half-precision loads crashed. Transcribes verbatim in float16 and float32. |
 | PromptTTS++ (`prompt_tts_pp`) | Yes | Yes | Yes | `6fabba05`. The section 2.7 gap is closed: MDN, GST reference encoder and `GaussianDiffusion` decoder are all implemented and no FastSpeech2Conformer path remains. The checkpoint is bundled in the Space `line-corporation/promptttspp`, which the section 2.3 search confirmed is the only source. wav2vec2 WER 0.222 and 0.286. The BERT freeze not surviving `from_pretrained` was fixed and verified by parameter count. |
 | Qwen3-TTS | Yes | Yes | Yes | Import relays plus a task-dispatching processor. `af7968ea` fixed voice design running in streaming mode: 17 of 17 prompts now transcribe verbatim. `encoder.upsample.conv.weight` reports MISSING, which is inert and upstream; see the open item above. |
 | Spark-TTS | Yes | Yes | Yes | `c0be998c`. WER 0.000 across voice cloning, attribute creation and prompt continuation. `freeze_semantic_model` never called `.eval()`, so dropout, layerdrop and SpecAugment kept running in the frozen feature source and step-0 loss was irreproducible; fixed. |
@@ -284,7 +284,7 @@ bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts
 conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
 `Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
 
-Three items left open:
+Two items left open:
 
 - **Vocos trains without its discriminators.** Upstream's generator loss is five terms: MPD hinge
   loss over periods 2, 3, 5, 7 and 11, `mrd_loss_coeff` times MRD hinge loss over FFT sizes 2048,
@@ -312,11 +312,6 @@ Three items left open:
   treatment of `encoder.downsample.conv.weight` changes 99.9 percent of the codes. H7 forbids
   hand-editing a generated file, so the fix belongs in transformers-tts's modular source; the
   warning is harmless until then.
-- **DAC weight-norm coverage.** `in_proj` and `out_proj` take `apply_weight_norm` the same way the
-  convolutions do, so they need the `original0`/`original1`/`bias` rules too. Delegating to
-  transformers' own `convert_dac_checkpoint` should cover it; confirm by checking that no source
-  weight goes unused.
-
 Nothing was salvageable for generation defaults. The branch's `PROJECT.md` records no
 `temperature`, `top_k`, `top_p`, `guidance`, `do_sample` or `max_new_tokens` value for any
 checkpoint, which follows from its verification standard: a plausible waveform RMS passes even when
