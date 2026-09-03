@@ -321,3 +321,40 @@ checkpoint, which follows from its verification standard: a plausible waveform R
 the sampling parameters and the generation length are wrong. It cleared Higgs TTS 2 at
 "RMS 0.091, max abs 0.69, plausible speech-level amplitude" on the same `max_length=53` truncation
 that this repo later caught by transcribing the audio.
+
+## Sibling inheritance map
+
+Principle 1 asks for inheritance between models inside `voicestudio/models/`, not only from
+transformers. No cross-folder import exists yet. This is the measured list of candidates, taken by
+normalising every class name in every `modeling_*.py` against its model prefix and keeping the names
+that appear in more than one folder. It binds the migrations still to come: a migration that
+reimplements something on this list has to say why inheriting was rejected.
+
+Actionable once `voicestudio/models/bigvgan/` exists:
+
+- `PromptTTSPPBigVGan`, `PromptTTSPPAmpBlock`, `PromptTTSPPAmpLayer`, `PromptTTSPPSnakeActivation`
+  should inherit it. Upstream's `F0AwareBigVGAN` is stock BigVGAN plus an NSF source module, so the
+  F0 path is the only part that stays local.
+
+Gated on the CosyVoice migration, which still has to check these before writing anything:
+
+- `FeedForward` and `TimestepEmbedding` against f5_tts. Both are flow-matching DiT models, and
+  f5_tts's DiT and fixed-step solver are numerically verified against upstream, so they are the
+  stronger base.
+- `Encoder` and `EncoderLayer` against prompt_tts_pp, which inherits the conformer submodules from
+  `FastSpeech2Conformer` in transformers rather than reimplementing them.
+- `SourceModule` against prompt_tts_pp, and `Snake` against bigvgan once it lands.
+
+Gated on the OmniVoice migration:
+
+- Its backbone-plus-depth-decoder shape is closest to breeze_tts and chroma, both of which inherit
+  `Csm*`. Note that dia2 evaluated the same lineage and rejected it, because its depth decoder
+  selects weights per depth position, so the check is real work rather than a formality.
+
+Measured and rejected, recorded so it is not re-litigated:
+
+- `SparkTTSConvNeXtBlock` and `VocosConvNeXtBlock` compute the same thing, but their AdaLayerNorms
+  do not: Vocos looks scale and shift up in an `nn.Embedding` keyed by a discrete bandwidth id,
+  while Spark projects them from a continuous conditioning vector with `nn.Linear`. Sharing the
+  block would mean growing a second conditioning mode into the Vocos model to serve Spark's codec.
+  The blocks stay separate.
