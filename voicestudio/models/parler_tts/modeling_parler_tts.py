@@ -2291,13 +2291,31 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
         r"""
+        Loads a Parler-TTS checkpoint, from a published repository as it stands or from a directory
+        [`~weight_conversion.convert`] wrote. A published checkpoint holds its audio codec as the
+        `descript-audio-codec` module Parler-TTS trained with, which is rewritten into [`DacModel`]'s weight
+        layout on the way in.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                `"parler-tts/parler-tts-mini-v1"`, any other published repository id, or a directory holding
+                either layout.
+            model_args (`tuple`, *optional*):
+                Positional arguments of [`~PreTrainedModel.from_pretrained`].
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~PreTrainedModel.from_pretrained`].
+
+        Returns:
+            [`ParlerTTSForConditionalGeneration`]: The loaded model.
+
         Example:
 
         ```python
-        >>> from parler_tts import ParlerTTSForConditionalGeneration
+        >>> from voicestudio.models.parler_tts import ParlerTTSForConditionalGeneration
 
         >>> model = ParlerTTSForConditionalGeneration.from_pretrained("parler-tts/parler-tts-mini-v1")
         ```"""
+        from .weight_conversion import build_model_files, is_published_layout, read_generation_config
 
         # At the moment fast initialization is not supported for composite models
         if kwargs.get("_fast_init", False):
@@ -2306,6 +2324,29 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
                 "Falling back to slow initialization..."
             )
         kwargs["_fast_init"] = False
+
+        if (
+            pretrained_model_name_or_path is not None
+            and kwargs.get("state_dict") is None
+            and is_published_layout(pretrained_model_name_or_path, **kwargs)
+        ):
+            subfolder = kwargs.pop("subfolder", None)
+            given_config = kwargs.pop("config", None)
+            config, state_dict = build_model_files(
+                pretrained_model_name_or_path, subfolder=subfolder, config=given_config, **kwargs
+            )
+            outputs = super().from_pretrained(None, *model_args, config=config, state_dict=state_dict, **kwargs)
+
+            # `from_pretrained` reads a checkpoint's `generation_config.json` off the path it was given, and a
+            # checkpoint handed to it as tensors has none. Without it the decoder runs to the model-agnostic
+            # `max_length` default, which is a fraction of a second of audio.
+            generation_config = read_generation_config(
+                pretrained_model_name_or_path, subfolder=subfolder, **kwargs
+            )
+            if generation_config is not None:
+                model = outputs[0] if isinstance(outputs, tuple) else outputs
+                model.generation_config = generation_config
+            return outputs
 
         return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
 
@@ -2573,9 +2614,8 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
         ```python
         >>> import torch
         >>> from voicestudio.models.parler_tts import ParlerTTSForConditionalGeneration, ParlerTTSProcessor
-        >>> from voicestudio.models.parler_tts.weight_conversion import convert
 
-        >>> model_id = convert("parler-tts/parler-tts-mini-v1", "parler-tts-mini-v1-converted")
+        >>> model_id = "parler-tts/parler-tts-mini-v1"
         >>> processor = ParlerTTSProcessor.from_pretrained(model_id)
         >>> model = ParlerTTSForConditionalGeneration.from_pretrained(model_id)
 

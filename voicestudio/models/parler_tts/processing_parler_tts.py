@@ -67,8 +67,10 @@ class ParlerTTSProcessor(ProcessorMixin):
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
         r"""
-        Loads the processor of a Parler-TTS checkpoint, together with the DAC codec saved standalone in its
-        `audio_encoder` subfolder by [`weight_conversion.convert`].
+        Loads the processor of a Parler-TTS checkpoint, from a published repository as it stands or from a
+        directory [`weight_conversion.convert`] wrote. A published checkpoint fuses the DAC codec into the
+        composite model's own weights, so `audio_tokenizer` is read out of those; a converted directory holds it
+        standalone in its `audio_encoder` subfolder.
 
         Args:
             pretrained_model_name_or_path (`str` or `os.PathLike`):
@@ -80,19 +82,27 @@ class ParlerTTSProcessor(ProcessorMixin):
             [`ParlerTTSProcessor`]: The loaded processor. Its `audio_tokenizer` is `None` when the checkpoint
             bundles none, in which case [`~ParlerTTSProcessor.decode`] is unavailable.
         """
-        processor = super().from_pretrained(pretrained_model_name_or_path, **kwargs)
-        if getattr(processor, "audio_tokenizer", None) is None:
-            from transformers import DacModel
+        from .weight_conversion import build_audio_tokenizer, is_published_layout
 
-            try:
-                processor.audio_tokenizer = DacModel.from_pretrained(
-                    pretrained_model_name_or_path, subfolder=AUDIO_TOKENIZER_SUBFOLDER, **kwargs
-                )
-            except OSError:
-                logger.warning_once(
-                    f"'{pretrained_model_name_or_path}' bundles no '{AUDIO_TOKENIZER_SUBFOLDER}' audio "
-                    "tokenizer. `decode` will be unavailable until `audio_tokenizer` is set."
-                )
+        processor = super().from_pretrained(pretrained_model_name_or_path, **kwargs)
+        if getattr(processor, "audio_tokenizer", None) is not None:
+            return processor
+
+        if is_published_layout(pretrained_model_name_or_path, **kwargs):
+            processor.audio_tokenizer = build_audio_tokenizer(pretrained_model_name_or_path, **kwargs)
+            return processor
+
+        from transformers import DacModel
+
+        try:
+            processor.audio_tokenizer = DacModel.from_pretrained(
+                pretrained_model_name_or_path, subfolder=AUDIO_TOKENIZER_SUBFOLDER, **kwargs
+            )
+        except OSError:
+            logger.warning_once(
+                f"'{pretrained_model_name_or_path}' bundles no '{AUDIO_TOKENIZER_SUBFOLDER}' audio "
+                "tokenizer. `decode` will be unavailable until `audio_tokenizer` is set."
+            )
         return processor
 
     def __call__(

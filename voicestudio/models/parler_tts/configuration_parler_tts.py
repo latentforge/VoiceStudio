@@ -16,7 +16,7 @@
 
 from typing import ClassVar
 
-from transformers import AutoConfig, logging
+from transformers import AutoConfig, DacConfig, logging
 from transformers.configuration_utils import PretrainedConfig
 
 logger = logging.get_logger(__name__)
@@ -25,6 +25,58 @@ PARLER_TTS_PRETRAINED_CONFIG_ARCHIVE_MAP = {
     "parler-tts/parler-tts-mini-v1": "https://huggingface.co/parler-tts/parler-tts-mini-v1/resolve/main/config.json",
     # See all ParlerTTS models at https://huggingface.co/models?filter=parler_tts
 }
+
+# Fields of the `DACConfig` Parler-TTS vendors, which every published checkpoint serializes as its
+# `audio_encoder` entry under `model_type: "dac"`. It declares the codec's bitrate, codebook count and latent
+# width and none of the architecture hyperparameters `DacConfig` is built from, and `frame_rate` is a read-only
+# property there, so the entry raises if it is handed to [`~AutoConfig.for_model`] as it stands.
+LEGACY_AUDIO_ENCODER_FIELDS = ("frame_rate", "latent_dim", "model_bitrate", "num_codebooks")
+
+
+def is_legacy_audio_encoder_config(audio_encoder_config: dict) -> bool:
+    r"""
+    Returns whether an `audio_encoder` entry is the vendored Parler-TTS `DACConfig` rather than a [`DacConfig`].
+
+    Args:
+        audio_encoder_config (`dict`):
+            The `audio_encoder` entry of a Parler-TTS `config.json`, with or without its `model_type`.
+
+    Returns:
+        `bool`: Whether the entry carries the vendored schema.
+    """
+    return all(field in audio_encoder_config for field in LEGACY_AUDIO_ENCODER_FIELDS)
+
+
+def build_dac_config(audio_encoder_config: dict) -> DacConfig:
+    r"""
+    Builds the [`DacConfig`] of the codec a vendored Parler-TTS `DACConfig` entry describes.
+
+    The entry carries no architecture hyperparameter, because Parler-TTS builds the codec from the
+    `descript-audio-codec` 44.1 kHz defaults, which are [`DacConfig`]'s own. The width those defaults imply is
+    cross-checked against the `latent_dim` the entry declares, and every other shape is checked against the
+    checkpoint itself while its tensors are read.
+
+    Args:
+        audio_encoder_config (`dict`):
+            The `audio_encoder` entry of a published Parler-TTS `config.json`.
+
+    Returns:
+        [`DacConfig`]: The equivalent `transformers` codec configuration.
+
+    Raises:
+        ValueError: If the resulting latent width disagrees with the entry's `latent_dim`.
+    """
+    config = DacConfig(
+        n_codebooks=audio_encoder_config["num_codebooks"],
+        codebook_size=audio_encoder_config["codebook_size"],
+        sampling_rate=audio_encoder_config["sampling_rate"],
+    )
+    if config.hidden_size != audio_encoder_config["latent_dim"]:
+        raise ValueError(
+            f"Derived a latent width of {config.hidden_size} from the default DAC encoder shape, but the "
+            f"checkpoint declares latent_dim={audio_encoder_config['latent_dim']}."
+        )
+    return config
 
 
 class ParlerTTSDecoderConfig(PretrainedConfig):
@@ -287,7 +339,10 @@ class ParlerTTSConfig(PretrainedConfig):
         self.vocab_size = vocab_size
         self.prompt_cross_attention = prompt_cross_attention
         self.text_encoder = AutoConfig.for_model(text_encoder_model_type, **text_encoder_config)
-        self.audio_encoder = AutoConfig.for_model(audio_encoder_model_type, **audio_encoder_config)
+        if is_legacy_audio_encoder_config(audio_encoder_config):
+            self.audio_encoder = build_dac_config(audio_encoder_config)
+        else:
+            self.audio_encoder = AutoConfig.for_model(audio_encoder_model_type, **audio_encoder_config)
         self.decoder = ParlerTTSDecoderConfig(**decoder_config)
         self.is_encoder_decoder = True
 
