@@ -7,19 +7,17 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 import torch
-from huggingface_hub import snapshot_download
 from safetensors import safe_open
-from safetensors.torch import save_file
-from transformers import DacConfig, DacModel, GenerationConfig
+from transformers import DacConfig, DacModel
 from transformers.utils import (
     CONFIG_NAME,
-    GENERATION_CONFIG_NAME,
     SAFE_WEIGHTS_INDEX_NAME,
     SAFE_WEIGHTS_NAME,
     logging,
 )
 from transformers.utils.hub import cached_file
 
+from ...utils.checkpoint_cache import CheckpointWriter, cached_conversion, source_identity
 from .configuration_parler_tts import ParlerTTSConfig, is_legacy_audio_encoder_config
 from .processing_parler_tts import AUDIO_TOKENIZER_SUBFOLDER
 
@@ -119,31 +117,6 @@ def read_config(source, subfolder: str | None = None, **kwargs) -> ParlerTTSConf
         [`ParlerTTSConfig`]: The checkpoint's configuration.
     """
     return ParlerTTSConfig.from_pretrained(
-        source,
-        subfolder=subfolder or "",
-        **{key: value for key, value in kwargs.items() if key in _DOWNLOAD_KWARGS},
-    )
-
-
-def read_generation_config(source, subfolder: str | None = None, **kwargs) -> GenerationConfig | None:
-    r"""
-    Reads the generation configuration a checkpoint ships, which decides how long a generation runs and whether
-    it samples, and which `from_pretrained` cannot resolve itself for a checkpoint handed to it as tensors.
-
-    Args:
-        source (`str` or `os.PathLike`):
-            Repository id or local directory holding the checkpoint.
-        subfolder (`str`, *optional*):
-            Directory inside `source` the configuration sits in.
-        kwargs (`dict`, *optional*):
-            Keyword arguments of [`resolve_file`].
-
-    Returns:
-        [`GenerationConfig`] or `None`: The checkpoint's generation configuration, or `None` if it ships none.
-    """
-    if resolve_file(source, GENERATION_CONFIG_NAME, subfolder=subfolder, **kwargs) is None:
-        return None
-    return GenerationConfig.from_pretrained(
         source,
         subfolder=subfolder or "",
         **{key: value for key, value in kwargs.items() if key in _DOWNLOAD_KWARGS},
@@ -276,12 +249,61 @@ def build_dac_model(config: DacConfig, state_dict: dict[str, torch.Tensor]) -> D
     return model
 
 
-def build_model_files(
-    source, subfolder: str | None = None, config: ParlerTTSConfig | None = None, **kwargs
-) -> tuple[ParlerTTSConfig, dict[str, torch.Tensor]]:
+def write_checkpoint(
+    source, directory, subfolder: str | None = None, config: ParlerTTSConfig | None = None, **kwargs
+) -> None:
     r"""
-    Reads a published Parler-TTS checkpoint and returns what [`ParlerTTSForConditionalGeneration`] needs to load
-    it, with the codec rewritten into [`DacModel`]'s weight layout under the same `audio_encoder` prefix.
+    Reads a published Parler-TTS checkpoint and writes what [`ParlerTTSForConditionalGeneration.from_pretrained`]
+    reads into `directory`, with the codec rewritten into [`DacModel`]'s weight layout under the same
+    `audio_encoder` prefix.
+
+    The text encoder and the decoder are copied over a tensor at a time and written out in shards, so a
+    checkpoint too large to hold twice is never held once.
+
+    Args:
+        source (`str` or `os.PathLike`):
+            Repository id or local directory holding the published checkpoint.
+        directory (`str` or `os.PathLike`):
+            Directory the converted checkpoint is written to.
+        subfolder (`str`, *optional*):
+            Directory inside `source` the checkpoint sits in.
+        config ([`ParlerTTSConfig`], *optional*):
+            Configuration to convert the checkpoint into. Defaults to the one its `config.json` describes.
+        kwargs (`dict`, *optional*):
+            Keyword arguments of [`resolve_file`].
+    """
+    if config is None:
+        config = read_config(source, subfolder=subfolder, **kwargs)
+
+    weight_files = resolve_weight_files(source, subfolder=subfolder, **kwargs)
+    with CheckpointWriter(directory) as writer:
+        dac_model = build_dac_model(config.audio_encoder, read_dac_state_dict(weight_files))
+        writer.update({_AUDIO_ENCODER_PREFIX + key: value for key, value in dac_model.state_dict().items()})
+        # The codec is written out and dropped before the rest is read, so the two are never resident together.
+        writer.flush()
+        del dac_model
+
+        for path in weight_files:
+            with safe_open(path, framework="pt") as handle:
+                for key in handle.keys():
+                    if not key.startswith(_AUDIO_ENCODER_PREFIX):
+                        writer.add(key, handle.get_tensor(key))
+
+    target = Path(directory)
+    config.save_pretrained(target)
+    for name in _COPIED_FILES:
+        copied = resolve_file(source, name, subfolder=subfolder, **kwargs)
+        if copied is not None:
+            shutil.copy(copied, target / name)
+
+
+def converted_checkpoint(
+    source, subfolder: str | None = None, config: ParlerTTSConfig | None = None, **kwargs
+) -> Path:
+    r"""
+    Returns a directory holding the converted form of a published Parler-TTS checkpoint, which
+    [`~PreTrainedModel.from_pretrained`] reads the ordinary way, converting it the first time it is asked for
+    and reusing that conversion afterwards.
 
     Args:
         source (`str` or `os.PathLike`):
@@ -289,29 +311,22 @@ def build_model_files(
         subfolder (`str`, *optional*):
             Directory inside `source` the checkpoint sits in.
         config ([`ParlerTTSConfig`], *optional*):
-            Configuration to load the checkpoint into. Defaults to the one its `config.json` describes.
+            Configuration to convert the checkpoint into. Defaults to the one its `config.json` describes.
         kwargs (`dict`, *optional*):
             Keyword arguments of [`resolve_file`].
 
     Returns:
-        `tuple[ParlerTTSConfig, dict[str, torch.Tensor]]`: The configuration and the converted tensors.
+        `Path`: The directory holding the converted checkpoint.
     """
-    if config is None:
-        config = read_config(source, subfolder=subfolder, **kwargs)
-
-    weight_files = resolve_weight_files(source, subfolder=subfolder, **kwargs)
-    dac_model = build_dac_model(config.audio_encoder, read_dac_state_dict(weight_files))
-
-    converted = {}
-    for path in weight_files:
-        with safe_open(path, framework="pt") as handle:
-            for key in handle.keys():
-                if not key.startswith(_AUDIO_ENCODER_PREFIX):
-                    converted[key] = handle.get_tensor(key)
-    converted.update(
-        {_AUDIO_ENCODER_PREFIX + key: value for key, value in dac_model.state_dict().items()}
+    config_file = resolve_file(source, CONFIG_NAME, subfolder=subfolder, **kwargs)
+    parts = [str(source), subfolder, source_identity(source, config_file)]
+    if config is not None:
+        parts.append(config.to_json_string())
+    return cached_conversion(
+        "parler_tts",
+        parts,
+        lambda directory: write_checkpoint(source, directory, subfolder=subfolder, config=config, **kwargs),
     )
-    return config, converted
 
 
 def build_audio_tokenizer(source, subfolder: str | None = None, **kwargs) -> DacModel:
@@ -338,7 +353,8 @@ def convert(checkpoint_path, output_dir):
     """
     Writes a published Parler-TTS checkpoint into a directory of its own, which
     [`ParlerTTSForConditionalGeneration.from_pretrained`] and [`ParlerTTSProcessor.from_pretrained`] read without
-    converting the codec again, for a checkpoint that is loaded many times or shipped elsewhere.
+    converting the codec again, for a checkpoint that is shipped elsewhere or kept outside the conversion cache
+    [`converted_checkpoint`] holds.
 
     Args:
         checkpoint_path (`str`):
@@ -349,47 +365,22 @@ def convert(checkpoint_path, output_dir):
     Returns:
         `str`: The `output_dir` that was written.
     """
-    source = Path(checkpoint_path)
-    if not source.is_dir():
-        source = Path(snapshot_download(checkpoint_path))
     target = Path(output_dir)
-    target.mkdir(parents=True, exist_ok=True)
-
-    config, converted = build_model_files(source)
-
-    save_file(
-        {key: value.contiguous() for key, value in converted.items()},
-        target / SAFE_WEIGHTS_NAME,
-        metadata={"format": "pt"},
-    )
-    config.save_pretrained(target)
-    for name in _COPIED_FILES:
-        if (source / name).is_file():
-            shutil.copy(source / name, target / name)
-
-    dac_model = DacModel(config.audio_encoder)
-    dac_model.load_state_dict(
-        {
-            key[len(_AUDIO_ENCODER_PREFIX) :]: value
-            for key, value in converted.items()
-            if key.startswith(_AUDIO_ENCODER_PREFIX)
-        }
-    )
-    dac_model.save_pretrained(target / AUDIO_TOKENIZER_SUBFOLDER)
-
+    write_checkpoint(checkpoint_path, target)
+    build_audio_tokenizer(checkpoint_path).save_pretrained(target / AUDIO_TOKENIZER_SUBFOLDER)
     return str(target)
 
 
 __all__ = [
     "build_audio_tokenizer",
     "build_dac_model",
-    "fold_weight_norm",
-    "build_model_files",
     "convert",
+    "converted_checkpoint",
+    "fold_weight_norm",
     "is_published_layout",
     "read_config",
     "read_dac_state_dict",
-    "read_generation_config",
     "resolve_file",
     "resolve_weight_files",
+    "write_checkpoint",
 ]

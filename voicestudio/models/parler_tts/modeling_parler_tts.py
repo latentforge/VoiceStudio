@@ -2315,7 +2315,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
 
         >>> model = ParlerTTSForConditionalGeneration.from_pretrained("parler-tts/parler-tts-mini-v1")
         ```"""
-        from .weight_conversion import build_model_files, is_published_layout, read_generation_config
+        from .weight_conversion import converted_checkpoint, is_published_layout
 
         # At the moment fast initialization is not supported for composite models
         if kwargs.get("_fast_init", False):
@@ -2331,22 +2331,10 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
             and is_published_layout(pretrained_model_name_or_path, **kwargs)
         ):
             subfolder = kwargs.pop("subfolder", None)
-            given_config = kwargs.pop("config", None)
-            config, state_dict = build_model_files(
-                pretrained_model_name_or_path, subfolder=subfolder, config=given_config, **kwargs
+            directory = converted_checkpoint(
+                pretrained_model_name_or_path, subfolder=subfolder, config=kwargs.pop("config", None), **kwargs
             )
-            outputs = super().from_pretrained(None, *model_args, config=config, state_dict=state_dict, **kwargs)
-
-            # `from_pretrained` reads a checkpoint's `generation_config.json` off the path it was given, and a
-            # checkpoint handed to it as tensors has none. Without it the decoder runs to the model-agnostic
-            # `max_length` default, which is a fraction of a second of audio.
-            generation_config = read_generation_config(
-                pretrained_model_name_or_path, subfolder=subfolder, **kwargs
-            )
-            if generation_config is not None:
-                model = outputs[0] if isinstance(outputs, tuple) else outputs
-                model.generation_config = generation_config
-            return outputs
+            return super().from_pretrained(directory, *model_args, **kwargs)
 
         return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
 
