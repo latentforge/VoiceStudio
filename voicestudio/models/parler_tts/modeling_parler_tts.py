@@ -53,8 +53,6 @@ from transformers.modeling_outputs import (
 from transformers.modeling_utils import PreTrainedModel
 from transformers.generation import GenerationMixin
 from transformers.utils import (
-    add_start_docstrings,
-    add_start_docstrings_to_model_forward,
     auto_docstring,
     logging,
 )
@@ -1075,6 +1073,7 @@ class ParlerTTSDecoderLayer(nn.Module):
         return outputs
 
 
+@auto_docstring
 # Copied from transformers.models.musicgen.modeling_musicgen.MusicgenPreTrainedModel with Musicgen->ParlerTTS
 class ParlerTTSPreTrainedModel(PreTrainedModel):
     """
@@ -1103,112 +1102,7 @@ class ParlerTTSPreTrainedModel(PreTrainedModel):
                 module.weight.data[module.padding_idx].zero_()
 
 
-MUSICGEN_START_DOCSTRING = r"""
 
-    The ParlerTTS model was proposed in [Simple and Controllable Music Generation](https://arxiv.org/abs/2306.05284) by
-    Jade Copet, Felix Kreuk, Itai Gat, Tal Remez, David Kant, Gabriel Synnaeve, Yossi Adi, Alexandre Défossez. It is an
-    encoder decoder transformer trained on the task of conditional music generation
-
-    This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
-    library implements for all its model (such as downloading or saving, resizing the input embeddings, pruning heads
-    etc.)
-
-    This model is also a PyTorch [torch.nn.Module](https://pytorch.org/docs/stable/nn.html#torch.nn.Module) subclass.
-    Use it as a regular PyTorch Module and refer to the PyTorch documentation for all matter related to general usage
-    and behavior.
-
-    Parameters:
-        config ([`ParlerTTSConfig`]): Model configuration class with all the parameters of the model.
-            Initializing with a config file does not load the weights associated with the model, only the
-            configuration. Check out the [`~PreTrainedModel.from_pretrained`] method to load the model weights.
-"""
-
-MUSICGEN_DECODER_INPUTS_DOCSTRING = r"""
-    Args:
-        input_ids (`torch.LongTensor` of shape `(batch_size * num_codebooks, sequence_length)`):
-            Indices of input sequence tokens in the vocabulary, corresponding to the sequence of audio codes.
-
-            Indices can be obtained by encoding an audio prompt with an audio encoder model to predict audio codes,
-            such as with the [`EncodecModel`]. See [`EncodecModel.encode`] for details.
-
-            [What are input IDs?](../glossary#input-ids)
-
-            <Tip warning={true}>
-
-            The `input_ids` will automatically be converted from shape `(batch_size * num_codebooks,
-            target_sequence_length)` to `(batch_size, num_codebooks, target_sequence_length)` in the forward pass. If
-            you obtain audio codes from an audio encoding model, such as [`EncodecModel`], ensure that the number of
-            frames is equal to 1, and that you reshape the audio codes from `(frames, batch_size, num_codebooks,
-            target_sequence_length)` to `(batch_size * num_codebooks, target_sequence_length)` prior to passing them as
-            `input_ids`.
-
-            </Tip>
-
-        attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
-
-            - 1 for tokens that are **not masked**,
-            - 0 for tokens that are **masked**.
-
-            [What are attention masks?](../glossary#attention-mask)
-        encoder_hidden_states (`torch.FloatTensor` of shape `(batch_size, encoder_sequence_length, hidden_size)`, *optional*):
-            Sequence of hidden-states at the output of the last layer of the encoder. Used in the cross-attention of
-            the decoder.
-        encoder_attention_mask (`torch.LongTensor` of shape `(batch_size, encoder_sequence_length)`, *optional*):
-            Mask to avoid performing cross-attention on padding tokens indices of encoder input_ids. Mask values
-            selected in `[0, 1]`:
-
-            - 1 for tokens that are **not masked**,
-            - 0 for tokens that are **masked**.
-
-            [What are attention masks?](../glossary#attention-mask)
-        prompt_hidden_states (`torch.FloatTensor` of shape `(batch_size, encoder_sequence_length, hidden_size)`, *optional*):
-            Sequence of prompt hidden-states at the output of the initial embedding layer. Concatenated to the input embeds.
-        prompt_attention_mask (`torch.LongTensor` of shape `(batch_size, encoder_sequence_length)`, *optional*):
-            Mask to avoid performing cross-attention on padding tokens indices of prompt input_ids. Mask values
-            selected in `[0, 1]`:
-
-            - 1 for tokens that are **not masked**,
-            - 0 for tokens that are **masked**.
-
-            [What are attention masks?](../glossary#attention-mask)
-        head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
-            Mask to nullify selected heads of the attention modules. Mask values selected in `[0, 1]`:
-
-            - 1 indicates the head is **not masked**,
-            - 0 indicates the head is **masked**.
-
-        cross_attn_head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
-            Mask to nullify selected heads of the cross-attention modules in the decoder to avoid performing
-            cross-attention on hidden heads. Mask values selected in `[0, 1]`:
-
-            - 1 indicates the head is **not masked**,
-            - 0 indicates the head is **masked**.
-
-        past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
-            Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
-            `(batch_size, num_heads, sequence_length, embed_size_per_head)`) and 2 additional tensors of shape
-            `(batch_size, num_heads, encoder_sequence_length, embed_size_per_head)`.
-
-            Contains pre-computed hidden-states (key and values in the self-attention blocks and in the cross-attention
-            blocks) that can be used (see `past_key_values` input) to speed up sequential decoding.
-
-            If `past_key_values` are used, the user can optionally input only the last `decoder_input_ids` (those that
-            don't have their past key value states given to this model) of shape `(batch_size, 1)` instead of all
-            `decoder_input_ids` of shape `(batch_size, sequence_length)`.
-        inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
-            Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation.
-            This is useful if you want more control over how to convert `input_ids` indices into associated vectors
-            than the model's internal embedding lookup matrix.
-        output_attentions (`bool`, *optional*):
-            Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
-            tensors for more detail.
-        output_hidden_states (`bool`, *optional*):
-            Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
-            more detail.
-        return_dict (`bool`, *optional*):
-            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
-"""
 
 
 class ParlerTTSDecoder(ParlerTTSPreTrainedModel):
@@ -1625,10 +1519,7 @@ class ParlerTTSDecoder(ParlerTTSPreTrainedModel):
         return causal_mask
 
 
-@add_start_docstrings(
-    "The bare ParlerTTS decoder model outputting raw hidden-states without any specific head on top.",
-    MUSICGEN_START_DOCSTRING,
-)
+@auto_docstring
 # Copied from transformers.models.musicgen.modeling_musicgen.MusicgenModel with Musicgen->ParlerTTS
 class ParlerTTSModel(ParlerTTSPreTrainedModel):
     def __init__(self, config: ParlerTTSDecoderConfig):
@@ -1648,7 +1539,7 @@ class ParlerTTSModel(ParlerTTSPreTrainedModel):
     def get_decoder(self):
         return self.decoder
 
-    @add_start_docstrings_to_model_forward(MUSICGEN_DECODER_INPUTS_DOCSTRING)
+    @auto_docstring
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -1668,6 +1559,22 @@ class ParlerTTSModel(ParlerTTSPreTrainedModel):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPastAndCrossAttentions]:
+        r"""
+        prompt_hidden_states (`torch.FloatTensor` of shape `(batch_size, encoder_sequence_length, hidden_size)`, *optional*):
+            Sequence of prompt hidden states at the output of the initial embedding layer, concatenated to the
+            input embeds.
+        prompt_attention_mask (`torch.LongTensor` of shape `(batch_size, encoder_sequence_length)`, *optional*):
+            Mask to avoid performing cross-attention on padding tokens indices of the prompt input ids.
+        head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
+            Mask to nullify selected heads of the self-attention modules. Mask values selected in `[0, 1]`: 1
+            indicates the head is **not masked**, 0 indicates the head is **masked**.
+        cross_attn_head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
+            Mask to nullify selected heads of the cross-attention modules. Mask values selected in `[0, 1]`: 1
+            indicates the head is **not masked**, 0 indicates the head is **masked**.
+        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+            Indices depicting the position of the input sequence tokens in the sequence. It is used to update
+            the cache in the correct position and to infer the complete sequence length.
+        """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
