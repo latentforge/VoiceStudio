@@ -22,7 +22,7 @@ ask instead of proceeding.
 | H6 | Never conclude "no public checkpoint exists" without the exhaustive search in §3.3, and never silently omit a real submodule found during a source-trace. Log gaps in `PROJECT.md`; do not resolve them unilaterally (§3.6). |
 | H7 | Never hand-edit a generated file behind `modular_<model>.py`, and never edit inside a `# Copied from ...` block. Edit the source it copies from. |
 | H8 | Comments must never narrate history, diffs, or rationale ("instead of X", "previously did Y", "see PROJECT.md"). See §6.1 for what's allowed. |
-| H9 | Only `modeling_<model>.py` gets a license header. Import-relay files get no module docstring at all (§8). |
+| H9 | Every source file in a model folder gets a license header. Import-relay files get no module docstring at all (§8). |
 | H10 | Never write a migration as new files added beside an untouched vendored tree, and never delete that tree to make room. `git mv` the real upstream file and edit it in place (§2.4). |
 | H11 | Never add a third-party dependency to make a migration work, and never `pip install` one into the environment to get past a blocker. Removing the upstream model's dependencies is part of the migration; if one cannot be removed, report it and let a human decide (§9.1). |
 | H12 | Never rewrite shared history. No `git reset`, `rebase`, `commit --amend`, or force push, and never move the branch. Undo your own work with `git revert` only, and never touch a commit you did not create. Other agents commit to this branch concurrently (§1.3). |
@@ -286,6 +286,18 @@ from this document's examples.
   `generation_<model>.py` into `modeling_<model>.py`) just because this document's
   examples didn't happen to name that file.
 
+### 4.4 Claiming a convention
+
+Before asserting that `transformers` does or does not do something, `grep` its
+`models/` tree for the pattern and cite what you found. Do not generalize from one
+subsystem, and do not infer the allowed set from this document's examples.
+
+This is a rule because the inference is wrong often enough to matter. `loss_utils.py`
+holds only functions, which reads as "losses are functions here", but seven models
+including `fastspeech2_conformer` hold a structured loss as an `nn.Module` attribute
+named `self.criterion`, defined in their own `modeling_*.py`. A migration was nearly
+changed to match a convention that does not exist.
+
 ### 4.3 Copied-from / modular mechanism
 Use the `transformers` "Copied from ..." and `modular_<model>.py` mechanisms to
 avoid duplicating code between model files, the same way `transformers` itself does.
@@ -349,11 +361,10 @@ formatting reference.
 
 ## 6. Licensing & Headers
 
-- Only `modeling_<model>.py` carries the original repository's license header,
-  formatted the way `transformers` formats its license headers.
-- `configuration_<model>.py`, `processing_<model>.py`, `tokenization_<model>.py`,
-  `__init__.py`, and any other file in a model's folder do **not** get a license
-  header.
+- Every source file in a model's folder carries the original repository's license
+  header, formatted the way `transformers` formats its own. That is what
+  `transformers` does: `configuration_llama.py`, `configuration_qwen3.py` and
+  `configuration_dac.py` all open with one, not only their modeling files.
 - No per-model `LICENSE` or `INFO.md` file. The license lives in the modeling header
   and one `LICENSE` sits at the repository root, which is how `transformers` does it.
   An upstream `README.md` carried in during vendoring is replaced, not kept alongside.
