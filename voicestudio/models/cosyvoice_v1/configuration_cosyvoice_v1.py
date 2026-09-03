@@ -180,6 +180,45 @@ class CosyVoiceV1Config(PretrainedConfig):
             what the vocoder objective uses and what sets it apart from the mel the model consumes.
         vocoder_mel_loss_coeff (`float`, *optional*, defaults to 45.0):
             Weight of the mel reconstruction term of the vocoder objective.
+        speaker_encoder_num_mel_bins (`int`, *optional*, defaults to 80):
+            Number of mel bins of the kaldi filter bank the speaker encoder consumes.
+        speaker_encoder_front_end_channels (`int`, *optional*, defaults to 32):
+            Channels of the two dimensional convolutional front end of the speaker encoder.
+        speaker_encoder_front_end_num_blocks (`list[int]`, *optional*, defaults to `[2, 2]`):
+            Number of residual blocks in each of the two stages of that front end.
+        speaker_encoder_init_channels (`int`, *optional*, defaults to 128):
+            Channels the first time delay layer of the speaker encoder projects to.
+        speaker_encoder_growth_rate (`int`, *optional*, defaults to 32):
+            Channels every dense layer of the speaker encoder appends to its input.
+        speaker_encoder_bottleneck_size (`int`, *optional*, defaults to 4):
+            Multiple of `speaker_encoder_growth_rate` giving the bottleneck width of a dense layer.
+        speaker_encoder_num_layers (`list[int]`, *optional*, defaults to `[12, 24, 16]`):
+            Number of dense layers in each speaker encoder block.
+        speaker_encoder_kernel_sizes (`list[int]`, *optional*, defaults to `[3, 3, 3]`):
+            Kernel size of the context aware masking convolution of each block.
+        speaker_encoder_dilations (`list[int]`, *optional*, defaults to `[1, 2, 2]`):
+            Dilation of that convolution in each block.
+        speaker_encoder_segment_length (`int`, *optional*, defaults to 100):
+            Frames per segment of the average pooled context a context aware masking layer adds to
+            the utterance level context.
+        speaker_encoder_reduction (`int`, *optional*, defaults to 2):
+            Factor the context aware masking bottleneck divides the channels by.
+        speech_tokenizer_num_mel_bins (`int`, *optional*, defaults to 128):
+            Number of mel bins of the log mel spectrogram the speech tokenizer consumes.
+        speech_tokenizer_hidden_size (`int`, *optional*, defaults to 1280):
+            Hidden size of the speech tokenizer encoder.
+        speech_tokenizer_num_heads (`int`, *optional*, defaults to 20):
+            Number of attention heads in the speech tokenizer encoder.
+        speech_tokenizer_ffn_dim (`int`, *optional*, defaults to 5120):
+            Inner dimension of the speech tokenizer feed forward layers.
+        speech_tokenizer_num_layers (`int`, *optional*, defaults to 6):
+            Number of speech tokenizer encoder layers.
+        speech_tokenizer_conv_stride (`int`, *optional*, defaults to 1):
+            Stride of the first of the two convolutions the speech tokenizer opens with. The second
+            always strides by two, so the token rate is the mel frame rate divided by twice this.
+        speech_tokenizer_max_source_positions (`int`, *optional*, defaults to 1500):
+            Length of the learned position table added to the speech tokenizer encoder input. `None`
+            means the encoder carries no position table.
         initializer_range (`float`, *optional*, defaults to 0.02):
             Standard deviation of the truncated normal initializer.
     """
@@ -267,6 +306,24 @@ class CosyVoiceV1Config(PretrainedConfig):
         vocoder_mel_loss_fmin: float = 0.0,
         vocoder_mel_loss_fmax: float | None = None,
         vocoder_mel_loss_coeff: float = 45.0,
+        speaker_encoder_num_mel_bins: int = 80,
+        speaker_encoder_front_end_channels: int = 32,
+        speaker_encoder_front_end_num_blocks: list[int] | None = None,
+        speaker_encoder_init_channels: int = 128,
+        speaker_encoder_growth_rate: int = 32,
+        speaker_encoder_bottleneck_size: int = 4,
+        speaker_encoder_num_layers: list[int] | None = None,
+        speaker_encoder_kernel_sizes: list[int] | None = None,
+        speaker_encoder_dilations: list[int] | None = None,
+        speaker_encoder_segment_length: int = 100,
+        speaker_encoder_reduction: int = 2,
+        speech_tokenizer_num_mel_bins: int = 128,
+        speech_tokenizer_hidden_size: int = 1280,
+        speech_tokenizer_num_heads: int = 20,
+        speech_tokenizer_ffn_dim: int = 5120,
+        speech_tokenizer_num_layers: int = 6,
+        speech_tokenizer_conv_stride: int = 1,
+        speech_tokenizer_max_source_positions: int | None = 1500,
         initializer_range: float = 0.02,
         **kwargs,
     ):
@@ -370,6 +427,32 @@ class CosyVoiceV1Config(PretrainedConfig):
         self.vocoder_mel_loss_fmin = vocoder_mel_loss_fmin
         self.vocoder_mel_loss_fmax = vocoder_mel_loss_fmax
         self.vocoder_mel_loss_coeff = vocoder_mel_loss_coeff
+        self.speaker_encoder_num_mel_bins = speaker_encoder_num_mel_bins
+        self.speaker_encoder_front_end_channels = speaker_encoder_front_end_channels
+        self.speaker_encoder_front_end_num_blocks = (
+            [2, 2] if speaker_encoder_front_end_num_blocks is None else speaker_encoder_front_end_num_blocks
+        )
+        self.speaker_encoder_init_channels = speaker_encoder_init_channels
+        self.speaker_encoder_growth_rate = speaker_encoder_growth_rate
+        self.speaker_encoder_bottleneck_size = speaker_encoder_bottleneck_size
+        self.speaker_encoder_num_layers = (
+            [12, 24, 16] if speaker_encoder_num_layers is None else speaker_encoder_num_layers
+        )
+        self.speaker_encoder_kernel_sizes = (
+            [3, 3, 3] if speaker_encoder_kernel_sizes is None else speaker_encoder_kernel_sizes
+        )
+        self.speaker_encoder_dilations = (
+            [1, 2, 2] if speaker_encoder_dilations is None else speaker_encoder_dilations
+        )
+        self.speaker_encoder_segment_length = speaker_encoder_segment_length
+        self.speaker_encoder_reduction = speaker_encoder_reduction
+        self.speech_tokenizer_num_mel_bins = speech_tokenizer_num_mel_bins
+        self.speech_tokenizer_hidden_size = speech_tokenizer_hidden_size
+        self.speech_tokenizer_num_heads = speech_tokenizer_num_heads
+        self.speech_tokenizer_ffn_dim = speech_tokenizer_ffn_dim
+        self.speech_tokenizer_num_layers = speech_tokenizer_num_layers
+        self.speech_tokenizer_conv_stride = speech_tokenizer_conv_stride
+        self.speech_tokenizer_max_source_positions = speech_tokenizer_max_source_positions
 
         self.initializer_range = initializer_range
         super().__init__(**kwargs)

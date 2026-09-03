@@ -44,6 +44,16 @@ class CosyVoiceV2Config(CosyVoiceV1Config):
             Length in mel frames of the fixed noise the Euler solver starts from.
         noise_seed (`int`, *optional*, defaults to 0):
             Seed the fixed noise is drawn with.
+        speech_tokenizer_fsmn_kernel_size (`int`, *optional*, defaults to 31):
+            Kernel size of the depthwise memory convolution the speech tokenizer attention adds to
+            its value projection.
+        speech_tokenizer_rope_theta (`float`, *optional*, defaults to 10000.0):
+            Base of the rotary embedding of the speech tokenizer attention.
+        speech_tokenizer_max_position_embeddings (`int`, *optional*, defaults to 2048):
+            Longest sequence the rotary embedding of the speech tokenizer is built for.
+        speech_tokenizer_fsq_levels (`list[int]`, *optional*, defaults to `[3, 3, 3, 3, 3, 3, 3, 3]`):
+            Number of levels of each dimension of the finite scalar quantizer the speech tokenizer
+            closes with. Their product is the size of the speech vocabulary.
         kwargs:
             Forwarded to [`CosyVoiceV1Config`], whose defaults are overridden to the v2 geometry.
     """
@@ -64,6 +74,10 @@ class CosyVoiceV2Config(CosyVoiceV1Config):
         estimator_num_decoding_left_chunks: int = -1,
         noise_length: int = 15000,
         noise_seed: int = 0,
+        speech_tokenizer_fsmn_kernel_size: int = 31,
+        speech_tokenizer_rope_theta: float = 10000.0,
+        speech_tokenizer_max_position_embeddings: int = 2048,
+        speech_tokenizer_fsq_levels: list[int] | None = None,
         **kwargs,
     ):
         defaults = {
@@ -86,6 +100,8 @@ class CosyVoiceV2Config(CosyVoiceV1Config):
             "vocoder_mel_loss_n_fft": 1920,
             "vocoder_mel_loss_hop_length": 480,
             "vocoder_mel_loss_win_length": 1920,
+            "speech_tokenizer_conv_stride": 2,
+            "speech_tokenizer_max_source_positions": None,
         }
         for name, value in defaults.items():
             kwargs.setdefault(name, value)
@@ -120,6 +136,12 @@ class CosyVoiceV2Config(CosyVoiceV1Config):
         self.estimator_num_decoding_left_chunks = estimator_num_decoding_left_chunks
         self.noise_length = noise_length
         self.noise_seed = noise_seed
+        self.speech_tokenizer_fsmn_kernel_size = speech_tokenizer_fsmn_kernel_size
+        self.speech_tokenizer_rope_theta = speech_tokenizer_rope_theta
+        self.speech_tokenizer_max_position_embeddings = speech_tokenizer_max_position_embeddings
+        self.speech_tokenizer_fsq_levels = (
+            [3] * 8 if speech_tokenizer_fsq_levels is None else speech_tokenizer_fsq_levels
+        )
         super().__init__(**kwargs)
 
         # One dtype governs the whole composite. The Qwen2 directory the released checkpoint ships

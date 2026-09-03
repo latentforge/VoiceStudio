@@ -10,7 +10,9 @@ from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.auto.tokenization_auto import AutoTokenizer
 
 from ..cosyvoice_v1.processing_cosyvoice_v1 import CosyVoiceV1FeatureExtractor, CosyVoiceV1Processor
-from ..cosyvoice_v1.weight_conversion import SPEAKER_ENCODER_FILE, resolve_checkpoint
+from ..cosyvoice_v1.weight_conversion import resolve_checkpoint
+from .configuration_cosyvoice_v2 import CosyVoiceV2Config
+from .modeling_cosyvoice_v2 import CosyVoiceV2SpeechTokenizer
 from .weight_conversion import SPEECH_TOKENIZER_FILE, TEXT_MODEL_SUBDIR
 
 
@@ -85,9 +87,9 @@ class CosyVoiceV2Processor(CosyVoiceV1Processor):
     spectrogram extractor of the flow matching model, the supervised semantic speech tokenizer and the
     speaker encoder into a single object.
 
-    The speech tokenizer and the speaker encoder are the ONNX graphs shipped with the released model
-    directory, `speech_tokenizer_v2.onnx` and `campplus.onnx`, and are opened lazily, so text
-    tokenization and the speaker table work without `onnxruntime`.
+    Its speech tokenizer is [`CosyVoiceV2SpeechTokenizer`], whose weights are read out of the
+    `speech_tokenizer_v2.onnx` graph the released directory ships, and whose two strided convolutions
+    put it at half v1's token rate.
 
     Args:
         feature_extractor ([`CosyVoiceV2FeatureExtractor`]):
@@ -95,9 +97,9 @@ class CosyVoiceV2Processor(CosyVoiceV1Processor):
         tokenizer ([`Qwen2TokenizerFast`]):
             Text tokenizer, loaded from the `CosyVoice-BlankEN` directory of the released checkpoint.
         speech_token_model_path (`str`, *optional*):
-            Path of `speech_tokenizer_v2.onnx`.
+            Path of the `speech_tokenizer_v2.onnx` graph the speech tokenizer is built from.
         speaker_encoder_model_path (`str`, *optional*):
-            Path of `campplus.onnx`.
+            Path of the CAM++ weights the speaker encoder is built from.
         speaker_info_path (`str`, *optional*):
             Path of a `spk2info.pt`. The released v2 directory ships none.
         speech_token_mel_bins (`int`, *optional*, defaults to 128):
@@ -108,6 +110,8 @@ class CosyVoiceV2Processor(CosyVoiceV1Processor):
     """
 
     feature_extractor_type = CosyVoiceV2FeatureExtractor
+    speech_tokenizer_type = CosyVoiceV2SpeechTokenizer
+    model_config_type = CosyVoiceV2Config
     speech_tokenizer_file = SPEECH_TOKENIZER_FILE
 
     @classmethod
@@ -132,7 +136,6 @@ class CosyVoiceV2Processor(CosyVoiceV1Processor):
             feature_extractor=cls.feature_extractor_type(),
             tokenizer=tokenizer,
             speech_token_model_path=str(directory / cls.speech_tokenizer_file),
-            speaker_encoder_model_path=str(directory / SPEAKER_ENCODER_FILE),
         )
 
     @classmethod
@@ -150,9 +153,7 @@ class CosyVoiceV2Processor(CosyVoiceV1Processor):
             `Path` or `None`: The local directory, or `None` when `source` holds no released
             checkpoint.
         """
-        return resolve_checkpoint(
-            source, (SPEAKER_ENCODER_FILE, cls.speech_tokenizer_file), (f"{TEXT_MODEL_SUBDIR}/*",), **kwargs
-        )
+        return resolve_checkpoint(source, (cls.speech_tokenizer_file,), (f"{TEXT_MODEL_SUBDIR}/*",), **kwargs)
 
     @staticmethod
     def add_special_tokens(tokenizer, tokens: Optional[list[str]] = None) -> int:

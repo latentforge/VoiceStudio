@@ -67,6 +67,7 @@ class CosyVoiceV3Config(CosyVoiceV2Config):
             "pre_lookahead_channels": 1024,
             "estimator_in_channels": 320,
             "vocoder_source_resblock_kernel_sizes": [7, 7, 11],
+            "speech_tokenizer_num_layers": 12,
         }
         for name, value in defaults.items():
             kwargs.setdefault(name, value)

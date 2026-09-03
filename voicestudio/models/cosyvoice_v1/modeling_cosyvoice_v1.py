@@ -30,6 +30,8 @@ from transformers.conversion_mapping import WeightRenaming, register_checkpoint_
 from transformers.modeling_outputs import ModelOutput
 from transformers.modeling_utils import PreTrainedModel
 from transformers.models.speecht5.modeling_speecht5 import HifiGanResidualBlock
+from transformers.models.whisper.configuration_whisper import WhisperConfig
+from transformers.models.whisper.modeling_whisper import WhisperAttention, WhisperEncoderLayer
 from transformers.utils import auto_docstring
 
 from ..bigvgan.modeling_bigvgan import dynamic_range_compression, mel_spectrogram
@@ -2003,6 +2005,642 @@ class CosyVoiceV1HiFTGenerator(nn.Module):
         return self.decode(mel, source), source
 
 
+def build_speaker_nonlinear(num_channels: int, affine: bool = True) -> nn.Sequential:
+    """
+    Builds the normalization and activation pair the speaker encoder puts in front of every
+    convolution.
+
+    Args:
+        num_channels (`int`):
+            Channels the batch normalization runs over.
+        affine (`bool`, *optional*, defaults to `True`):
+            Whether the batch normalization is followed by a ReLU and carries a scale and a shift.
+
+    Returns:
+        `nn.Sequential`: The pair.
+    """
+    nonlinear = nn.Sequential()
+    nonlinear.add_module("batchnorm", nn.BatchNorm1d(num_channels, affine=affine))
+    if affine:
+        nonlinear.add_module("relu", nn.ReLU(inplace=True))
+    return nonlinear
+
+
+class CosyVoiceV1SpeakerResBlock(nn.Module):
+    """
+    Two dimensional residual block of the speaker encoder front end, which strides over the mel axis
+    only and leaves the time axis alone.
+
+    Args:
+        in_channels (`int`):
+            Channels of the input.
+        out_channels (`int`):
+            Channels of the output.
+        stride (`int`, *optional*, defaults to 1):
+            Stride over the mel axis.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, stride=(stride, 1), padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 1, stride=(stride, 1), bias=False),
+                nn.BatchNorm2d(out_channels),
+            )
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            hidden_states (`torch.Tensor` of shape `(batch_size, in_channels, num_mel_bins, num_frames)`):
+                Input feature map.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, out_channels, num_mel_bins // stride, num_frames)`:
+            the output feature map.
+        """
+        residual = F.relu(self.bn1(self.conv1(hidden_states)))
+        residual = self.bn2(self.conv2(residual))
+        return F.relu(residual + self.shortcut(hidden_states))
+
+
+class CosyVoiceV1SpeakerFrontEnd(nn.Module):
+    """
+    Two dimensional convolutional front end of the speaker encoder, which reduces the mel axis by
+    eight and flattens what is left into the channels of a one dimensional sequence.
+
+    Args:
+        config ([`CosyVoiceV1Config`]):
+            Model configuration.
+    """
+
+    def __init__(self, config: CosyVoiceV1Config):
+        super().__init__()
+        channels = config.speaker_encoder_front_end_channels
+        self.conv1 = nn.Conv2d(1, channels, 3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.layer1 = self._make_layer(channels, channels, config.speaker_encoder_front_end_num_blocks[0])
+        self.layer2 = self._make_layer(channels, channels, config.speaker_encoder_front_end_num_blocks[1])
+        self.conv2 = nn.Conv2d(channels, channels, 3, stride=(2, 1), padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(channels)
+        self.out_channels = channels * (config.speaker_encoder_num_mel_bins // 8)
+
+    @staticmethod
+    def _make_layer(in_channels: int, out_channels: int, num_blocks: int) -> nn.Sequential:
+        blocks = [CosyVoiceV1SpeakerResBlock(in_channels, out_channels, stride=2)]
+        blocks += [CosyVoiceV1SpeakerResBlock(out_channels, out_channels) for _ in range(num_blocks - 1)]
+        return nn.Sequential(*blocks)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            features (`torch.Tensor` of shape `(batch_size, num_mel_bins, num_frames)`):
+                Filter bank features.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, out_channels, num_frames)`: the flattened feature map.
+        """
+        hidden_states = F.relu(self.bn1(self.conv1(features.unsqueeze(1))))
+        hidden_states = self.layer2(self.layer1(hidden_states))
+        hidden_states = F.relu(self.bn2(self.conv2(hidden_states)))
+        batch_size, channels, num_bins, num_frames = hidden_states.shape
+        return hidden_states.reshape(batch_size, channels * num_bins, num_frames)
+
+
+class CosyVoiceV1TDNNLayer(nn.Module):
+    """
+    Time delay layer, a strided one dimensional convolution followed by a normalization and an
+    activation.
+
+    Args:
+        in_channels (`int`):
+            Channels of the input.
+        out_channels (`int`):
+            Channels of the output.
+        kernel_size (`int`):
+            Kernel size of the convolution.
+        stride (`int`, *optional*, defaults to 1):
+            Stride of the convolution.
+        dilation (`int`, *optional*, defaults to 1):
+            Dilation of the convolution.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, stride: int = 1, dilation: int = 1):
+        super().__init__()
+        padding = (kernel_size - 1) // 2 * dilation
+        self.linear = nn.Conv1d(
+            in_channels, out_channels, kernel_size, stride=stride, padding=padding, dilation=dilation, bias=False
+        )
+        self.nonlinear = build_speaker_nonlinear(out_channels)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            hidden_states (`torch.Tensor` of shape `(batch_size, in_channels, num_frames)`):
+                Input sequence.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, out_channels, num_frames // stride)`: the output.
+        """
+        return self.nonlinear(self.linear(hidden_states))
+
+
+class CosyVoiceV1CAMLayer(nn.Module):
+    """
+    Context aware masking layer, which gates a local convolution by a mask read off the utterance
+    level average and the segment level averages of the same input.
+
+    Args:
+        config ([`CosyVoiceV1Config`]):
+            Model configuration.
+        bottleneck_channels (`int`):
+            Channels of the input, which the dense layer has already bottlenecked.
+        out_channels (`int`):
+            Channels of the output.
+        kernel_size (`int`):
+            Kernel size of the local convolution.
+        dilation (`int`):
+            Dilation of the local convolution.
+    """
+
+    def __init__(
+        self,
+        config: CosyVoiceV1Config,
+        bottleneck_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        dilation: int,
+    ):
+        super().__init__()
+        self.segment_length = config.speaker_encoder_segment_length
+        reduced = bottleneck_channels // config.speaker_encoder_reduction
+        self.linear_local = nn.Conv1d(
+            bottleneck_channels,
+            out_channels,
+            kernel_size,
+            padding=(kernel_size - 1) // 2 * dilation,
+            dilation=dilation,
+            bias=False,
+        )
+        self.linear1 = nn.Conv1d(bottleneck_channels, reduced, 1)
+        self.relu = nn.ReLU(inplace=True)
+        self.linear2 = nn.Conv1d(reduced, out_channels, 1)
+        self.sigmoid = nn.Sigmoid()
+
+    def segment_pooling(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """
+        Averages the sequence over segments and holds each average for the whole segment.
+
+        Args:
+            hidden_states (`torch.Tensor` of shape `(batch_size, channels, num_frames)`):
+                Input sequence.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, channels, num_frames)`: the held averages.
+        """
+        segments = F.avg_pool1d(
+            hidden_states, kernel_size=self.segment_length, stride=self.segment_length, ceil_mode=True
+        )
+        shape = segments.shape
+        segments = segments.unsqueeze(-1).expand(*shape, self.segment_length).reshape(*shape[:-1], -1)
+        return segments[..., : hidden_states.shape[-1]]
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            hidden_states (`torch.Tensor` of shape `(batch_size, bottleneck_channels, num_frames)`):
+                Input sequence.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, out_channels, num_frames)`: the gated output.
+        """
+        local = self.linear_local(hidden_states)
+        context = hidden_states.mean(-1, keepdim=True) + self.segment_pooling(hidden_states)
+        context = self.relu(self.linear1(context))
+        return local * self.sigmoid(self.linear2(context))
+
+
+class CosyVoiceV1CAMDenseTDNNLayer(nn.Module):
+    """
+    One layer of a densely connected time delay block: a bottleneck projection followed by a context
+    aware masking layer, whose output the block appends to its input.
+
+    Args:
+        config ([`CosyVoiceV1Config`]):
+            Model configuration.
+        in_channels (`int`):
+            Channels of the input, which grows by `speaker_encoder_growth_rate` per layer.
+        kernel_size (`int`):
+            Kernel size of the context aware masking convolution.
+        dilation (`int`):
+            Dilation of that convolution.
+    """
+
+    def __init__(self, config: CosyVoiceV1Config, in_channels: int, kernel_size: int, dilation: int):
+        super().__init__()
+        bottleneck = config.speaker_encoder_bottleneck_size * config.speaker_encoder_growth_rate
+        self.nonlinear1 = build_speaker_nonlinear(in_channels)
+        self.linear1 = nn.Conv1d(in_channels, bottleneck, 1, bias=False)
+        self.nonlinear2 = build_speaker_nonlinear(bottleneck)
+        self.cam_layer = CosyVoiceV1CAMLayer(
+            config, bottleneck, config.speaker_encoder_growth_rate, kernel_size, dilation
+        )
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            hidden_states (`torch.Tensor` of shape `(batch_size, in_channels, num_frames)`):
+                Input sequence.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, growth_rate, num_frames)`: the channels this layer
+            contributes.
+        """
+        hidden_states = self.linear1(self.nonlinear1(hidden_states))
+        return self.cam_layer(self.nonlinear2(hidden_states))
+
+
+class CosyVoiceV1CAMDenseTDNNBlock(nn.ModuleList):
+    """
+    Densely connected block of [`CosyVoiceV1CAMDenseTDNNLayer`], each layer reading every channel the
+    ones before it produced.
+
+    Args:
+        config ([`CosyVoiceV1Config`]):
+            Model configuration.
+        num_layers (`int`):
+            Number of layers.
+        in_channels (`int`):
+            Channels entering the first layer.
+        kernel_size (`int`):
+            Kernel size of every context aware masking convolution.
+        dilation (`int`):
+            Dilation of every context aware masking convolution.
+    """
+
+    def __init__(self, config: CosyVoiceV1Config, num_layers: int, in_channels: int, kernel_size: int, dilation: int):
+        super().__init__()
+        for index in range(num_layers):
+            layer = CosyVoiceV1CAMDenseTDNNLayer(
+                config, in_channels + index * config.speaker_encoder_growth_rate, kernel_size, dilation
+            )
+            self.add_module(f"tdnnd{index + 1}", layer)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            hidden_states (`torch.Tensor` of shape `(batch_size, in_channels, num_frames)`):
+                Input sequence.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, in_channels + num_layers * growth_rate, num_frames)`:
+            the input with every layer's channels appended.
+        """
+        for layer in self:
+            hidden_states = torch.cat([hidden_states, layer(hidden_states)], dim=1)
+        return hidden_states
+
+
+class CosyVoiceV1TransitLayer(nn.Module):
+    """
+    Normalization and activation followed by a pointwise convolution, which halves the channels a
+    dense block produced.
+
+    Args:
+        in_channels (`int`):
+            Channels of the input.
+        out_channels (`int`):
+            Channels of the output.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.nonlinear = build_speaker_nonlinear(in_channels)
+        self.linear = nn.Conv1d(in_channels, out_channels, 1, bias=False)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            hidden_states (`torch.Tensor` of shape `(batch_size, in_channels, num_frames)`):
+                Input sequence.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, out_channels, num_frames)`: the output.
+        """
+        return self.linear(self.nonlinear(hidden_states))
+
+
+class CosyVoiceV1SpeakerStatsPool(nn.Module):
+    """Concatenates the mean and the standard deviation of a sequence over time."""
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            hidden_states (`torch.Tensor` of shape `(batch_size, channels, num_frames)`):
+                Input sequence.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, 2 * channels)`: the statistics.
+        """
+        return torch.cat([hidden_states.mean(dim=-1), hidden_states.std(dim=-1, unbiased=True)], dim=-1)
+
+
+class CosyVoiceV1DenseLayer(nn.Module):
+    """
+    Pointwise convolution followed by an unaffine normalization, which projects the pooled statistics
+    onto the speaker embedding.
+
+    Args:
+        in_channels (`int`):
+            Channels of the pooled statistics.
+        out_channels (`int`):
+            Size of the speaker embedding.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.linear = nn.Conv1d(in_channels, out_channels, 1, bias=False)
+        self.nonlinear = build_speaker_nonlinear(out_channels, affine=False)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            hidden_states (`torch.Tensor` of shape `(batch_size, in_channels)`):
+                Pooled statistics.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, out_channels)`: the speaker embedding.
+        """
+        if hidden_states.dim() == 2:
+            return self.nonlinear(self.linear(hidden_states.unsqueeze(-1)).squeeze(-1))
+        return self.nonlinear(self.linear(hidden_states))
+
+
+class CosyVoiceV1SpeakerEncoder(nn.Module):
+    """
+    CAM++ speaker encoder, a two dimensional convolutional front end feeding densely connected time
+    delay blocks whose layers are gated by context aware masks, closed by mean and standard deviation
+    pooling and a projection onto the speaker embedding.
+
+    Args:
+        config ([`CosyVoiceV1Config`]):
+            Model configuration.
+    """
+
+    def __init__(self, config: CosyVoiceV1Config):
+        super().__init__()
+        self.head = CosyVoiceV1SpeakerFrontEnd(config)
+        growth_rate = config.speaker_encoder_growth_rate
+
+        self.xvector = nn.Sequential()
+        self.xvector.add_module(
+            "tdnn", CosyVoiceV1TDNNLayer(self.head.out_channels, config.speaker_encoder_init_channels, 5, stride=2)
+        )
+        channels = config.speaker_encoder_init_channels
+        blocks = zip(
+            config.speaker_encoder_num_layers,
+            config.speaker_encoder_kernel_sizes,
+            config.speaker_encoder_dilations,
+        )
+        for index, (num_layers, kernel_size, dilation) in enumerate(blocks):
+            self.xvector.add_module(
+                f"block{index + 1}",
+                CosyVoiceV1CAMDenseTDNNBlock(config, num_layers, channels, kernel_size, dilation),
+            )
+            channels = channels + num_layers * growth_rate
+            self.xvector.add_module(f"transit{index + 1}", CosyVoiceV1TransitLayer(channels, channels // 2))
+            channels //= 2
+        self.xvector.add_module("out_nonlinear", build_speaker_nonlinear(channels))
+        self.xvector.add_module("stats", CosyVoiceV1SpeakerStatsPool())
+        self.xvector.add_module("dense", CosyVoiceV1DenseLayer(channels * 2, config.speaker_embedding_dim))
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            features (`torch.Tensor` of shape `(batch_size, num_frames, num_mel_bins)`):
+                Mean subtracted kaldi filter bank features.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, speaker_embedding_dim)`: the speaker embedding.
+        """
+        return self.xvector(self.head(features.permute(0, 2, 1)))
+
+
+def build_speech_tokenizer_encoder_config(config: CosyVoiceV1Config) -> WhisperConfig:
+    r"""
+    Builds the [`WhisperConfig`] the speech tokenizer encoder layers read their geometry from.
+
+    Args:
+        config ([`CosyVoiceV1Config`]):
+            Model configuration.
+
+    Returns:
+        [`WhisperConfig`]: The configuration.
+    """
+    return WhisperConfig(
+        num_mel_bins=config.speech_tokenizer_num_mel_bins,
+        d_model=config.speech_tokenizer_hidden_size,
+        encoder_attention_heads=config.speech_tokenizer_num_heads,
+        encoder_ffn_dim=config.speech_tokenizer_ffn_dim,
+        encoder_layers=config.speech_tokenizer_num_layers,
+        activation_function="gelu",
+        dropout=0.0,
+        attention_dropout=0.0,
+        activation_dropout=0.0,
+    )
+
+
+class CosyVoiceV1SpeechTokenizerAttention(WhisperAttention):
+    """
+    Self attention of the speech tokenizer encoder, which scales the query and the key by the fourth
+    root of the head dimension apiece where [`WhisperAttention`] scales the query alone by its square
+    root, and takes its padding mask as a boolean over positions rather than as an additive bias.
+
+    Args:
+        config ([`CosyVoiceV1Config`]):
+            Model configuration.
+    """
+
+    def __init__(self, config: CosyVoiceV1Config):
+        super().__init__(
+            embed_dim=config.speech_tokenizer_hidden_size, num_heads=config.speech_tokenizer_num_heads
+        )
+        self.scaling = self.head_dim**-0.25
+
+    def forward(
+        self, hidden_states: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, **kwargs
+    ) -> tuple[torch.Tensor, None]:
+        r"""
+        Args:
+            hidden_states (`torch.Tensor` of shape `(batch_size, sequence_length, hidden_size)`):
+                Input sequence.
+            attention_mask (`torch.BoolTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Mask that is `True` on padding positions.
+            kwargs:
+                Ignored.
+
+        Returns:
+            `tuple(torch.Tensor, None)`: the attention output of shape
+            `(batch_size, sequence_length, hidden_size)`, and `None` in place of the attention
+            weights [`WhisperEncoderLayer`] discards.
+        """
+        batch_size, length, _ = hidden_states.shape
+        shape = (batch_size, length, self.num_heads, self.head_dim)
+        query = self.q_proj(hidden_states).view(shape).permute(0, 2, 1, 3) * self.scaling
+        key = self.k_proj(hidden_states).view(shape).permute(0, 2, 3, 1) * self.scaling
+        value = self.v_proj(hidden_states).view(shape).permute(0, 2, 1, 3)
+        scores = query @ key
+        if attention_mask is not None:
+            scores = scores.masked_fill(attention_mask[:, None, None, :], torch.finfo(scores.dtype).min)
+        context = scores.softmax(dim=-1) @ value
+        return self.out_proj(context.permute(0, 2, 1, 3).reshape(batch_size, length, -1)), None
+
+
+class CosyVoiceV1SpeechTokenizerLayer(WhisperEncoderLayer):
+    """
+    One encoder layer of the speech tokenizer, which is a Whisper encoder layer around
+    [`CosyVoiceV1SpeechTokenizerAttention`].
+
+    Args:
+        config ([`CosyVoiceV1Config`]):
+            Model configuration.
+    """
+
+    def __init__(self, config: CosyVoiceV1Config):
+        super().__init__(build_speech_tokenizer_encoder_config(config))
+        self.self_attn = CosyVoiceV1SpeechTokenizerAttention(config)
+
+
+class CosyVoiceV1SpeechTokenizerQuantizer(nn.Module):
+    """
+    Vector quantizer of the speech tokenizer, which L2 normalizes the encoder output and reads the
+    nearest codebook entry off it by euclidean distance.
+
+    Args:
+        config ([`CosyVoiceV1Config`]):
+            Model configuration.
+    """
+
+    def __init__(self, config: CosyVoiceV1Config):
+        super().__init__()
+        self.embedding = nn.Embedding(config.speech_vocab_size, config.speech_tokenizer_hidden_size)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            hidden_states (`torch.Tensor` of shape `(batch_size, sequence_length, hidden_size)`):
+                Encoder output.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, sequence_length)`: the speech token ids.
+        """
+        hidden_states = hidden_states / hidden_states.norm(dim=-1, keepdim=True).clamp(min=1e-12)
+        flat = hidden_states.reshape(-1, hidden_states.shape[-1])
+        codebook = self.embedding.weight
+        distance = flat.pow(2).sum(dim=-1, keepdim=True) - (2 * flat) @ codebook.transpose(0, 1)
+        distance = distance + codebook.pow(2).sum(dim=-1)
+        return distance.argmin(dim=-1).view(hidden_states.shape[:-1])
+
+
+class CosyVoiceV1SpeechTokenizer(nn.Module):
+    """
+    Supervised semantic speech tokenizer of CosyVoice v1, which is the first six blocks of a Whisper
+    large encoder closed by [`CosyVoiceV1SpeechTokenizerQuantizer`]. Its two opening convolutions
+    halve the mel frame rate once, so one token stands for two mel frames.
+
+    Args:
+        config ([`CosyVoiceV1Config`]):
+            Model configuration.
+    """
+
+    def __init__(self, config: CosyVoiceV1Config):
+        super().__init__()
+        hidden_size = config.speech_tokenizer_hidden_size
+        self.strides = (config.speech_tokenizer_conv_stride, 2)
+        self.conv1 = nn.Conv1d(
+            config.speech_tokenizer_num_mel_bins, hidden_size, 3, stride=self.strides[0], padding=1
+        )
+        self.conv2 = nn.Conv1d(hidden_size, hidden_size, 3, stride=self.strides[1], padding=1)
+        self.embed_positions = (
+            None
+            if config.speech_tokenizer_max_source_positions is None
+            else nn.Embedding(config.speech_tokenizer_max_source_positions, hidden_size)
+        )
+        self.layers = nn.ModuleList(
+            [CosyVoiceV1SpeechTokenizerLayer(config) for _ in range(config.speech_tokenizer_num_layers)]
+        )
+        self.quantizer = CosyVoiceV1SpeechTokenizerQuantizer(config)
+
+    def output_lengths(self, input_lengths: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            input_lengths (`torch.Tensor` of shape `(batch_size,)`):
+                Mel frames of each utterance.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size,)`: speech tokens of each utterance.
+        """
+        for stride in self.strides:
+            input_lengths = (input_lengths - 1) // stride + 1
+        return input_lengths
+
+    def embed(self, input_features: torch.Tensor, input_lengths: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            input_features (`torch.Tensor` of shape `(batch_size, num_mel_bins, num_frames)`):
+                Log mel spectrogram.
+            input_lengths (`torch.Tensor` of shape `(batch_size,)`):
+                Mel frames of each utterance.
+
+        Returns:
+            `tuple(torch.Tensor)`: the encoder input of shape
+            `(batch_size, sequence_length, hidden_size)` and the mask that is `True` on its padding
+            positions.
+        """
+        hidden_states = F.gelu(self.conv1(input_features))
+        hidden_states = F.gelu(self.conv2(hidden_states)).permute(0, 2, 1)
+        length = hidden_states.shape[1]
+        if self.embed_positions is not None:
+            hidden_states = hidden_states + self.embed_positions.weight[:length]
+        lengths = self.output_lengths(input_lengths).clamp(max=length)
+        positions = torch.arange(length, device=hidden_states.device)
+        return hidden_states, positions >= lengths.to(hidden_states.device)[:, None]
+
+    def encode(self, input_features: torch.Tensor, input_lengths: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            input_features (`torch.Tensor` of shape `(batch_size, num_mel_bins, num_frames)`):
+                Log mel spectrogram.
+            input_lengths (`torch.Tensor` of shape `(batch_size,)`):
+                Mel frames of each utterance.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, sequence_length, hidden_size)`: the encoder output.
+        """
+        hidden_states, padding_mask = self.embed(input_features, input_lengths)
+        for layer in self.layers:
+            hidden_states = layer(hidden_states, padding_mask)
+        return hidden_states
+
+    def forward(self, input_features: torch.Tensor, input_lengths: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            input_features (`torch.Tensor` of shape `(batch_size, num_mel_bins, num_frames)`):
+                Log mel spectrogram.
+            input_lengths (`torch.Tensor` of shape `(batch_size,)`):
+                Mel frames of each utterance.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, sequence_length)`: the speech token ids.
+        """
+        return self.quantizer(self.encode(input_features, input_lengths))
+
+
 @auto_docstring(
     custom_intro="""
     Output of [`CosyVoiceV1ForConditionalGeneration`].
@@ -2212,7 +2850,9 @@ __all__ = [
     "CosyVoiceV1LabelSmoothingLoss",
     "CosyVoiceV1Output",
     "CosyVoiceV1PreTrainedModel",
+    "CosyVoiceV1SpeakerEncoder",
     "CosyVoiceV1SpeechTokenLM",
+    "CosyVoiceV1SpeechTokenizer",
     "CosyVoiceV1VocoderOutput",
     "build_speech_token_labels",
     "make_pad_mask",

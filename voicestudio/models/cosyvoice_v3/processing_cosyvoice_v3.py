@@ -7,6 +7,7 @@ from ..cosyvoice_v2.processing_cosyvoice_v2 import (
     CosyVoiceV2FeatureExtractor,
     CosyVoiceV2Processor,
 )
+from .configuration_cosyvoice_v3 import CosyVoiceV3Config
 from .weight_conversion import SPEECH_TOKENIZER_FILE
 
 
@@ -55,10 +56,9 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
     spectrogram extractor of the flow matching model, the supervised semantic speech tokenizer and
     the speaker encoder into a single object.
 
-    It differs from v2's only in the tokenizer's added vocabulary, which gains the end of system
-    marker and the phoneme and pinyin sets the v3 text frontend emits, and in the file name of the
-    speech tokenizer graph. That graph is ONNX only, so `onnxruntime` is imported lazily and the
-    paths that derive a prompt from a waveform raise without it.
+    It differs from v2's in the tokenizer's added vocabulary, which gains the end of system marker
+    and the phoneme and pinyin sets the v3 text frontend emits, and in the speech tokenizer, which is
+    twice as deep and whose weights come out of `speech_tokenizer_v3.onnx`.
 
     Args:
         feature_extractor ([`CosyVoiceV3FeatureExtractor`]):
@@ -66,9 +66,9 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
         tokenizer ([`Qwen2TokenizerFast`]):
             Text tokenizer, loaded from the `CosyVoice-BlankEN` directory of the released checkpoint.
         speech_token_model_path (`str`, *optional*):
-            Path of `speech_tokenizer_v3.onnx`.
+            Path of the `speech_tokenizer_v3.onnx` graph the speech tokenizer is built from.
         speaker_encoder_model_path (`str`, *optional*):
-            Path of `campplus.onnx`.
+            Path of the CAM++ weights the speaker encoder is built from.
         speaker_info_path (`str`, *optional*):
             Path of a `spk2info.pt`. The released v3 directory ships none.
         kwargs:
@@ -76,6 +76,7 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
     """
 
     feature_extractor_type = CosyVoiceV3FeatureExtractor
+    model_config_type = CosyVoiceV3Config
     speech_tokenizer_file = SPEECH_TOKENIZER_FILE
 
     @staticmethod

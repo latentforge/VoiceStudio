@@ -31,6 +31,7 @@ from .modeling_cosyvoice_v2 import (
     CosyVoiceV2SineGen,
     CosyVoiceV2SourceModule,
     CosyVoiceV2SpeechTokenLM,
+    CosyVoiceV2SpeechTokenizer,
     CosyVoiceV2Upsample1D,
     CosyVoiceV2UpsampleEncoder,
 )
@@ -63,6 +64,7 @@ __all__ = [
     "CosyVoiceV2SineGen",
     "CosyVoiceV2SourceModule",
     "CosyVoiceV2SpeechTokenLM",
+    "CosyVoiceV2SpeechTokenizer",
     "CosyVoiceV2Upsample1D",
     "CosyVoiceV2UpsampleEncoder",
 ]

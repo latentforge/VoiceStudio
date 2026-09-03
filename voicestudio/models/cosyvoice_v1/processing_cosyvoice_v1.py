@@ -16,11 +16,15 @@ from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.whisper.tokenization_whisper import WhisperTokenizer
 from transformers.processing_utils import ProcessorMixin
 
+from .configuration_cosyvoice_v1 import CosyVoiceV1Config
+from .modeling_cosyvoice_v1 import CosyVoiceV1SpeakerEncoder, CosyVoiceV1SpeechTokenizer
 from .weight_conversion import (
-    SPEAKER_ENCODER_FILE,
+    SPEAKER_ENCODER_REPO,
+    SPEAKER_ENCODER_WEIGHTS,
     SPEAKER_INFO_FILE,
     SPEECH_TOKENIZER_FILE,
     TEXT_TOKENIZER_ID,
+    convert_speech_tokenizer,
     resolve_checkpoint,
 )
 
@@ -340,10 +344,11 @@ class CosyVoiceV1Processor(ProcessorMixin):
     extractor of the flow matching model, the supervised semantic speech tokenizer and the speaker
     encoder into a single object.
 
-    The speech tokenizer and the speaker encoder are the ONNX graphs shipped with the released model
-    directory, `speech_tokenizer_v1.onnx` and `campplus.onnx`. Upstream publishes no PyTorch weights
-    for either, so `onnxruntime` and both graph files are required to derive a prompt from a
-    waveform. They are opened lazily, so text tokenization and the speaker table work without them.
+    The speech tokenizer is [`CosyVoiceV1SpeechTokenizer`], whose weights are read out of the
+    `speech_tokenizer_v1.onnx` graph the released directory ships, which is the only form upstream
+    publishes them in. The speaker encoder is [`CosyVoiceV1SpeakerEncoder`], built from the CAM++
+    weights its authors published at [`SPEAKER_ENCODER_REPO`]. Both are built on first use, so text
+    tokenization and the speaker table cost nothing.
 
     Args:
         feature_extractor ([`CosyVoiceV1FeatureExtractor`]):
@@ -351,9 +356,10 @@ class CosyVoiceV1Processor(ProcessorMixin):
         tokenizer ([`WhisperTokenizer`]):
             Text tokenizer.
         speech_token_model_path (`str`, *optional*):
-            Path of `speech_tokenizer_v1.onnx`.
+            Path of the `speech_tokenizer_v1.onnx` graph the speech tokenizer is built from.
         speaker_encoder_model_path (`str`, *optional*):
-            Path of `campplus.onnx`.
+            Path of the CAM++ weights the speaker encoder is built from. Defaults to
+            [`SPEAKER_ENCODER_WEIGHTS`] fetched from [`SPEAKER_ENCODER_REPO`].
         speaker_info_path (`str`, *optional*):
             Path of a `spk2info.pt`, the table of precomputed prompts the SFT and Instruct
             checkpoints ship. Read lazily by [`~CosyVoiceV1Processor.get_speaker`].
@@ -365,6 +371,8 @@ class CosyVoiceV1Processor(ProcessorMixin):
     speaker_encoder_sampling_rate = 16000
     speaker_encoder_max_seconds = 10
     feature_extractor_type = CosyVoiceV1FeatureExtractor
+    speech_tokenizer_type = CosyVoiceV1SpeechTokenizer
+    model_config_type = CosyVoiceV1Config
     speech_tokenizer_file = SPEECH_TOKENIZER_FILE
 
     def __init__(
@@ -383,8 +391,8 @@ class CosyVoiceV1Processor(ProcessorMixin):
         self.speaker_info_path = speaker_info_path
         self.speech_token_mel_bins = speech_token_mel_bins
         self._speech_token_features = None
-        self._speech_tokenizer_session = None
-        self._speaker_encoder_session = None
+        self._speech_tokenizer = None
+        self._speaker_encoder = None
         self._speaker_info = None
         self._inflect_parser = None
 
@@ -410,7 +418,6 @@ class CosyVoiceV1Processor(ProcessorMixin):
             feature_extractor=cls.feature_extractor_type(),
             tokenizer=WhisperTokenizer.from_pretrained(TEXT_TOKENIZER_ID, language="en", task="transcribe"),
             speech_token_model_path=str(directory / cls.speech_tokenizer_file),
-            speaker_encoder_model_path=str(directory / SPEAKER_ENCODER_FILE),
             speaker_info_path=str(speaker_info) if speaker_info.is_file() else None,
         )
 
@@ -429,9 +436,7 @@ class CosyVoiceV1Processor(ProcessorMixin):
             `Path` or `None`: The local directory, or `None` when `source` holds no released
             checkpoint.
         """
-        return resolve_checkpoint(
-            source, (SPEAKER_ENCODER_FILE, cls.speech_tokenizer_file), (SPEAKER_INFO_FILE,), **kwargs
-        )
+        return resolve_checkpoint(source, (cls.speech_tokenizer_file,), (SPEAKER_INFO_FILE,), **kwargs)
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
@@ -491,6 +496,35 @@ class CosyVoiceV1Processor(ProcessorMixin):
         return self._speech_token_features
 
     @property
+    def speech_tokenizer(self) -> CosyVoiceV1SpeechTokenizer:
+        """
+        Returns:
+            [`CosyVoiceV1SpeechTokenizer`]: The speech tokenizer, in evaluation mode.
+        """
+        if self._speech_tokenizer is None:
+            tokenizer = self.speech_tokenizer_type(self.model_config_type())
+            tokenizer.load_state_dict(convert_speech_tokenizer(self.speech_token_model_path))
+            self._speech_tokenizer = tokenizer.eval()
+        return self._speech_tokenizer
+
+    @property
+    def speaker_encoder(self) -> CosyVoiceV1SpeakerEncoder:
+        """
+        Returns:
+            [`CosyVoiceV1SpeakerEncoder`]: The speaker encoder, in evaluation mode.
+        """
+        if self._speaker_encoder is None:
+            path = self.speaker_encoder_model_path
+            if path is None:
+                from huggingface_hub import hf_hub_download
+
+                path = hf_hub_download(SPEAKER_ENCODER_REPO, SPEAKER_ENCODER_WEIGHTS)
+            encoder = CosyVoiceV1SpeakerEncoder(self.model_config_type())
+            encoder.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
+            self._speaker_encoder = encoder.eval()
+        return self._speaker_encoder
+
+    @property
     def speakers(self) -> list[str]:
         """
         Returns:
@@ -533,35 +567,6 @@ class CosyVoiceV1Processor(ProcessorMixin):
             data["speech_feat_lengths"] = torch.tensor([entry["speech_feat"].shape[1]], dtype=torch.int32)
         return BatchFeature(data)
 
-    @staticmethod
-    def _open_onnx_session(path: str, providers: list[str]):
-        """
-        Args:
-            path (`str`):
-                Path of the ONNX graph.
-            providers (`list[str]`):
-                Execution providers, in order of preference.
-
-        Returns:
-            `onnxruntime.InferenceSession`: the opened session.
-
-        Raises:
-            ImportError: If `onnxruntime` is not installed.
-        """
-        try:
-            import onnxruntime
-        except ImportError as error:
-            raise ImportError(
-                "the CosyVoice v1 speech tokenizer and speaker encoder are published as ONNX graphs "
-                "only, so deriving a prompt from a waveform needs `onnxruntime`, which this package "
-                "does not depend on. Use `get_speaker` with a `spk2info.pt` instead, or install "
-                "`onnxruntime` yourself."
-            ) from error
-        options = onnxruntime.SessionOptions()
-        options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-        options.intra_op_num_threads = 1
-        return onnxruntime.InferenceSession(path, sess_options=options, providers=providers)
-
     def _resample(self, waveform: torch.Tensor, sampling_rate: Optional[int], target_rate: int) -> torch.Tensor:
         waveform = waveform.reshape(1, -1).float()
         if sampling_rate is not None and sampling_rate != target_rate:
@@ -586,9 +591,6 @@ class CosyVoiceV1Processor(ProcessorMixin):
         Raises:
             ValueError: If the waveform is longer than thirty seconds.
         """
-        if self._speech_tokenizer_session is None:
-            providers = ["CUDAExecutionProvider"] if torch.cuda.is_available() else ["CPUExecutionProvider"]
-            self._speech_tokenizer_session = self._open_onnx_session(self.speech_token_model_path, providers)
         waveform = self._resample(
             audio if isinstance(audio, torch.Tensor) else torch.as_tensor(np.asarray(audio)),
             sampling_rate,
@@ -600,17 +602,11 @@ class CosyVoiceV1Processor(ProcessorMixin):
             waveform.squeeze(0).numpy(),
             sampling_rate=self.speech_tokenizer_sampling_rate,
             padding=False,
-            return_tensors="np",
+            return_tensors="pt",
         ).input_features
-        inputs = self._speech_tokenizer_session.get_inputs()
-        speech_token = self._speech_tokenizer_session.run(
-            None,
-            {
-                inputs[0].name: features.astype(np.float32),
-                inputs[1].name: np.array([features.shape[2]], dtype=np.int32),
-            },
-        )[0].flatten()
-        speech_token_ids = torch.tensor([speech_token], dtype=torch.int32)
+        lengths = torch.tensor([features.shape[2]], dtype=torch.int32)
+        with torch.no_grad():
+            speech_token_ids = self.speech_tokenizer(features, lengths).to(torch.int32)
         return speech_token_ids, torch.tensor([speech_token_ids.shape[1]], dtype=torch.int32)
 
     def encode_speaker(
@@ -628,10 +624,6 @@ class CosyVoiceV1Processor(ProcessorMixin):
         Returns:
             `torch.Tensor` of shape `(1, speaker_embedding_dim)`: the speaker embedding.
         """
-        if self._speaker_encoder_session is None:
-            self._speaker_encoder_session = self._open_onnx_session(
-                self.speaker_encoder_model_path, ["CPUExecutionProvider"]
-            )
         waveform = self._resample(
             audio if isinstance(audio, torch.Tensor) else torch.as_tensor(np.asarray(audio)),
             sampling_rate,
@@ -641,10 +633,8 @@ class CosyVoiceV1Processor(ProcessorMixin):
             waveform, num_mel_bins=80, dither=0, sample_frequency=self.speaker_encoder_sampling_rate
         )
         features = features - features.mean(dim=0, keepdim=True)
-        embedding = self._speaker_encoder_session.run(
-            None, {self._speaker_encoder_session.get_inputs()[0].name: features.unsqueeze(dim=0).numpy()}
-        )[0].flatten()
-        return torch.tensor([embedding])
+        with torch.no_grad():
+            return self.speaker_encoder(features.unsqueeze(dim=0))
 
     def normalize_text(self, text: str, split: bool = True) -> Union[str, list[str]]:
         """

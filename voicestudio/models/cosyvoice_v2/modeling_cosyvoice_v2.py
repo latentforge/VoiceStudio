@@ -27,7 +27,8 @@ from torch import nn
 
 from transformers.conversion_mapping import WeightRenaming, register_checkpoint_conversion_mapping
 from transformers.modeling_outputs import ModelOutput
-from transformers.models.qwen2.modeling_qwen2 import Qwen2Model
+from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
+from transformers.models.qwen2.modeling_qwen2 import Qwen2Model, Qwen2RotaryEmbedding, apply_rotary_pos_emb
 from transformers.utils import auto_docstring
 
 from ..cosyvoice_v1.modeling_cosyvoice_v1 import (
@@ -42,6 +43,9 @@ from ..cosyvoice_v1.modeling_cosyvoice_v1 import (
     CosyVoiceV1PreTrainedModel,
     CosyVoiceV1RelPositionalEmbedding,
     CosyVoiceV1ResnetBlock1D,
+    CosyVoiceV1SpeechTokenizer,
+    CosyVoiceV1SpeechTokenizerAttention,
+    CosyVoiceV1SpeechTokenizerLayer,
     build_attention_bias,
     make_pad_mask,
 )
@@ -1159,6 +1163,194 @@ class CosyVoiceV2HiFTGenerator(CosyVoiceV1HiFTGenerator):
         )
 
 
+class CosyVoiceV2SpeechTokenizerRotaryEmbedding(Qwen2RotaryEmbedding):
+    """
+    Rotary position embedding of the speech tokenizer attention.
+
+    Args:
+        config ([`CosyVoiceV2Config`]):
+            Model configuration.
+    """
+
+    def __init__(self, config: CosyVoiceV2Config):
+        super().__init__(
+            Qwen2Config(
+                hidden_size=config.speech_tokenizer_hidden_size,
+                num_attention_heads=config.speech_tokenizer_num_heads,
+                max_position_embeddings=config.speech_tokenizer_max_position_embeddings,
+                rope_theta=config.speech_tokenizer_rope_theta,
+            )
+        )
+
+
+class CosyVoiceV2SpeechTokenizerAttention(CosyVoiceV1SpeechTokenizerAttention):
+    """
+    Self attention of the speech tokenizer encoder of CosyVoice v2, which drops v1's position table
+    for a rotary embedding and adds a memory block to its output: a depthwise convolution over the
+    masked value projection, which is what a scalar attention memory network contributes.
+
+    Args:
+        config ([`CosyVoiceV2Config`]):
+            Model configuration.
+    """
+
+    def __init__(self, config: CosyVoiceV2Config):
+        super().__init__(config)
+        hidden_size = config.speech_tokenizer_hidden_size
+        kernel_size = config.speech_tokenizer_fsmn_kernel_size
+        self.fsmn_block = nn.Conv1d(hidden_size, hidden_size, kernel_size, groups=hidden_size, bias=False)
+        self.padding = ((kernel_size - 1) // 2, kernel_size - 1 - (kernel_size - 1) // 2)
+
+    def memory(self, value: torch.Tensor, padding_mask: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            value (`torch.Tensor` of shape `(batch_size, sequence_length, hidden_size)`):
+                Value projection.
+            padding_mask (`torch.BoolTensor` of shape `(batch_size, sequence_length)`):
+                Mask that is `True` on padding positions.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, sequence_length, hidden_size)`: the memory block
+            output.
+        """
+        keep = (~padding_mask).unsqueeze(-1).to(value.dtype)
+        value = value * keep
+        memory = self.fsmn_block(F.pad(value.transpose(1, 2), self.padding)).transpose(1, 2)
+        return (memory + value) * keep
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, None]:
+        r"""
+        Args:
+            hidden_states (`torch.Tensor` of shape `(batch_size, sequence_length, hidden_size)`):
+                Input sequence.
+            attention_mask (`torch.BoolTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Mask that is `True` on padding positions. Upstream leaves the attention scores
+                unmasked and zeroes the padded rows of the attention output instead, which is what
+                this reproduces.
+            position_embeddings (`tuple(torch.Tensor)`, *optional*):
+                Cosine and sine of the rotary embedding, each of shape
+                `(batch_size, sequence_length, head_dim)`.
+            kwargs:
+                Ignored.
+
+        Returns:
+            `tuple(torch.Tensor, None)`: the attention output of shape
+            `(batch_size, sequence_length, hidden_size)`, and `None` in place of the attention
+            weights [`WhisperEncoderLayer`] discards.
+        """
+        batch_size, length, _ = hidden_states.shape
+        shape = (batch_size, length, self.num_heads, self.head_dim)
+        value = self.v_proj(hidden_states)
+        memory = self.memory(value, attention_mask)
+        query = self.q_proj(hidden_states).view(shape).permute(0, 2, 1, 3)
+        key = self.k_proj(hidden_states).view(shape).permute(0, 2, 1, 3)
+        query, key = apply_rotary_pos_emb(query, key, *position_embeddings)
+        scores = (query * self.scaling) @ (key.transpose(2, 3) * self.scaling)
+        context = scores.softmax(dim=-1) @ value.view(shape).permute(0, 2, 1, 3)
+        context = context.masked_fill(attention_mask[:, None, :, None], 0.0)
+        return self.out_proj(context.permute(0, 2, 1, 3).reshape(batch_size, length, -1)) + memory, None
+
+
+class CosyVoiceV2SpeechTokenizerLayer(CosyVoiceV1SpeechTokenizerLayer):
+    """
+    One encoder layer of the speech tokenizer of CosyVoice v2, which is v1's around
+    [`CosyVoiceV2SpeechTokenizerAttention`].
+
+    Args:
+        config ([`CosyVoiceV2Config`]):
+            Model configuration.
+    """
+
+    def __init__(self, config: CosyVoiceV2Config):
+        super().__init__(config)
+        self.self_attn = CosyVoiceV2SpeechTokenizerAttention(config)
+
+
+class CosyVoiceV2SpeechTokenizerQuantizer(nn.Module):
+    """
+    Finite scalar quantizer of the speech tokenizer of CosyVoice v2, which projects the encoder
+    output onto one dimension per entry of `speech_tokenizer_fsq_levels`, rounds each to its own
+    grid, and reads the token id off the mixed radix number the rounded dimensions spell.
+
+    Args:
+        config ([`CosyVoiceV2Config`]):
+            Model configuration.
+    """
+
+    # Fraction the bounding tangent is pulled in by, so that a saturated projection still rounds to
+    # the outermost level rather than past it.
+    eps = 1e-3
+
+    def __init__(self, config: CosyVoiceV2Config):
+        super().__init__()
+        self.levels = config.speech_tokenizer_fsq_levels
+        self.project_in = nn.Linear(config.speech_tokenizer_hidden_size, len(self.levels))
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            hidden_states (`torch.Tensor` of shape `(batch_size, sequence_length, hidden_size)`):
+                Encoder output.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, sequence_length)`: the speech token ids.
+        """
+        levels = torch.tensor(self.levels, dtype=hidden_states.dtype, device=hidden_states.device)
+        half_range = (levels - 1) * (1 - self.eps) / 2
+        offset = torch.where(levels % 2 == 0, 0.5, 0.0)
+        shift = (offset / half_range).atanh()
+        half_width = levels // 2
+        basis = torch.cumprod(torch.cat([torch.ones_like(levels[:1]), levels[:-1]]), dim=0)
+
+        projected = self.project_in(hidden_states)
+        codes = torch.round(torch.tanh(projected + shift) * half_range - offset)
+        return (((codes / half_width) * half_width + half_width) * basis).sum(dim=-1).to(torch.int32)
+
+
+class CosyVoiceV2SpeechTokenizer(CosyVoiceV1SpeechTokenizer):
+    """
+    Supervised semantic speech tokenizer of CosyVoice v2, which strides both of its opening
+    convolutions, so one token stands for four mel frames, and closes with
+    [`CosyVoiceV2SpeechTokenizerQuantizer`] instead of a codebook.
+
+    Args:
+        config ([`CosyVoiceV2Config`]):
+            Model configuration.
+    """
+
+    def __init__(self, config: CosyVoiceV2Config):
+        super().__init__(config)
+        self.layers = nn.ModuleList(
+            [CosyVoiceV2SpeechTokenizerLayer(config) for _ in range(config.speech_tokenizer_num_layers)]
+        )
+        self.quantizer = CosyVoiceV2SpeechTokenizerQuantizer(config)
+        self.rotary_emb = CosyVoiceV2SpeechTokenizerRotaryEmbedding(config)
+
+    def encode(self, input_features: torch.Tensor, input_lengths: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            input_features (`torch.Tensor` of shape `(batch_size, num_mel_bins, num_frames)`):
+                Log mel spectrogram.
+            input_lengths (`torch.Tensor` of shape `(batch_size,)`):
+                Mel frames of each utterance.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, sequence_length, hidden_size)`: the encoder output.
+        """
+        hidden_states, padding_mask = self.embed(input_features, input_lengths)
+        position_ids = torch.arange(hidden_states.shape[1], device=hidden_states.device)[None]
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+        for layer in self.layers:
+            hidden_states = layer(hidden_states, padding_mask, position_embeddings=position_embeddings)
+        return hidden_states
+
+
 @auto_docstring(
     custom_intro="""
     Output of [`CosyVoiceV2ForConditionalGeneration`].
@@ -1288,6 +1480,7 @@ __all__ = [
     "CosyVoiceV2SineGen",
     "CosyVoiceV2SourceModule",
     "CosyVoiceV2SpeechTokenLM",
+    "CosyVoiceV2SpeechTokenizer",
     "CosyVoiceV2Upsample1D",
     "CosyVoiceV2UpsampleEncoder",
 ]
