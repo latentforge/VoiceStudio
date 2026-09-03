@@ -282,8 +282,18 @@ bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts
 conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
 `Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
 
-Two items left open:
+Three items left open:
 
+- **Vocos trains without its discriminators.** Upstream's generator loss is five terms: MPD hinge
+  loss over periods 2, 3, 5, 7 and 11, `mrd_loss_coeff` times MRD hinge loss over FFT sizes 2048,
+  1024 and 512, feature matching for each, and `mel_loss_coeff` times mel reconstruction, with a
+  separate optimizer on the discriminators. `VocosModel.forward(labels=...)` implements the mel
+  reconstruction term alone. `pretrain_mel_steps` is 0 in both released configs, so no phase of
+  upstream training optimizes that term by itself, and a run against this loss is therefore not
+  upstream's run. The stated reasons for leaving it out are that the discriminators are
+  training-only modules absent from every published checkpoint, that no transformers model carries
+  a discriminator in its model class, and that they would pull in `einops`. That is a scope
+  decision, not a finding, and it needs a human.
 - **Qwen3-TTS audio tokenizer reports `encoder.upsample.conv.weight` MISSING.** The key is real but
   the weight is not: `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`'s `speech_tokenizer/model.safetensors`
   holds 496 tensors, none named `encoder.upsample.*` and none of the required `(512, 1, 4)` shape,
