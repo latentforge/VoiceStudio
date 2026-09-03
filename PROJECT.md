@@ -230,7 +230,7 @@ pretrained checkpoint yet; see "Runtime-verified" for that.
 | VoxInstruct | Yes | Yes | Yes | `75800c0e`. Both stages transcribe verbatim. Teacher forcing gives ar_loss 2.48 and nar_loss 3.50 against 8.25 and 8.09 for shuffled targets, and gradients land only on the LoRA adapters, both decoders and the drawn residual head. The Vocos vocoder is not yet ported; see the folder README. |
 | BigVGAN | Yes | Yes | n/a (NVIDIA source traced, no upstream tree was vendored) | `687502ad`. Its own model folder rather than a subclass of Qwen2.5-Omni's copy, which would have made the general case depend on one consumer. `1abdcdc4` reparents PromptTTS++'s BigVGAN, AMP block and Snake classes onto it, the first sibling inheritance in the repo, and `d35f867f` pairs `F5TTS_Base_bigvgan` with it: the old pairing shipped Vocos, which transcribed word for word while running 37 times too quiet at a copy-synthesis log mel distance of 3.895 against 0.0886. |
 | CosyVoice v1 | Yes | Yes | Yes | `61bc1224`, tree accounted for in `86a9fa18` (166 files to 16, every deletion named in the README File map). `diffusers`, `matcha-tts`, `einops`, `omegaconf`, `hyperpyyaml` and `openai-whisper` removed; `onnxruntime` could not be, because upstream publishes the v1 speech tokenizer and speaker encoder as ONNX graphs only, so it is reported and lazily imported rather than added to pyproject. Two meta-device buffers came back uninitialised after a reload and turned the fox sentence into `HADNIN YOUR DET SSFUL I SA YO TO DEING HEE`; both now build on first use. |
-| CosyVoice v2 | Yes | Yes | Yes | `08e20c74`. Subclasses v1. Every flow matching component is bit exact against upstream's own classes with streaming on and off, as are the sine generator and the neural source filter; the vocoder differs by 1.2e-05, the scipy against torch Hann window floor. |
+| CosyVoice v2 | Yes | Yes | Yes | `08e20c74`, special tokens fixed in `d888c4ab`. Its converter passed a bare `AutoTokenizer`, so 17 of upstream's 19 markers were absent and split into ordinary pieces: the model spoke `[laughter]` aloud, transcribing as `LAUTYR`, and no longer does. Only `<|im_start|>` and `<|im_end|>` were already present, as base Qwen2 chat tokens. No embedding resize is needed; the table is 151936 rows against a fixed tokenizer length of 151663. Subclasses v1. Every flow matching component is bit exact against upstream's own classes with streaming on and off, as are the sine generator and the neural source filter; the vocoder differs by 1.2e-05, the scipy against torch Hann window floor. |
 | CosyVoice v3 | Yes | Yes | Yes | `961705ce`. Subclasses v2, and takes `F5TTSTimestepEmbedding`, `F5TTSDecoderLayer`, `F5TTSAdaLayerNormFinal` and `F5TTSRotaryEmbedding` from f5_tts, which is the DiT lineage the sibling map predicted. |
 | OmniVoice (`ommivoice`) | Yes | Yes | Yes | `a452fcd5`. 90 files to 9. All 313 tensors and 612,577,280 parameters load with every source weight consumed, the fused embedding is bit identical to upstream's formula, and `forward` matches an independent reimplementation to 4.8e-07 against 20.17 on shuffled targets. wav2vec2 WER 0.000. The processor absorbs Whisper transcription of a missing reference transcript, which ends the pydub, soundfile and librosa dependencies. |
 | Vocos | Yes | Yes | n/a (lifted from f5_tts, no upstream tree was vendored) | `f3e409be` and `cf5b12bf`. Own model folder covering both published frontends. Checked against upstream's own classes from the same weights: 1.5e-08 mel, 1.8e-07 encodec, and bit-for-bit on real VoxInstruct codes. `charactr/vocos-encodec-24khz` carries `feature_extractor.codebook_weights`, a trained 16384x128 parameter that the inherited blanket `feature_extractor.` ignore rule would have discarded silently. The adversarial half of the objective is not implemented; see the open item below. |
@@ -286,7 +286,7 @@ bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts
 conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
 `Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
 
-Four items left open:
+Three items left open:
 
 - **CosyVoice's vocoder is not trainable.** `forward(labels=...)` covers the language model and the
   flow matching decoder, but not the HiFiGAN vocoder that turns mel into a waveform. Its objective is
@@ -304,14 +304,12 @@ Four items left open:
   plus audio-event, emotion and TTS-vocal specials whisper lacks. The release is not in
   `PUBLISHED_CHECKPOINTS` and the processor has no counterpart for it, so the open question is
   whether that release is in scope at all, not how to migrate it.
-- **A possible CosyVoice v2 special-token gap.** Upstream `CosyVoice2Tokenizer.__init__` adds 19
-  special tokens. `cosyvoice_v3/weight_conversion.py` calls
-  `CosyVoiceV3Processor.add_special_tokens`, while `cosyvoice_v2/weight_conversion.py` passes a
-  bare `AutoTokenizer` with no equivalent call. It is a no-op only if the released
-  `CosyVoice-BlankEN` tokenizer already carries them, which was not checkable without the
-  checkpoint on disk.
-
-
+- **`convert("base", ...)` crashes for CosyVoice v2 and v3.** Both converters compute
+  `resolved = PUBLISHED_CHECKPOINTS.get(source, source)` and then use it to locate the tokenizer
+  directory, but for a shorthand key it stays the bare repo id rather than the local directory
+  `load_upstream_checkpoints` downloaded to, so the tokenizer load raises `HFValidationError`.
+  Passing a local directory, which is what the READMEs show, works. Found while verifying the
+  special-token fix and not touched, since it is unrelated to it.
 - **Vocos trains without its discriminators.** Upstream's generator loss is five terms: MPD hinge
   loss over periods 2, 3, 5, 7 and 11, `mrd_loss_coeff` times MRD hinge loss over FFT sizes 2048,
   1024 and 512, feature matching for each, and `mel_loss_coeff` times mel reconstruction, with a
