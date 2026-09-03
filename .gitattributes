@@ -2,4 +2,4 @@
 
 # The READMEs are the exception
 /README.md -merge
-/README.ko.md -merge
+/docs/locales/README_ko.md -merge

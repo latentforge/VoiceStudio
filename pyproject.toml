@@ -17,7 +17,7 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -44,10 +44,12 @@ all = [
     "voicestudio[train]",
     "voicestudio[eval]",
     "voicestudio[kernels]",
-    "voicestudio[native]",
     "voicestudio[omni]",
     "voicestudio[onnx]",
     "voicestudio[web]",
+]
+kernels = [
+    "transformers[kernels]",
 ]
 train = [
     "accelerate>=1.10.0",
@@ -60,21 +62,17 @@ eval = [
     "pyworld>=0.3.5",  # f0 extraction for CosyVoice's vocoder objective
     "jiwer>=4.0.0",  # word error rate, the transcription check in CLAUDE.md section 2.5
 ]
-kernels = [  # fused attention kernels, fetched from the Hub by transformers
-    "transformers[kernels]",
-]
-native = [  # on-device inference
-    "torchnative",
-]
-omni = [  # for Chroma, whose processor subclasses Qwen2_5OmniProcessor
+omni = [
     "pillow",
     "torchvision",
 ]
-onnx = [  # CosyVoice only: upstream publishes speech_tokenizer_*.onnx and campplus.onnx as
-          # ONNX graphs with no PyTorch weights, needed to derive a prompt from a waveform
+onnx = [
     "onnxruntime-gpu[cuda,cudnn]>=1.18.0 ; platform_system == 'Linux' or platform_system == 'Windows'",
     "onnxruntime>=1.18.0 ; platform_system == 'Darwin'",
     "onnx",
+]
+native = [  # on-device inference
+    "torchnative",
 ]
 web = [  # Voice Studio Web
     "fastapi>=0.126.0",
