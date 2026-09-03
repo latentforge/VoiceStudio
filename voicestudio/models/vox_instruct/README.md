@@ -65,7 +65,9 @@ A first load converts the published layout into a directory under `HF_HOME`, key
 resolved to, and later loads read that directory through the ordinary loading path instead of converting again. The AR
 and NAR instruction encoders are mT5 encoders whose shared embedding table is one tensor under two names, and
 safetensors stores no aliases, so the table is written under the name that holds it and `from_pretrained` ties the
-other name back onto it, which leaves the directory at 4.5 GB for 1.10 B parameters.
+other name back onto it, which leaves the directory at 4.5 GB for 1.10 B parameters. Once it is written, the released
+weight files the conversion read are dropped from the `huggingface_hub` cache; the small configuration files it also
+reads are kept.
 
 `weight_conversion.convert` writes that same conversion to a directory of the caller's choosing, for a checkpoint
 that is shipped elsewhere or kept outside the cache, and both `from_pretrained` calls above read it as readily as

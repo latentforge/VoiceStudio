@@ -6,13 +6,13 @@ import json
 import re
 import sys
 import types
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 import joblib
 import torch
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download, snapshot_download
 from transformers.models.auto.tokenization_auto import AutoTokenizer
 from transformers.models.encodec.configuration_encodec import EncodecConfig
 from transformers.models.hubert.configuration_hubert import HubertConfig
@@ -104,18 +104,24 @@ def placeholder_packages(*names: str):
             del sys.modules[loaded]
 
 
+# The files [`build_config`] reads, the vocoder weights among them because the number of quantizers it declares
+# is read off their codebook table.
+CONFIG_FILES = (
+    AUDIO_CONFIG,
+    TEXT_ENCODER_CONFIG,
+    f"{VOCODER_DIR}/config.yaml",
+    f"{VOCODER_DIR}/pytorch_model.bin",
+)
+
 # Every file of the released layout that is read, which leaves the 48 kHz EnCodec checkpoint and the mT5 weights
 # out: the text encoder's own weights come from the two stage checkpoints, only its `config.json` is read here.
-_REQUIRED_FILES = (
+WEIGHT_FILES = (
     AR_CHECKPOINT,
     NAR_CHECKPOINT,
     SEMANTIC_CHECKPOINT,
     SEMANTIC_KMEANS,
     AUDIO_CHECKPOINT,
-    AUDIO_CONFIG,
-    TEXT_ENCODER_CONFIG,
-    f"{VOCODER_DIR}/config.yaml",
-    f"{VOCODER_DIR}/pytorch_model.bin",
+    *CONFIG_FILES,
 )
 
 
@@ -146,15 +152,18 @@ def is_published_layout(source: str) -> bool:
     return json.loads(Path(config_file).read_text()).get("model_type") != VoxInstructConfig.model_type
 
 
-def resolve(source: str) -> Path:
+def resolve(source: str, filenames: Iterable[str] = WEIGHT_FILES) -> Path:
     r"""
-    Returns a local directory holding the released layout, downloading the files [`convert_state_dict`] and
-    [`build_config`] read if `source` is a repository id.
+    Returns a local directory holding the released layout, downloading the files it is asked for if `source` is a
+    repository id.
 
     Args:
         source (`str`):
             Local directory or Hugging Face repository holding the released `models/VoxInstruct/pretrained`
             layout.
+        filenames (`Iterable[str]`, *optional*, defaults to [`WEIGHT_FILES`]):
+            Files of the layout to download, which a caller that only builds a configuration or a processor
+            narrows to [`CONFIG_FILES`].
 
     Returns:
         `Path`: The local directory.
@@ -162,7 +171,7 @@ def resolve(source: str) -> Path:
     path = Path(source)
     if path.is_dir():
         return path
-    return Path(snapshot_download(source, allow_patterns=list(_REQUIRED_FILES)))
+    return Path(snapshot_download(source, allow_patterns=list(filenames)))
 
 
 def convert_text_encoder_key(key: str) -> str:
@@ -369,8 +378,8 @@ def write_checkpoint(directory: Path, output_dir, config: VoxInstructConfig | No
 
     with torch.device("meta"):
         model = VoxInstructForConditionalGeneration(config)
-    # A tied key is a second name for the tensor its source holds, which safetensors cannot store, and
-    # `from_pretrained` ties it back onto that source when the checkpoint does not carry it.
+    # A tied key names the same tensor as its source, which safetensors cannot store twice, and `from_pretrained`
+    # ties it back onto the source it is missing from the checkpoint.
     tied = set(model.all_tied_weights_keys)
     expected = set(model.state_dict()) - tied
 
@@ -406,11 +415,14 @@ def converted_checkpoint(source: str = "niobures/VoxInstruct") -> Path:
     Returns:
         `Path`: The directory holding the converted checkpoint.
     """
-    directory = resolve(source)
+    path = Path(source)
+    # The released layout carries no file at its root, so the revision is named by a file inside it. Resolving one
+    # small file rather than the whole snapshot is what keeps a cache hit from reading the released weights at all.
+    identity = file_identity(path if path.is_dir() else hf_hub_download(source, TEXT_ENCODER_CONFIG))
     return cached_conversion(
         "vox_instruct",
-        [str(source), file_identity(directory)],
-        lambda output_dir: write_checkpoint(directory, output_dir),
+        [str(source), identity],
+        lambda output_dir: write_checkpoint(resolve(source), output_dir),
     )
 
 

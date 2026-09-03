@@ -106,10 +106,10 @@ class VoxInstructProcessor(ProcessorMixin):
         Returns:
             [`VoxInstructProcessor`]: The processor.
         """
-        from .weight_conversion import build_config, build_processor, is_published_layout, resolve
+        from .weight_conversion import CONFIG_FILES, build_config, build_processor, is_published_layout, resolve
 
         if pretrained_model_name_or_path is not None and is_published_layout(pretrained_model_name_or_path):
-            directory = resolve(pretrained_model_name_or_path)
+            directory = resolve(pretrained_model_name_or_path, CONFIG_FILES)
             return build_processor(directory, build_config(directory), tokenizer_id)
         return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
 

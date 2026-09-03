@@ -11,7 +11,10 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 
 import torch
+from huggingface_hub import scan_cache_dir
 from huggingface_hub.constants import HF_HOME
+from huggingface_hub.errors import CacheNotFound
+from huggingface_hub.utils import DeleteCacheStrategy
 from safetensors.torch import save_file
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 
@@ -28,6 +31,14 @@ CACHE_VERSION = 1
 # checkpoint is resident at a time.
 MAX_SHARD_SIZE = 2 * 1024**3
 
+# Bytes at which a source file counts as weights and is reclaimed once it has been converted. A configuration,
+# a tokenizer or the discriminator a loader probes for stays, since it costs nothing and saves a round trip.
+RECLAIMED_FILE_SIZE = 16 * 1024**2
+
+# Suffixes a source file carries when it holds text rather than weights, which is never reclaimed whatever its
+# size, since a serialized tokenizer can run to tens of megabytes.
+RECLAIMED_FILE_EXCEPTIONS = frozenset({".json", ".md", ".model", ".py", ".tsv", ".txt", ".vocab", ".yaml", ".yml"})
+
 # Seconds a staging directory goes untouched before a sweep takes it for an interrupted conversion. This has to
 # stay above the longest a running conversion leaves its staging directory alone, which is the time it spends
 # downloading and reading its source before the first shard is written.
@@ -36,6 +47,9 @@ STAGING_MAX_AGE = 6 * 60 * 60
 # Layout `huggingface_hub` gives a downloaded file, whose two components pin the repository and the commit
 # the file was read from.
 _SNAPSHOT = re.compile(r"(?:^|/)(?P<repo>(?:models|datasets|spaces)--[^/]+)/snapshots/(?P<revision>[^/]+)(?:/|$)")
+
+# The same two components as [`file_identity`] writes them, which is how a cache key names a downloaded source.
+_IDENTITY = re.compile(r"(?P<repo>(?:models|datasets|spaces)--[^/@]+)@(?P<revision>[^/@]+)")
 
 # Name `tempfile.mkdtemp` builds for a staging directory, a cache key followed by a random suffix. A finished
 # entry is the bare key, so the dot is what tells the two apart.
@@ -146,6 +160,71 @@ def sweep_staging(directory) -> None:
             shutil.rmtree(entry, ignore_errors=True)
 
 
+def reclaim_sources(parts: Iterable) -> int:
+    r"""
+    Removes from the `huggingface_hub` cache the weight files of every downloaded revision a conversion read,
+    which the converted checkpoint replaces as what later loads are served from.
+
+    The revisions come from the [`file_identity`] strings in `parts`, so a local directory the caller handed the
+    conversion is never touched. Only files of at least `RECLAIMED_FILE_SIZE` go, and only where the revision
+    being reclaimed is the one revision of its repository linking the blob behind them. Deletion runs through
+    `huggingface_hub`'s own [`~huggingface_hub.utils.DeleteCacheStrategy`], which drops each snapshot link before
+    the blob it points at, so no later scan of the cache meets a broken link.
+
+    Args:
+        parts (`Iterable`):
+            Cache key of the conversion, see [`cache_key`].
+
+    Returns:
+        `int`: Bytes freed.
+    """
+    revisions = {
+        (match["repo"], match["revision"])
+        for match in (_IDENTITY.fullmatch(str(part)) for part in parts)
+        if match is not None
+    }
+    if not revisions:
+        return 0
+
+    try:
+        cache = scan_cache_dir()
+    except CacheNotFound:
+        return 0
+
+    links: set[Path] = set()
+    blobs: set[Path] = set()
+    freed = 0
+    for repo in cache.repos:
+        for revision in repo.revisions:
+            if (repo.repo_path.name, revision.commit_hash) not in revisions:
+                continue
+            elsewhere = {
+                file.blob_path for other in repo.revisions if other is not revision for file in other.files
+            }
+            for file in revision.files:
+                if file.size_on_disk < RECLAIMED_FILE_SIZE or file.file_path.suffix in RECLAIMED_FILE_EXCEPTIONS:
+                    continue
+                if file.blob_path in elsewhere:
+                    continue
+                links.add(file.file_path)
+                # A filesystem without symlinks holds the bytes in the snapshot itself, so there is no blob
+                # under it to drop separately.
+                if file.blob_path != file.file_path:
+                    blobs.add(file.blob_path)
+                freed += file.size_on_disk
+
+    if not links:
+        return 0
+    DeleteCacheStrategy(
+        expected_freed_size=freed,
+        blobs=frozenset(blobs),
+        refs=frozenset(),
+        repos=frozenset(),
+        snapshots=frozenset(links),
+    ).execute()
+    return freed
+
+
 def cached_conversion(name: str, parts: Iterable, write: Callable[[Path], None]) -> Path:
     r"""
     Returns a directory holding the converted checkpoint `parts` names, running `write` to produce it the first
@@ -154,6 +233,8 @@ def cached_conversion(name: str, parts: Iterable, write: Callable[[Path], None])
     The conversion is written to a temporary directory beside the cached one and moved into place with a single
     rename, so a second process reading the cache sees either nothing or a directory whose conversion ran to
     completion, and two processes converting the same checkpoint at once leave one result rather than a mixture.
+    The process whose rename lands is also the one that reclaims the downloaded source, see [`reclaim_sources`],
+    so nothing is removed under a conversion that is still reading it.
 
     Args:
         name (`str`):
@@ -166,6 +247,7 @@ def cached_conversion(name: str, parts: Iterable, write: Callable[[Path], None])
     Returns:
         `Path`: The directory holding the converted checkpoint.
     """
+    parts = tuple(parts)
     directory = cache_root() / name / cache_key(parts)
     sweep_staging(directory.parent)
     if directory.is_dir():
@@ -180,6 +262,8 @@ def cached_conversion(name: str, parts: Iterable, write: Callable[[Path], None])
         except OSError:
             if not directory.is_dir():
                 raise
+        else:
+            reclaim_sources(parts)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return directory
@@ -295,12 +379,15 @@ __all__ = [
     "CACHE_DIR_NAME",
     "CACHE_VERSION",
     "MAX_SHARD_SIZE",
+    "RECLAIMED_FILE_EXCEPTIONS",
+    "RECLAIMED_FILE_SIZE",
     "STAGING_MAX_AGE",
     "CheckpointWriter",
     "cache_key",
     "cache_root",
     "cached_conversion",
     "file_identity",
+    "reclaim_sources",
     "source_identity",
     "sweep_staging",
 ]
