@@ -24,6 +24,7 @@ ask instead of proceeding.
 | H8 | Comments must never narrate history, diffs, or rationale ("instead of X", "previously did Y", "see PROJECT.md"). See §6.1 for what's allowed. |
 | H9 | A file gets a license header only where this project wrote or modified the code. Import-relay files get neither a header nor a module docstring (§7, §8). |
 | H10 | Never write a migration as new files added beside an untouched vendored tree, and never delete that tree to make room. `git mv` the real upstream file and edit it in place (§2.4). |
+| H17 | `from_pretrained` on the official repository id must work with no manual conversion step (§9.2). |
 | H11 | Never add a third-party dependency to make a migration work, and never `pip install` one into the environment to get past a blocker. Removing the upstream model's dependencies is part of the migration; if one cannot be removed, report it and let a human decide (§9.1). |
 | H12 | Never rewrite shared history. No `git reset`, `rebase`, `commit --amend`, or force push, and never move the branch. Undo your own work with `git revert` only, and never touch a commit you did not create. Other agents commit to this branch concurrently (§1.3). |
 | H13 | Never report a model verified without transcribing its generated audio back. A waveform with plausible amplitude and no NaN is not evidence (§2.5). |
@@ -413,7 +414,38 @@ step outside the processor.
 ## 9. Dependencies & Infra
 
 - Target `transformers` 5.0 conventions for anything newly written.
-- Checkpoint conversions go through `WeightConvert`.
+- Checkpoint conversions happen at load time. See §9.2.
+
+### 9.2 Loading a published checkpoint
+
+`from_pretrained` on the model's official repository id must work on its own. A README that opens
+by telling the reader to run a `convert()` first is a migration that is not finished, whatever the
+conversion does. A caller should never have to know that the published weight layout differs from
+the one the code expects.
+
+Two ways to get there, in this order of preference:
+
+1. **Register a conversion mapping.** `transformers.conversion_mapping` provides
+   `register_checkpoint_conversion_mapping` with `WeightRenaming`, `WeightConverter`, `Concatenate`
+   and `MergeModulelist`, and applies them as the checkpoint loads. Key renaming, weight-norm
+   folding and tensor concatenation all belong here. `voicestudio/models/higgs_tts3/` and
+   `voicestudio/models/ommivoice/` are the in-repo references.
+2. **Convert on failure.** Some conversions cannot be expressed as a mapping: building a config
+   from tensor shapes, reading an ONNX graph, merging several separately published files. Where
+   that is genuinely true, `from_pretrained` still takes the official repo id. It attempts the load,
+   and when the load fails on the published layout it runs the conversion and loads the result.
+   Catch the specific failure, not every exception, and do not silently convert a checkpoint that
+   failed for an unrelated reason.
+
+"Automatic conversion is hard here" is a reason to take the second route, never a reason to leave a
+manual step. If neither route works, that is a finding to report under §2.6, with the specific step
+that blocks it named.
+
+Two failure modes worth knowing before writing a mapping. `WeightRenaming` substitutes only `\1`,
+so a rule with two capture groups leaves a literal `\2` in the renamed key and it goes MISSING with
+no error. And a buffer computed in a constructor comes back as uninitialised memory under
+meta-device initialisation, which reloads without raising and has already produced garbage audio in
+this repository.
 - The `transformers` dependency in `pyproject.toml` points at
   `latentforge/transformers-tts`, not upstream `transformers`. Refer to it by name;
   it is not "the fork".
