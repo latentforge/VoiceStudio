@@ -277,7 +277,7 @@ class VoxInstructPreTrainedModel(PreTrainedModel):
 )
 class VoxInstructARForCausalLM(VoxInstructPreTrainedModel):
     config: VoxInstructARConfig
-    _tied_weights_keys = None
+    _tied_weights_keys = {"text_encoder.encoder.embed_tokens.weight": "text_encoder.shared.weight"}
 
     def __init__(self, config: VoxInstructARConfig):
         super().__init__(config)
@@ -413,6 +413,7 @@ class VoxInstructARForCausalLM(VoxInstructPreTrainedModel):
 )
 class VoxInstructNARModel(VoxInstructPreTrainedModel):
     config: VoxInstructNARConfig
+    _tied_weights_keys = {"text_encoder.encoder.embed_tokens.weight": "text_encoder.shared.weight"}
 
     def __init__(self, config: VoxInstructNARConfig):
         super().__init__(config)
@@ -608,7 +609,10 @@ class VoxInstructNARModel(VoxInstructPreTrainedModel):
 )
 class VoxInstructForConditionalGeneration(VoxInstructPreTrainedModel, VoxInstructGenerationMixin):
     config: VoxInstructConfig
-    _tied_weights_keys = None
+    _tied_weights_keys = {
+        "ar.text_encoder.encoder.embed_tokens.weight": "ar.text_encoder.shared.weight",
+        "nar.text_encoder.encoder.embed_tokens.weight": "nar.text_encoder.shared.weight",
+    }
 
     def __init__(self, config: VoxInstructConfig):
         super().__init__(config)

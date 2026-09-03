@@ -367,14 +367,21 @@ def write_checkpoint(directory: Path, output_dir, config: VoxInstructConfig | No
     if config is None:
         config = build_config(directory)
 
+    with torch.device("meta"):
+        model = VoxInstructForConditionalGeneration(config)
+    # A tied key is a second name for the tensor its source holds, which safetensors cannot store, and
+    # `from_pretrained` ties it back onto that source when the checkpoint does not carry it.
+    tied = set(model.all_tied_weights_keys)
+    expected = set(model.state_dict()) - tied
+
     written = set()
     with CheckpointWriter(output_dir) as writer:
         for key, value in iter_converted_tensors(directory, config):
+            if key in tied:
+                continue
             writer.add(key, value)
             written.add(key)
 
-    with torch.device("meta"):
-        expected = set(VoxInstructForConditionalGeneration(config).state_dict())
     if written != expected:
         raise ValueError(
             f"The converted weights do not match VoxInstructForConditionalGeneration: missing "
