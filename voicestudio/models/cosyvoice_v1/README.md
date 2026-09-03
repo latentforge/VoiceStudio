@@ -76,7 +76,7 @@ only, because upstream trains the three networks one at a time with three separa
   are the two generator side inputs of upstream's objective. The objective itself is not
   implemented; see "Not carried over from upstream".
 
-Upstream freezes nothing. The only `requires_grad` assignment in the vendored tree is
+Upstream freezes nothing. The only `requires_grad` assignment in upstream's tree is
 `Snake.alpha.requires_grad = alpha_trainable` in `cosyvoice/transformer/activation.py`, whose
 default is `True` and which the vocoder never overrides, and the only `.eval()` on a training path
 is `self.ref_model.eval()` in `Executor`, which belongs to the CosyVoice 2 DPO recipe. Both freeze
@@ -175,9 +175,9 @@ convert onto 436,053,808 parameters with zero MISSING and zero UNEXPECTED keys, 
 goes unused. `f0_predictor.condnet` holds its five convolutions at indices 0, 2, 4, 6 and 8, as the
 checkpoint confirms.
 
-**Numeric parity against upstream's own classes.** The upstream tree is still in this folder, so
-every migrated module was run side by side with the class it replaces, loaded from the same
-weights. Reported as `max|diff|`:
+**Numeric parity against upstream's own classes.** The upstream tree was still in this folder when
+these ran, so every migrated module was run side by side with the class it replaces, loaded from
+the same weights. Reported as `max|diff|`:
 
 | Component | Upstream class | max abs difference |
 |---|---|---|
@@ -271,8 +271,12 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
   `cosyvoice/hifigan/discriminator.py` and the three loss functions upstream imports from
   `matcha.hifigan.models` are not implemented here, so the vocoder cannot be trained the way
   upstream trained it. `CosyVoiceV1HiFTGenerator.forward` returns the waveform and the f0 that two
-  of those terms consume, and nothing else. This is the same shape as the open Vocos item and it
-  needs a human.
+  of those terms consume, and nothing else. The target of the f0 term is `pitch_feat`, which
+  upstream builds in `cosyvoice/dataset/processor.py` with `pyworld.harvest`, falling back to
+  `pyworld.dio` when fewer than five frames come back voiced, refining with `pyworld.stonemask` and
+  interpolating onto the mel frame count. That file and the three named above are the four upstream
+  files this objective lives in and all four are still in this folder, but the `matcha` losses are
+  not and never were. This is the same shape as the open Vocos item and it needs a human.
 - **The text frontend.** Upstream's `CosyVoiceFrontEnd.text_normalize` runs the input through
   `ttsfrd` if the resource pack is installed, otherwise `wetext`, otherwise nothing, and then
   splits long text into sentences with `split_paragraph`, using `inflect` for English number
@@ -290,16 +294,26 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
   to `BASECFM` as `n_feats`, then ignores it and hardcodes 80 everywhere it matters.
   `CosyVoiceV1ConditionalCFM.n_feats` is `estimator_out_channels` (80), which is the value upstream
   actually uses. Identical behaviour for v1; a subclass with a different mel width would diverge.
-- **The vendored upstream tree.** `cosyvoice/`, `runtime/`, `examples/`, `tools/`, `docker/`,
-  `third_party/`, `webui.py`, `example.py` and `vllm_example.py` are still in this folder. The four
-  files the migration transformed were renamed onto their `<kind>_cosyvoice_v1.py` names in
-  `7e93ecff`; the rest has not been dispositioned yet, and some of it carries CosyVoice 2 and 3
-  code that the v2 and v3 migrations will need. See "File map".
+- **The `CosyVoice-300M-25Hz` text tokenizer.** `cosyvoice/tokenizer/tokenizer.py` holds a second
+  text tokenizer, reached through `get_tokenizer` and the
+  `multilingual_zh_ja_yue_char_del.tiktoken` asset beside it, which upstream's recipe selects with
+  `get_tokenizer: !name:cosyvoice.tokenizer.tokenizer.get_tokenizer` when training the
+  `CosyVoice-300M-25Hz` release rather than the 50 Hz one this migration converts. It is not the
+  same vocabulary: it carries 58836 mergeable ranks where `openai/whisper-large-v3` carries 51866,
+  9292 of its tokens are absent from that vocabulary and 48003 of the rest sit at a different rank,
+  and its special tokens add audio event, emotion and TTS vocal markers whisper has none of.
+  `CosyVoiceV1Processor` has no counterpart for it and `PUBLISHED_CHECKPOINTS` does not list the
+  25 Hz release, so that checkpoint cannot be loaded or tokenized here. The file and its asset stay
+  in this folder for that reason, and whether to cover the 25 Hz release at all is the decision
+  this leaves open.
 
 ## File map
 
 One counterpart per upstream file, per CLAUDE.md section 2.4. The renames are recorded in
-`7e93ecff`, so `git log --follow` walks back into the original authors' commits.
+`7e93ecff` and the removals in `86a9fa18`, so `git log --follow` walks back into the original
+authors' commits and `git show` recovers any file named below.
+
+### Transformed into this folder
 
 | Upstream file | Where it went |
 |---|---|
@@ -309,18 +323,61 @@ One counterpart per upstream file, per CLAUDE.md section 2.4. The renames are re
 | `cosyvoice/cli/cosyvoice.py` | `weight_conversion.py`. Its `load` method became the conversion. |
 | `cosyvoice.yaml` | `configuration_cosyvoice_v1.py`. |
 | `cosyvoice/__init__.py` | `__init__.py`. |
-| `cosyvoice/flow/flow.py` | Not yet moved. `MaskedDiffWithXvec` is `CosyVoiceV1FlowModel` in `modeling_cosyvoice_v1.py`; the file also holds `CausalMaskedDiffWithXvec` (v2) and `CausalMaskedDiffWithDiT` (v3). |
-| `cosyvoice/flow/flow_matching.py` | Not yet moved. `ConditionalCFM` is `CosyVoiceV1ConditionalCFM`; the file also holds `CausalConditionalCFM` (v2 and v3). |
-| `cosyvoice/flow/decoder.py` | Not yet moved. `ConditionalDecoder` is `CosyVoiceV1ConditionalDecoder`; the file also holds `CausalConditionalDecoder` (v2 and v3). |
-| `cosyvoice/flow/length_regulator.py` | Not yet moved. `InterpolateRegulator` is `CosyVoiceV1InterpolateRegulator`. |
-| `cosyvoice/hifigan/generator.py` | Not yet moved. `HiFTGenerator`, `SineGen`, `SourceModuleHnNSF` and `ResBlock` are the `CosyVoiceV1HiFTGenerator` family; the file also holds `CausalHiFTGenerator` and `SineGen2` (v3). |
-| `cosyvoice/hifigan/f0_predictor.py` | Not yet moved. `ConvRNNF0Predictor` is `CosyVoiceV1F0Predictor`. |
-| `cosyvoice/transformer/encoder.py`, `encoder_layer.py`, `attention.py`, `embedding.py`, `subsampling.py`, `positionwise_feed_forward.py` | Not yet moved. Together they are `CosyVoiceV1Encoder` and its parts. |
-| `cosyvoice/transformer/label_smoothing_loss.py` | Not yet moved. Is `CosyVoiceV1LabelSmoothingLoss`. |
-| `cosyvoice/utils/mask.py`, `common.py` | Not yet moved. `make_pad_mask`, `add_optional_chunk_mask`, `mask_to_bias`, `ras_sampling`, `nucleus_sampling` and `random_sampling` are in `modeling_cosyvoice_v1.py` and `generation_cosyvoice_v1.py`. |
-| `cosyvoice/hifigan/hifigan.py`, `discriminator.py` | Not yet moved and not implemented. See "Not carried over from upstream". |
-| `cosyvoice/dataset/`, `cosyvoice/bin/`, `cosyvoice/utils/executor.py`, `train_utils.py`, `scheduler.py`, `losses.py` | Not yet moved. Upstream's training harness, read for the objectives above. |
-| `cosyvoice/vllm/`, `cosyvoice/tokenizer/`, `runtime/`, `examples/`, `tools/`, `docker/`, `third_party/`, `webui.py`, `example.py`, `vllm_example.py` | Not yet moved. `cosyvoice/tokenizer/tokenizer.py` holds `CosyVoice2Tokenizer` and `CosyVoice3Tokenizer`, which the v2 and v3 migrations need. |
+
+### Removed, with a counterpart in one of the three folders
+
+| Upstream file | Counterpart |
+|---|---|
+| `cosyvoice/flow/flow.py` | `MaskedDiffWithXvec` is `CosyVoiceV1FlowModel`, `CausalMaskedDiffWithXvec` is `CosyVoiceV2FlowModel`, `CausalMaskedDiffWithDiT` is `CosyVoiceV3FlowModel`. |
+| `cosyvoice/flow/flow_matching.py` | `ConditionalCFM` is `CosyVoiceV1ConditionalCFM`, `CausalConditionalCFM` is `CosyVoiceV2ConditionalCFM` and `CosyVoiceV3ConditionalCFM`. |
+| `cosyvoice/flow/decoder.py` | `ConditionalDecoder` is `CosyVoiceV1ConditionalDecoder` and `CausalConditionalDecoder` is `CosyVoiceV2ConditionalDecoder`. `CausalBlock1D`, `CausalResnetBlock1D`, `CausalConv1d` and `Transpose` are the `CosyVoiceV2` classes of the same names. |
+| `cosyvoice/flow/length_regulator.py` | `InterpolateRegulator` is `CosyVoiceV1InterpolateRegulator`. |
+| `cosyvoice/flow/DiT/dit.py` | `DiT` is `CosyVoiceV3ConditionalDecoder` and `InputEmbedding` is `CosyVoiceV3InputEmbedding`. `TextEmbedding` is F5-TTS carryover that `DiT` never instantiates. |
+| `cosyvoice/flow/DiT/modules.py` | `TimestepEmbedding` is `CosyVoiceV3TimestepEmbedding`, `DiTBlock` is `CosyVoiceV3DecoderLayer`, `AdaLayerNormZero_Final` is `CosyVoiceV3AdaLayerNormFinal` and `CausalConvPositionEmbedding` is `CosyVoiceV3CausalConvPositionEmbedding`. `Attention`, `AttnProcessor`, `AdaLayerNormZero`, `FeedForward` and `SinusPositionEmbedding` are inherited from `voicestudio/models/f5_tts/`. `MelSpec`, `GRN`, `ConvNeXtV2Block`, `MMDiTBlock`, `JointAttnProcessor`, `ConvPositionEmbedding`, `precompute_freqs_cis` and `get_pos_embed_indices` are F5-TTS carryover that no CosyVoice configuration reaches. |
+| `cosyvoice/hifigan/generator.py` | `HiFTGenerator`, `SineGen`, `SourceModuleHnNSF` and `ResBlock` are the `CosyVoiceV1HiFTGenerator` family, `SineGen2` is `CosyVoiceV2SineGen` and `CausalHiFTGenerator` is `CosyVoiceV3HiFTGenerator`. |
+| `cosyvoice/hifigan/f0_predictor.py` | `ConvRNNF0Predictor` is `CosyVoiceV1F0Predictor` and `CausalConvRNNF0Predictor` is `CosyVoiceV3F0Predictor`. |
+| `cosyvoice/transformer/encoder.py`, `encoder_layer.py`, `attention.py`, `embedding.py`, `subsampling.py`, `positionwise_feed_forward.py` | Together they are `CosyVoiceV1Encoder` and its parts. The released configurations select one class per file, `ConformerEncoder`, `ConformerEncoderLayer`, `RelPositionMultiHeadedAttention`, `EspnetRelPositionalEncoding`, `LinearNoSubsampling` and `PositionwiseFeedForward`. The others are WeNet variants no CosyVoice configuration selects and no released checkpoint carries weights for. |
+| `cosyvoice/transformer/upsample_encoder.py` | `UpsampleConformerEncoder` is `CosyVoiceV2UpsampleEncoder`, `PreLookaheadLayer` is `CosyVoiceV2PreLookaheadLayer` and `Upsample1D` is `CosyVoiceV2Upsample1D`. |
+| `cosyvoice/transformer/convolution.py` | `CausalConv1d`, `CausalConv1dUpsample` and `CausalConv1dDownSample` are `CosyVoiceV3CausalConv1d`, `CosyVoiceV3CausalConv1dUpsample` and `CosyVoiceV3CausalConv1dDownsample`. `ConvolutionModule` is never built: every CosyVoice encoder sets `use_cnn_module: False`. |
+| `cosyvoice/transformer/activation.py` | `Snake` is `CosyVoiceV1Snake`. `Swish` is a fallback `COSYVOICE_ACTIVATION_CLASSES` reaches only on a torch without `nn.SiLU`. |
+| `cosyvoice/transformer/label_smoothing_loss.py` | `LabelSmoothingLoss` is `CosyVoiceV1LabelSmoothingLoss`. |
+| `cosyvoice/transformer/decoder.py`, `decoder_layer.py` | None, and none is needed. `TransformerDecoder`, `BiTransformerDecoder` and `DecoderLayer` are WeNet's attention rescoring decoder for speech recognition. Nothing in the upstream tree imported them outside each other, no CosyVoice configuration names them, and the three conversions load `llm.pt`, `flow.pt` and `hift.pt` with zero UNEXPECTED keys, so no released checkpoint carries their weights. |
+| `cosyvoice/utils/mask.py` | `make_pad_mask` is `make_pad_mask`, and `add_optional_chunk_mask` is `build_attention_bias` in `modeling_cosyvoice_v1.py` and `build_chunk_mask` in `modeling_cosyvoice_v3.py`. |
+| `cosyvoice/utils/common.py` | `ras_sampling`, `nucleus_sampling`, `random_sampling` and `fade_in_out` are in `generation_cosyvoice_v1.py`, `mask_to_bias` is folded into `build_attention_bias`, and `th_accuracy` is `CosyVoiceV1Output.accuracy`. `TrtContextWrapper` is a TensorRT wrapper. |
+| `cosyvoice/utils/onnx.py` | `SpeechTokenExtractor` is `CosyVoiceV1Processor.encode_speech_tokens` and `EmbeddingExtractor` is `CosyVoiceV1Processor.encode_speaker`. |
+| `cosyvoice/utils/class_utils.py` | `configuration_cosyvoice_v1.py`. It is the string to class dispatch table hyperpyyaml used to build a model from `cosyvoice.yaml`. It had already stopped importing, since it reads `cosyvoice.llm.llm` and `cosyvoice.cli.model`, both moved in `7e93ecff`. |
+| `cosyvoice/utils/file_utils.py` | `load_wav` is the processor's load and resample. `read_lists` and `read_json_lists` are manifest readers, and `convert_onnx_to_trt` and `export_cosyvoice2_vllm` are serving exports. |
+| `cosyvoice/cli/__init__.py`, `cosyvoice/dataset/__init__.py`, `cosyvoice/transformer/__init__.py`, `cosyvoice/utils/__init__.py` | `__init__.py`. All four are empty. |
+
+### Removed as out of scope
+
+| Upstream path | Category |
+|---|---|
+| `runtime/`, 55 files | Serving stacks: a FastAPI server, a gRPC server and a Triton model repository backed by TensorRT-LLM, with their Dockerfiles, clients and conversion scripts. `runtime/triton_trtllm/token2wav*.py` are that stack's own token to waveform paths, which `generation_cosyvoice_v1.py`, `generation_cosyvoice_v2.py` and `generation_cosyvoice_v3.py` cover, and `scripts/convert_cosyvoice3_to_hf.py` merges the speech embedding into the Qwen2 table so `trtllm-build` can read it, which is not the layout `weight_conversion.py` produces. |
+| `examples/`, 37 files | Training recipes: the LibriTTS and MagicData shell pipelines, DeepSpeed stage configurations, data preparation scripts, and the GRPO recipe under `examples/grpo/cosyvoice2/`, whose reward in `reward_tts.py` is an HTTP call to the Triton server above. `local/prepare_reject_sample.py` generates the rejected half of a preference batch by running `inference_zero_shot`, which `CosyVoiceV2ForConditionalGeneration.generate` covers. |
+| `tools/`, 3 files | Data preparation: `extract_embedding.py` and `extract_speech_token.py` run `campplus.onnx` and the speech tokenizer graph over a manifest, which `CosyVoiceV1Processor.encode_speaker` and `encode_speech_tokens` do per utterance, and `make_parquet_list.py` writes the parquet shards. |
+| `cosyvoice/vllm/cosyvoice2.py` | Serving: a vLLM plugin registering `CosyVoice2ForCausalLM`. |
+| `cosyvoice/bin/`, 4 files | Training and export tooling. `train.py` is upstream's training entry point, read for the objectives above; `average_model.py` averages checkpoints; `export_jit.py` and `export_onnx.py` are export scripts. |
+| `cosyvoice/dataset/dataset.py`, `cosyvoice/utils/executor.py`, `train_utils.py`, `scheduler.py` | Training harness: an `IterableDataset` with its distributed sampler, the train and validation loop, distributed and optimizer setup, and the learning rate schedules. `transformers` supplies all four. |
+| `webui.py`, `example.py`, `vllm_example.py` | Demo scripts. Their counterpart is the "Usage" section of this README and of the v2 and v3 ones. All three had already stopped importing, since they read `cosyvoice.cli.cosyvoice`, moved in `7e93ecff`. |
+| `docker/Dockerfile` | Packaging. |
+| `.github/`, `.gitignore`, `.gitmodules` | Continuous integration and repository configuration. |
+| `INFO.md`, `FAQ.md`, `CODE_OF_CONDUCT.md` | Upstream documentation. `INFO.md` is upstream's own README. |
+| `asset/`, 3 files | Demo assets: the two prompt waveforms `example.py` and `webui.py` read, and a group chat QR code. |
+| `third_party/Matcha-TTS` | A gitlink to `shivammehta25/Matcha-TTS`, never checked out here. What CosyVoice imports from it, `SinusoidalPosEmb`, `Block1D`, `ResnetBlock1D`, `Downsample1D`, `Upsample1D`, `BASECFM` and `BasicTransformerBlock`, is inlined in `modeling_cosyvoice_v1.py`. Its `matcha.hifigan.models` losses are not; see "Not carried over from upstream". |
+
+### Still here, because nothing migrated them
+
+| Upstream file | Why it stays |
+|---|---|
+| `cosyvoice/hifigan/hifigan.py`, `cosyvoice/hifigan/discriminator.py` | The vocoder's adversarial objective and its discriminators. Open. |
+| `cosyvoice/utils/losses.py` | `tpr_loss` and `mel_loss` belong to that objective, and `DPOLoss` to the direct preference optimization recipe. Both are open. |
+| `cosyvoice/dataset/processor.py` | `compute_f0` builds `pitch_feat`, the target of that objective's f0 term. Everything else in the file is accounted for: `compute_fbank` is `CosyVoiceV1FeatureExtractor`, `compute_whisper_fbank` is the processor's `WhisperFeatureExtractor`, `tokenize` is the processor's tokenizer, `parse_embedding` is the `speaker_embedding` input, and `parquet_opener` through `padding` is a data pipeline and a collator. |
+| `cosyvoice/utils/frontend_utils.py` | The text frontend. Open. |
+| `cosyvoice/tokenizer/tokenizer.py`, `cosyvoice/tokenizer/assets/multilingual_zh_ja_yue_char_del.tiktoken` | `get_encoding` and `get_tokenizer`, together with that asset, are the `CosyVoice-300M-25Hz` text tokenizer, which has no counterpart. Open. The rest of the file does have one: `get_qwen_tokenizer`, `CosyVoice2Tokenizer` and `CosyVoice3Tokenizer` are `SPECIAL_TOKENS` and `CosyVoiceV3Processor.add_special_tokens` in `processing_cosyvoice_v3.py`, which v3's `weight_conversion.py` applies. |
+
+`LICENSE` and `requirements.txt.bak` also stay, which is what every finished model folder in this
+repository does with the upstream licence and dependency manifest.
 
 ## Repository integration
 

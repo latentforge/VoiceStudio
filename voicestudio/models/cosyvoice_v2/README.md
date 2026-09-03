@@ -86,7 +86,7 @@ because upstream trains the three networks one at a time with three separate run
   are the two generator side inputs of upstream's objective. The objective itself is not implemented;
   see "Not carried over from upstream".
 
-Upstream freezes nothing. The only `requires_grad` assignment in the vendored tree is
+Upstream freezes nothing. The only `requires_grad` assignment in upstream's tree is
 `Snake.alpha.requires_grad = alpha_trainable` in `cosyvoice/transformer/activation.py`, whose default
 is `True` and which the vocoder never overrides. The only `.eval()` on a training path is
 `self.ref_model.eval()` in `Executor`, and that reference model is a second, separately constructed
@@ -316,9 +316,12 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
 - **Streaming input text.** Upstream's `inference_bistream` accepts a text generator and interleaves
   text and speech tokens using the same `mix_ratio` the bistream training layout uses. The training
   layout is implemented, the inference path is not.
-- **The vendored upstream tree.** It lives in `voicestudio/models/cosyvoice_v1/`, which this folder
-  reads its source material from. Nothing was moved out of it, because the v2 and the v3 classes share
-  those files with v1.
+- **The vendored upstream tree.** It is gone, removed in `86a9fa18` once v2 and v3 had landed and
+  every file in it could be pointed at a counterpart or a category. Seven files stay in
+  `voicestudio/models/cosyvoice_v1/`, each holding something no migration implemented, and the
+  File map in that folder's README accounts for all 166. The two that matter to v2 are
+  `cosyvoice/hifigan/hifigan.py` with `cosyvoice/hifigan/discriminator.py`, for the adversarial
+  objective above, and `cosyvoice/utils/losses.py`, for `DPOLoss`.
 
 ## Repository integration
 
