@@ -28,9 +28,6 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
 dependencies = [
-    # -----------------------------------------
-    # General dependencies
-    # -----------------------------------------
     "numpy>=2.3.5",
     "torch ; platform_system == 'Windows'",
     "torch>=2.8.0",
@@ -73,7 +70,8 @@ omni = [  # for Chroma, whose processor subclasses Qwen2_5OmniProcessor
     "pillow",
     "torchvision",
 ]
-onnx = [  # for Qwen3-TTS, CosyVoice
+onnx = [  # CosyVoice only: upstream publishes speech_tokenizer_*.onnx and campplus.onnx as
+          # ONNX graphs with no PyTorch weights, needed to derive a prompt from a waveform
     "onnxruntime-gpu[cuda,cudnn]>=1.18.0 ; platform_system == 'Linux' or platform_system == 'Windows'",
     "onnxruntime>=1.18.0 ; platform_system == 'Darwin'",
     "onnx",
