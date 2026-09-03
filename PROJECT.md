@@ -362,6 +362,38 @@ earlier calibration stands and the fix does not regress it.
 depth instead. `transformers`'s own `convert_qwen3_tts_to_hf` still drops the field, firing only on
 `rope_scaling`, so checkpoints written by that script stay at 500000; that fix belongs upstream.
 
+## Audited: route 2 and the generation config
+
+`from_pretrained` reads `generation_config.json` off the path it is handed, and passing `state_dict=`
+requires that path to be `None` (`modeling_utils.py:4153` raises otherwise), so a route 2 load keeps
+only the `GenerationConfig.from_model_config(config)` built in `__init__`. In parler_tts that lost the
+published `max_length` of 2580 and produced 0.139 seconds of audio that transcribed to nothing, with
+a clean load report, the right parameter count and no NaN. `read_generation_config` in
+`parler_tts/weight_conversion.py` is the fix.
+
+Every other folder was then audited, and none needed one. `vox_instruct`, `f5_tts`, `prompt_tts_pp`,
+`cosyvoice_v1`, `vocos` and `bigvgan` take the route 2 shape but their published repositories ship no
+`generation_config.json` at all; `vocos`, `bigvgan` and both PromptTTS++ classes report
+`can_generate()` false, so the question does not arise for them. `breeze_tts`, `qwen3_tts`, `dia2`
+and `spark_tts` keep the path and resolve theirs normally.
+
+CosyVoice v2 and v3 do drop one, and it is deliberately left dropped. The only
+`generation_config.json` in those repositories is `CosyVoice-BlankEN/generation_config.json`, the
+base text language model's directory, and it is byte identical to `Qwen/Qwen2-0.5B-Instruct`'s stock
+file. Upstream loads that body with `Qwen2ForCausalLM.from_pretrained` and only ever calls `forward`
+on it; its real decode parameters live in `cosyvoice2.yaml` as `ras_sampling(top_p=0.8, top_k=25,
+win_size=10, tau_r=0.1)`, which are already the defaults of the migrated `generate_speech_tokens`.
+Its `eos_token_id` values are text-vocabulary ids, outside the speech head's 6564. Instrumenting
+`model.generation_config` with a recording subclass logged zero attribute reads during generation,
+and attaching the file changed the audio by 0.000003 max absolute against a same-seed control of
+0.000003, which is GPU nondeterminism. Attaching it would graft a chat model's stop ids onto a
+speech-token model for no behavioural gain.
+
+Worth knowing if a repository ever does publish a root one:
+`from_pretrained(None, state_dict=..., generation_config=<GenerationConfig>)` is accepted and
+applied through `adjust_generation_fn`, which is a cheaper fix than parler's post-assignment and
+preserves a model's own `generation_config_class`.
+
 ## Auto classes cannot open a published layout
 
 `AutoModelForTextToWaveform.from_pretrained("SWivid/F5-TTS")` and its equivalents for `vocos`,
