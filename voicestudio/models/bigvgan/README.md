@@ -250,6 +250,12 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
   tensorboard. They are dropped along with those two packages.
 - **`inference.py` and `inference_e2e.py`.** Two command line entry points that vocode a directory of wav files
   or of precomputed mel `.npy` files. The Usage section above is their replacement.
+- **The exact from scratch initialization.** `utils.py:init_weights` draws `normal_(0.0, 0.01)` for the weight of
+  anything whose class name contains "Conv", and upstream applies it to the upsampling stack, the residual block
+  convolutions and `conv_post` only, leaving `conv_pre` and every bias at PyTorch's own defaults.
+  `BigVGANPreTrainedModel._init_weights` applies the same distribution to `conv_pre` as well and zeroes every
+  bias, which is the `transformers` convention and what `voicestudio/models/vocos` does. It affects a from
+  scratch training run and nothing about loading a published checkpoint.
 
 
 ## File map
