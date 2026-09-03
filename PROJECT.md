@@ -229,7 +229,7 @@ pretrained checkpoint yet; see "Runtime-verified" for that.
 | Spark-TTS BiCodec (`spark_tts_bicodec`) | Yes | Yes | Yes | `b2e78da3` split it into its own folder, following `higgs_audio_v2_tokenizer`. Round trip transcribes identically to the source clip. Objective taken from SparkVox's `loss_lambdas`, not the inference repo. |
 | VoxInstruct | Yes | Yes | Yes | `75800c0e`. Both stages transcribe verbatim. Teacher forcing gives ar_loss 2.48 and nar_loss 3.50 against 8.25 and 8.09 for shuffled targets, and gradients land only on the LoRA adapters, both decoders and the drawn residual head. The Vocos vocoder is not yet ported; see the folder README. |
 | BigVGAN | Yes | Yes, independently | n/a (NVIDIA source traced, no upstream tree was vendored) | `687502ad`. Its own model folder rather than a subclass of Qwen2.5-Omni's copy, which would have made the general case depend on one consumer. Re-verified from scratch on a remote GPU after the status row was found to rest on the migration commit's own prose: clean load with all 783 source tensors accounted for, 565 consumed and 218 resampling filters rebuilt from config, copy synthesis log mel L1 0.0887 against the 0.0886 calibration point in `d35f867f`, collapsing to 3.13 and 4.35 under negative controls on `conv_post` and `resblocks[0]`, and both consumers reloading clean and transcribing verbatim (`f2041f4c`). `1abdcdc4` reparents PromptTTS++'s BigVGAN, AMP block and Snake classes onto it, the first sibling inheritance in the repo, and `d35f867f` pairs `F5TTS_Base_bigvgan` with it: the old pairing shipped Vocos, which transcribed word for word while running 37 times too quiet at a copy-synthesis log mel distance of 3.895 against 0.0886. |
-| CosyVoice v1 | Yes | Yes | Yes | `61bc1224`, tree accounted for in `86a9fa18` (166 files to 16, every deletion named in the README File map). `diffusers`, `matcha-tts`, `einops`, `omegaconf`, `hyperpyyaml` and `openai-whisper` removed; `onnxruntime` could not be, because upstream publishes the v1 speech tokenizer and speaker encoder as ONNX graphs only, so it is reported and lazily imported rather than added to pyproject. Two meta-device buffers came back uninitialised after a reload and turned the fox sentence into `HADNIN YOUR DET SSFUL I SA YO TO DEING HEE`; both now build on first use. |
+| CosyVoice v1 | Yes | Yes | Yes | `61bc1224`, then `86a9fa18` and `4bec4b53` took the folder from 166 files to a flat eight, every deletion named in the README File map. The 25 Hz tiktoken tokenizer is migrated as `tokenization_cosyvoice_v1.py`, built on transformers' `TikTokenConverter` reading the rank file with stdlib base64, matching a reference BPE on 12 of 12 strings; `git log --follow` needs `-M20%` to cross that rename, since 199 of 327 lines changed. `CosyVoiceV1ResBlock` inherits `HifiGanResidualBlock` from speecht5 with checkpoint keys unmoved, and the objective's mel comes from `voicestudio/models/bigvgan/` rather than a second copy. The generator itself is not inherited: all four transformers HiFi-GANs lack the f0 predictor, source module and iSTFT head that reach this checkpoint. Copy synthesis gives a log mel distance of 0.105986 against 3.905116 for same-energy noise, and `compute_f0` is exactly equal to upstream's, which needs the interpolation kept in float64. `diffusers`, `matcha-tts`, `einops`, `omegaconf`, `hyperpyyaml` and `openai-whisper` removed; `onnxruntime` could not be, because upstream publishes the v1 speech tokenizer and speaker encoder as ONNX graphs only, so it is reported and lazily imported rather than added to pyproject. Two meta-device buffers came back uninitialised after a reload and turned the fox sentence into `HADNIN YOUR DET SSFUL I SA YO TO DEING HEE`; both now build on first use. |
 | CosyVoice v2 | Yes | Yes | Yes | `08e20c74`, special tokens fixed in `d888c4ab`. Its converter passed a bare `AutoTokenizer`, so 17 of upstream's 19 markers were absent and split into ordinary pieces: the model spoke `[laughter]` aloud, transcribing as `LAUTYR`, and no longer does. Only `<|im_start|>` and `<|im_end|>` were already present, as base Qwen2 chat tokens. No embedding resize is needed; the table is 151936 rows against a fixed tokenizer length of 151663. Subclasses v1. Every flow matching component is bit exact against upstream's own classes with streaming on and off, as are the sine generator and the neural source filter; the vocoder differs by 1.2e-05, the scipy against torch Hann window floor. |
 | CosyVoice v3 | Yes | Yes | Yes | `961705ce`. Subclasses v2, and takes `F5TTSTimestepEmbedding`, `F5TTSDecoderLayer`, `F5TTSAdaLayerNormFinal` and `F5TTSRotaryEmbedding` from f5_tts, which is the DiT lineage the sibling map predicted. |
 | OmniVoice (`ommivoice`) | Yes | Yes | Yes | `a452fcd5`. 90 files to 9. All 313 tensors and 612,577,280 parameters load with every source weight consumed, the fused embedding is bit identical to upstream's formula, and `forward` matches an independent reimplementation to 4.8e-07 against 20.17 on shuffled targets. wav2vec2 WER 0.000. The processor absorbs Whisper transcription of a missing reference transcript, which ends the pydub, soundfile and librosa dependencies. |
@@ -288,22 +288,15 @@ conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` to
 
 Three items left open:
 
-- **CosyVoice's vocoder is not trainable.** `forward(labels=...)` covers the language model and the
-  flow matching decoder, but not the HiFiGAN vocoder that turns mel into a waveform. Its objective is
-  a GAN: `cosyvoice/hifigan/hifigan.py` holds the generator loss, `discriminator.py` the multi period
-  and multi resolution discriminators, `utils/losses.py` the terms, and `compute_f0` in
-  `dataset/processor.py` builds the `pitch_feat` target the f0 term reads. Those four files are kept
-  in the folder rather than moved, because moving them under `git mv` means implementing them. This
-  is the same shape as the Vocos gap: the discriminators are training-only modules that appear in no
-  published checkpoint, so inference and fine tuning of everything else are unaffected, and only
-  training the vocoder from scratch needs them.
-- **The `CosyVoice-300M-25Hz` release uses a different text tokenizer.** `cosyvoice/tokenizer/`
-  holds a tiktoken tokenizer that upstream's v1 recipe selects for that release instead of whisper's,
-  confirmed in the recipe yaml at `01c21f07`. It is not interchangeable: 58836 mergeable ranks
-  against `openai/whisper-large-v3`'s 51866, with 9292 tokens absent and 48003 at a different rank,
-  plus audio-event, emotion and TTS-vocal specials whisper lacks. The release is not in
-  `PUBLISHED_CHECKPOINTS` and the processor has no counterpart for it, so the open question is
-  whether that release is in scope at all, not how to migrate it.
+- **CosyVoice's vocoder objective is half implemented.** `CosyVoiceV1HiFTGenerator.compute_loss`
+  now returns the 45 times mel term and the f0 term, which is what could be written without a
+  discriminator. Upstream's generator turn is `generator_loss` plus 2.0 times `feature_loss`, which
+  doubles again inside, plus 45 times `mel_loss` plus 1.0 times `tpr_loss` at tau 0.04 plus the f0
+  L1, alternating with a discriminator turn of `discriminator_loss` plus `tpr_loss` under its own
+  optimizer. The three adversarial terms and that whole second turn stay open for the same reason
+  Vocos's do: transformers carries no discriminator inside a model class, and none appears in a
+  published checkpoint. `discriminator.py` was deleted rather than renamed, with every dropped class
+  named in the folder README.
 - **`convert("base", ...)` crashes for CosyVoice v2 and v3.** Both converters compute
   `resolved = PUBLISHED_CHECKPOINTS.get(source, source)` and then use it to locate the tokenizer
   directory, but for a shorthand key it stays the bare repo id rather than the local directory
@@ -364,7 +357,8 @@ Gated on the CosyVoice migration, which still has to check these before writing 
   stronger base.
 - `Encoder` and `EncoderLayer` against prompt_tts_pp, which inherits the conformer submodules from
   `FastSpeech2Conformer` in transformers rather than reimplementing them.
-- `SourceModule` against prompt_tts_pp, and `Snake` against bigvgan once it lands.
+- `SourceModule` against prompt_tts_pp. `Snake` against bigvgan was measured and rejected: bigvgan's
+  activation carries an anti-aliasing sandwich and a different `layers.<n>.conv1` key layout.
 
 Gated on the OmniVoice migration:
 
