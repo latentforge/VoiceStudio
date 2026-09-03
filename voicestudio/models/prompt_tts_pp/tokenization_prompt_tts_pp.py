@@ -1,14 +1,22 @@
-"""MFA English phoneme set
+"""Tokenization class for PromptTTS++."""
 
-+ phoneme to numeric sequence conversion
-"""
+import json
+import os
+
+from transformers.tokenization_python import PreTrainedTokenizer
+from transformers.utils import logging, requires_backends
+
+
+logger = logging.get_logger(__name__)
+
+VOCAB_FILES_NAMES = {"vocab_file": "vocab.json"}
 
 PAD = "_"
 BOS = "^"
 EOS = "$"
 
-# phonemes = valid_symbols + 'spn' + 'sil' + 'sp'
-phonemes = [
+# The Montreal Forced Aligner English phoneme set, plus its "spn", "sil" and "sp" labels.
+PHONEMES = [
     "AA",
     "AA0",
     "AA1",
@@ -98,59 +106,181 @@ phonemes = [
     "sp",
 ]
 
-symbols = [PAD, BOS, EOS] + phonemes
-symbol2id = {s: i for i, s in enumerate(symbols)}
+SYMBOLS = [PAD, BOS, EOS] + PHONEMES
 
 
-def symbol_to_id(symbol):
-    return symbol2id[symbol]
-
-
-def id_to_symbol(idnum):
-    return symbols[idnum]
-
-
-def num_vocab():
-    return len(symbols)
-
-
-def text_to_sequence(text, add_special_token=True):
-    """Phoeneme to numeric sequence conversion
+class PromptTTSPPTokenizer(PreTrainedTokenizer):
+    """
+    Constructs a PromptTTS++ tokenizer, which turns English text into the phoneme ids of the Montreal Forced
+    Aligner symbol set the model was aligned with.
 
     Args:
-        text: Input phoneme sequence
-        add_special_token: whether add BOS and EOS
-
-    Returns:
-        seq: Sequence of phoneme IDs
+        vocab_file (`str`, *optional*):
+            Path to a vocabulary file. Defaults to the symbol table of the original implementation.
+        bos_token (`str`, *optional*, defaults to `"^"`):
+            The beginning of sequence token.
+        eos_token (`str`, *optional*, defaults to `"$"`):
+            The end of sequence token.
+        pad_token (`str`, *optional*, defaults to `"_"`):
+            The token used for padding, for example when batching sequences of different lengths.
+        phonemize (`bool`, *optional*, defaults to `True`):
+            Whether to run grapheme to phoneme conversion, which requires the `g2p_en` backend. Pass `False` to
+            tokenize a whitespace separated phoneme sequence directly.
     """
-    seq = []
 
-    if add_special_token:
-        # BOS
-        seq.append(symbol_to_id(BOS))
+    vocab_files_names = VOCAB_FILES_NAMES
+    model_input_names = ["input_ids", "attention_mask"]
 
-    for ph in text.split():
-        seq.append(symbol_to_id(ph))
+    def __init__(
+        self,
+        vocab_file: str | None = None,
+        bos_token: str = BOS,
+        eos_token: str = EOS,
+        pad_token: str = PAD,
+        phonemize: bool = True,
+        **kwargs,
+    ):
+        if vocab_file is not None:
+            with open(vocab_file, encoding="utf-8") as vocab_handle:
+                self.encoder = json.load(vocab_handle)
+        else:
+            self.encoder = {symbol: index for index, symbol in enumerate(SYMBOLS)}
+        self.decoder = {index: symbol for symbol, index in self.encoder.items()}
+        self.phonemize = phonemize
+        self._g2p = None
 
-    if add_special_token:
-        # EOS token
-        seq.append(symbol_to_id(EOS))
+        super().__init__(
+            bos_token=bos_token,
+            eos_token=eos_token,
+            pad_token=pad_token,
+            phonemize=phonemize,
+            special_tokens_pattern="none",
+            **kwargs,
+        )
 
-    return seq
+    @property
+    def vocab_size(self) -> int:
+        return len(self.decoder)
+
+    @property
+    def g2p(self):
+        """The `g2p_en` grapheme to phoneme converter, built on first use."""
+        if self._g2p is None:
+            requires_backends(self, "g2p_en")
+            import g2p_en
+
+            self._g2p = g2p_en.G2p()
+        return self._g2p
+
+    def get_vocab(self) -> dict[str, int]:
+        """
+        Returns:
+            `dict[str, int]`: The vocabulary, including the tokens added after instantiation.
+        """
+        return dict(self.encoder, **self.added_tokens_encoder)
+
+    def _tokenize(self, text: str) -> list[str]:
+        """
+        Args:
+            text (`str`):
+                Text to phonemize, or a whitespace separated phoneme sequence when the tokenizer was built with
+                `phonemize=False`.
+
+        Returns:
+            `list[str]`: The phonemes of `text` that the symbol table holds. Sentence punctuation becomes the
+            silence phoneme and anything else the symbol table does not hold is dropped, as the original
+            implementation does.
+        """
+        tokens = self.g2p(text) if self.phonemize else text.split()
+        tokens = ["sil" if token in [",", "."] else token for token in tokens]
+        return [token for token in tokens if token in self.encoder]
+
+    def _convert_token_to_id(self, token: str) -> int:
+        return self.encoder.get(token, self.encoder[self.pad_token])
+
+    def _convert_id_to_token(self, index: int) -> str:
+        return self.decoder.get(index, self.pad_token)
+
+    def convert_tokens_to_string(self, tokens: list[str]) -> str:
+        """
+        Args:
+            tokens (`list[str]`):
+                Phonemes to join.
+
+        Returns:
+            `str`: The whitespace separated phoneme sequence.
+        """
+        return " ".join(tokens)
+
+    def build_inputs_with_special_tokens(
+        self, token_ids_0: list[int], token_ids_1: list[int] | None = None
+    ) -> list[int]:
+        """
+        Args:
+            token_ids_0 (`list[int]`):
+                Phoneme ids the special tokens are added to.
+            token_ids_1 (`list[int]`, *optional*):
+                Unused, PromptTTS++ takes a single sequence.
+
+        Returns:
+            `list[int]`: The phoneme ids, surrounded by the beginning and end of sequence tokens.
+        """
+        if token_ids_1 is not None:
+            raise ValueError("PromptTTS++ takes a single phoneme sequence.")
+        return [self.bos_token_id] + token_ids_0 + [self.eos_token_id]
+
+    def get_special_tokens_mask(
+        self,
+        token_ids_0: list[int],
+        token_ids_1: list[int] | None = None,
+        already_has_special_tokens: bool = False,
+    ) -> list[int]:
+        """
+        Args:
+            token_ids_0 (`list[int]`):
+                Phoneme ids.
+            token_ids_1 (`list[int]`, *optional*):
+                Unused, PromptTTS++ takes a single sequence.
+            already_has_special_tokens (`bool`, *optional*, defaults to `False`):
+                Whether the ids already carry the beginning and end of sequence tokens.
+
+        Returns:
+            `list[int]`: A mask that is 1 on the special tokens and 0 on the phonemes.
+        """
+        if already_has_special_tokens:
+            return super().get_special_tokens_mask(
+                token_ids_0=token_ids_0, token_ids_1=token_ids_1, already_has_special_tokens=True
+            )
+        return [1] + [0] * len(token_ids_0) + [1]
+
+    def save_vocabulary(self, save_directory: str, filename_prefix: str | None = None) -> tuple[str]:
+        """
+        Args:
+            save_directory (`str`):
+                Directory to save the vocabulary to.
+            filename_prefix (`str`, *optional*):
+                Prefix of the vocabulary file name.
+
+        Returns:
+            `tuple[str]`: Path of the saved vocabulary file.
+
+        Raises:
+            OSError: If `save_directory` is not a directory.
+        """
+        if not os.path.isdir(save_directory):
+            raise OSError(f"Vocabulary path ({save_directory}) should be a directory")
+        vocab_file = os.path.join(
+            save_directory,
+            (filename_prefix + "-" if filename_prefix else "") + VOCAB_FILES_NAMES["vocab_file"],
+        )
+        with open(vocab_file, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(self.get_vocab(), ensure_ascii=False))
+        return (vocab_file,)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_g2p"] = None
+        return state
 
 
-def sequence_to_text(seq, remove_special_token=False):
-    """Phoeneme to numeric sequence conversion
-
-    Args:
-        seq: Input phoneme id sequence
-        remove_special_token: whether remove BOS and EOS
-
-    Returns:
-        text: Seq of phonemes
-    """
-    if remove_special_token:
-        return [id_to_symbol(s) for s in seq[1:-1]]
-    else:
-        return [id_to_symbol(s) for s in seq]
+__all__ = ["PromptTTSPPTokenizer"]

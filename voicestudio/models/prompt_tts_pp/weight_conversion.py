@@ -1,221 +1,283 @@
-# Copyright 2024 LY Corporation
+"""Checkpoint conversion for PromptTTS++."""
 
-# LY Corporation licenses this file to you under the Apache License,
-# version 2.0 (the "License"); you may not use this file except in compliance
-# with the License. You may obtain a copy of the License at:
-
-#   https://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations
-# under the License.
-
+import pickle
+import re
+import types
 from pathlib import Path
 
-import hydra
-import pandas as pd
 import torch
-import torchaudio
-from hydra.utils import instantiate
-from omegaconf import OmegaConf
-from promptttspp.utils import seed_everything
-from promptttspp.utils.model import remove_weight_norm_
-from promptttspp.vocoders import F0AwareBigVGAN
-from scipy import signal
-from tqdm import tqdm
+import yaml
+from huggingface_hub import hf_hub_download
+from safetensors.torch import save_file
+from transformers.models.auto.tokenization_auto import AutoTokenizer
+
+from .configuration_prompt_tts_pp import PromptTTSPPBigVGanConfig, PromptTTSPPConfig
+from .feature_extraction_prompt_tts_pp import PromptTTSPPFeatureExtractor
+from .processing_prompt_tts_pp import PromptTTSPPProcessor
+from .tokenization_prompt_tts_pp import PromptTTSPPTokenizer
 
 
-def lowpass_filter(x, fs=100, cutoff=20, N=5):
-    """Lowpass filter
+# The Space that ships the only public PromptTTS++ weights, and the three files of it the conversion reads.
+DEFAULT_REPO_ID = "line-corporation/promptttspp"
+DEFAULT_MODEL_FILE = "pretrained_model/checkpoint/proposed/last.ckpt"
+DEFAULT_VOCODER_FILE = "pretrained_model/checkpoint/bigvgan_f0_full/last.ckpt"
+DEFAULT_STATS_FILE = "pretrained_model/checkpoint/stats.yaml"
+
+PROMPT_ENCODER_ID = "bert-base-uncased"
+
+_ENCODER_RENAMES = {
+    "norm_ff_macaron": "ff_macaron_layer_norm",
+    "norm_mha": "self_attn_layer_norm",
+    "norm_conv": "conv_layer_norm",
+    "norm_final": "final_layer_norm",
+    "norm_ff": "ff_layer_norm",
+    "feed_forward.w_1": "feed_forward.conv1",
+    "feed_forward.w_2": "feed_forward.conv2",
+    "feed_forward_macaron.w_1": "feed_forward_macaron.conv1",
+    "feed_forward_macaron.w_2": "feed_forward_macaron.conv2",
+}
+
+_MODEL_PREFIX_RENAMES = {
+    "phoneme_emb.emb.": "model.phoneme_embedding.",
+    "encoder.encoder.encoders.": "model.encoder.layers.",
+    "encoder.encoder.after_norm.": "model.encoder.after_norm.",
+    "variance_adaptor.pitch_emb.": "model.variance_adaptor.pitch_embed.",
+    "variance_adaptor.": "model.variance_adaptor.",
+    "reference_encoder.ref_enc.": "model.style_encoder.reference_encoder.",
+    "reference_encoder.stl.gst_embs": "model.style_encoder.style_tokens",
+    "reference_encoder.stl.mha.": "model.style_encoder.attention.",
+    "prompt_encoder.bert.model.": "model.prompt_encoder.bert.",
+    "prompt_encoder.adaptor.": "model.prompt_encoder.adapter.",
+    "style_mdn.": "model.style_mdn.",
+    "decoder.": "decoder.",
+}
+
+_VOCODER_PREFIX_RENAMES = {
+    "m_source.l_linear.": "source.linear.",
+    "upsamples.": "upsampler.",
+    "mrfs.": "resblocks.",
+    "act_post.act.alpha": "post_activation.alpha",
+}
+
+
+class _Placeholder:
+    """Stands in for a class the checkpoint pickles that this package does not depend on."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __setstate__(self, state):
+        pass
+
+
+class _Unpickler(pickle.Unpickler):
+    """Unpickler that resolves globals it cannot import to [`_Placeholder`]."""
+
+    def find_class(self, module, name):
+        try:
+            return super().find_class(module, name)
+        except (ModuleNotFoundError, AttributeError):
+            return type(name, (_Placeholder,), {})
+
+
+def load_upstream_checkpoint(path: str, key: str) -> dict[str, torch.Tensor]:
+    r"""
+    Reads one state dict out of a checkpoint the upstream trainer wrote.
+
+    The trainer saves the optimizer state next to the weights, and that state pickles the Hydra configuration
+    objects of the training run, so the tensors are read through an unpickler that stands those objects in.
 
     Args:
-        x (array): input signal
-        fs (int): sampling rate
-        cutoff (int): cutoff frequency
+        path (`str`):
+            Path of the `.ckpt` file.
+        key (`str`):
+            Entry of the checkpoint holding the state dict, `"model"` or `"generator"`.
 
     Returns:
-        array: filtered signal
+        `dict[str, torch.Tensor]`: The state dict.
     """
-    nyquist = fs // 2
-    norm_cutoff = cutoff / nyquist
-    Wn = [norm_cutoff]
-
-    x_len = x.shape[-1]
-
-    b, a = signal.butter(N, Wn, "lowpass")
-    if x_len <= max(len(a), len(b)) * (N // 2 + 1):
-        # NOTE: input signal is too short
-        return x
-
-    # NOTE: use zero-phase filter
-    if isinstance(x, torch.Tensor):
-        from torchaudio.functional import filtfilt
-
-        a = torch.from_numpy(a).float().to(x.device)
-        b = torch.from_numpy(b).float().to(x.device)
-        y = filtfilt(x, a, b, clamp=False)
-    else:
-        y = signal.filtfilt(b, a, x)
-
-    return y
+    pickle_module = types.ModuleType("prompt_tts_pp_pickle")
+    pickle_module.Unpickler = _Unpickler
+    pickle_module.load = lambda file, **kwargs: _Unpickler(file, **kwargs).load()
+    checkpoint = torch.load(path, map_location="cpu", pickle_module=pickle_module, weights_only=False)
+    return checkpoint[key]
 
 
-def read_prompt_candidate(filepath):
-    df_style_prompt = pd.read_csv(
-        filepath, header=None, sep="|", names=["style_key", "prompt"]
-    )
-    style_prompt_dict = {}
-    for _, row in df_style_prompt.iterrows():
-        style_key, style_prompt = row.iloc[0], row.iloc[1]
-        assert isinstance(style_prompt, str)
-        style_prompt_dict[style_key] = list(
-            map(lambda s: s.lower().strip(), style_prompt.split(";"))
-        )
-    return style_prompt_dict
+def build_config(rel_pos_type: str = "legacy") -> PromptTTSPPConfig:
+    r"""
+    Builds the [`PromptTTSPPConfig`] of the released checkpoint.
+
+    Args:
+        rel_pos_type (`str`, *optional*, defaults to `"legacy"`):
+            Relative positional encoding variant. The demo configuration the released checkpoint ships with sets
+            `"legacy"`, while the training configuration of the paper sets `"new"`. The two hold identical
+            parameters, so the wrong one still loads and only degrades the output.
+
+    Returns:
+        [`PromptTTSPPConfig`]: The configuration.
+    """
+    return PromptTTSPPConfig(rel_pos_type=rel_pos_type)
 
 
-def read_spk_prompt_candidate(filepath):
-    df = pd.read_csv(filepath, sep="|", header=None, names=["spk", "words"])
-    df["words"] = df["words"].map(lambda x: x.split(","))
-    # dict(key: spk_id, value: words)
-    spk_prompt_cand_dict = df.set_index("spk")["words"].to_dict()
-    return spk_prompt_cand_dict
+def build_vocoder_config() -> PromptTTSPPBigVGanConfig:
+    r"""
+    Builds the [`PromptTTSPPBigVGanConfig`] of the released vocoder checkpoint.
+
+    Returns:
+        [`PromptTTSPPBigVGanConfig`]: The configuration.
+    """
+    return PromptTTSPPBigVGanConfig()
 
 
-def add_spk_prompt(style_prompt, words):
-    spk_prompt = f"The speaker identity can be described as {words}."
-    prompt = f"{style_prompt}. {spk_prompt}"
-    return prompt
+def convert_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    r"""
+    Renames the acoustic model's tensors onto [`PromptTTSPPForConditionalGeneration`].
 
+    Args:
+        state_dict (`dict[str, torch.Tensor]`):
+            The `"model"` entry of an upstream checkpoint.
 
-@hydra.main(version_base=None, config_path="conf/", config_name="synthesize")
-def main(cfg):
-    data_root = Path(cfg.path.data_root)
-    output_dir = Path(cfg.output_dir)
+    Returns:
+        `dict[str, torch.Tensor]`: The renamed tensors.
 
-    seed_everything(cfg.train.seed)
-
-    prompt_candidate = read_prompt_candidate(cfg.path.prompt_candidate_file)
-    spk_prompt_candidate = read_spk_prompt_candidate(cfg.path.spk_prompt_candidate_file)
-    mel_stats = OmegaConf.load(f"{cfg.path.mel_dir}/stats.yaml")
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = instantiate(cfg.model)
-    model.load_state_dict(torch.load(cfg.ckpt_path, map_location="cpu")["model"])
-    model = model.to(device).eval()
-    model.apply(remove_weight_norm_)
-    to_mel = instantiate(cfg.transforms).to(device).eval()
-
-    vocoder = instantiate(cfg.vocoder)
-    vocoder.load_state_dict(
-        torch.load(cfg.vocoder_ckpt_path, map_location="cpu")["generator"]
-    )
-    vocoder = vocoder.to(device).eval()
-    vocoder.apply(remove_weight_norm_)
-
-    use_col = [
-        "spk_id",
-        "item_name",
-        "gender",
-        "pitch",
-        "speaking_speed",
-        "energy",
-        "style_prompt",
-        "style_prompt_key",
-        "seq",
-    ]
-    df = pd.read_csv(cfg.label_file, usecols=use_col)
-    data = df[use_col].values.tolist()
-
-    for row in tqdm(data, total=len(data)):
-        spk = row[0]
-        utt_id = row[1]
-        seq = row[-1]
-        style_prompt_key = row[-2]
-        style_prompt = prompt_candidate[style_prompt_key][0]
-        if spk in spk_prompt_candidate:
-            spk_prompt = spk_prompt_candidate[spk]
-            words = ", ".join(spk_prompt)
-            if cfg.use_spk_prompt:
-                prompt = add_spk_prompt(style_prompt, words)
-            else:
-                prompt = style_prompt
+    Raises:
+        ValueError: If a tensor has no destination in the migrated model.
+    """
+    converted = {}
+    for key, value in state_dict.items():
+        name = key
+        for old, new in _MODEL_PREFIX_RENAMES.items():
+            if name.startswith(old):
+                name = new + name[len(old) :]
+                break
         else:
-            prompt = style_prompt
+            raise ValueError(f"The published checkpoint holds a tensor this model has no destination for: {key}")
 
-        spk_dir = output_dir / str(spk)
+        if name.startswith("model.encoder.layers."):
+            for old, new in _ENCODER_RENAMES.items():
+                name = name.replace(f".{old}.", f".{new}.")
 
-        ref_dir = spk_dir / "ref"
-        ref_mel_dir = ref_dir / "mel"
-        ref_plot_dir = ref_dir / "plot"
-        ref_wav_dir = ref_dir / "wav"
+        # The variance adaptor and the frame prior network normalize over the channel dimension of a
+        # `(batch_size, channels, sequence_length)` tensor with parameters shaped to broadcast against it, which
+        # `nn.LayerNorm` over the transposed tensor expresses with flat parameters.
+        if name.endswith(".gamma"):
+            name = name[: -len(".gamma")] + ".weight"
+            value = value.reshape(-1)
+        elif name.endswith(".beta"):
+            name = name[: -len(".beta")] + ".bias"
+            value = value.reshape(-1)
 
-        prompt_dir = spk_dir / "prompt"
-        prompt_mel_dir = prompt_dir / "mel"
-        prompt_plot_dir = prompt_dir / "plot"
-        prompt_wav_dir = prompt_dir / "wav"
-
-        dirs = [
-            ref_mel_dir,
-            ref_plot_dir,
-            ref_wav_dir,
-            prompt_mel_dir,
-            prompt_plot_dir,
-            prompt_wav_dir,
-        ]
-        [d.mkdir(parents=True, exist_ok=True) for d in dirs]
-
-        label = torch.LongTensor([int(s) for s in seq.split()])[None, :]
-        label = label.to(device)
-        wav, _ = torchaudio.load(data_root / f"{spk}/wav24k/{utt_id}.wav")
-        wav = wav.to(device)
-        mel = to_mel(wav)
-        mel = (mel - mel_stats["mean"]) / mel_stats["std"]
-
-        is_f0_aware_vocoder = isinstance(vocoder, F0AwareBigVGAN)
-        with torch.no_grad():
-            if is_f0_aware_vocoder:
-                dec, log_cf0, vuv = model.infer(
-                    label, reference_mel=mel, return_f0=True
-                )
-                # NOTE: hard code for 10ms frame shift
-                modfs = int(1.0 / (10 * 0.001))
-                log_cf0 = lowpass_filter(log_cf0, modfs, cutoff=20)
-                f0 = log_cf0.exp()
-                f0[vuv < 0.5] = 0
-                dec = dec * mel_stats["std"] + mel_stats["mean"]
-                o_ref = vocoder(dec, f0).squeeze(1).cpu()
-            else:
-                dec = model.infer(label, reference_mel=mel)
-                dec = dec * mel_stats["std"] + mel_stats["mean"]
-                o_ref = vocoder(dec).squeeze(1).cpu()
-
-        torchaudio.save(ref_wav_dir / f"{utt_id}.wav", o_ref, to_mel.sample_rate)
-
-        with torch.no_grad():
-            style_prompt = [prompt]
-            if is_f0_aware_vocoder:
-                dec, log_cf0, vuv = model.infer(
-                    label, style_prompt=style_prompt, return_f0=True
-                )
-                # NOTE: hard code for 10ms frame shift
-                modfs = int(1.0 / (10 * 0.001))
-                log_cf0 = lowpass_filter(log_cf0, modfs, cutoff=20)
-                f0 = log_cf0.exp()
-                f0[vuv < 0.5] = 0
-                dec = dec * mel_stats["std"] + mel_stats["mean"]
-                o_prompt = vocoder(dec, f0).squeeze(1).cpu()
-            else:
-                dec = model.infer(label, style_prompt=style_prompt)
-                dec = dec * mel_stats["std"] + mel_stats["mean"]
-                o_prompt = vocoder(dec).squeeze(1).cpu()
-        torchaudio.save(prompt_wav_dir / f"{utt_id}.wav", o_prompt, to_mel.sample_rate)
-
-    with open(output_dir / "finish", "w") as f:
-        f.write("finish")
+        converted[name] = value
+    return converted
 
 
-if __name__ == "__main__":
-    main()
+def convert_vocoder_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    r"""
+    Renames the vocoder's tensors onto [`PromptTTSPPBigVGan`] and folds their weight norm reparameterization
+    back into plain weights.
+
+    Args:
+        state_dict (`dict[str, torch.Tensor]`):
+            The `"generator"` entry of an upstream vocoder checkpoint.
+
+    Returns:
+        `dict[str, torch.Tensor]`: The renamed tensors.
+    """
+    folded = {}
+    for key, value in state_dict.items():
+        if key.endswith(".weight_g"):
+            stem = key[: -len(".weight_g")]
+            direction = state_dict[f"{stem}.weight_v"]
+            norm = direction.pow(2).sum(dim=tuple(range(1, direction.dim())), keepdim=True).sqrt()
+            folded[f"{stem}.weight"] = value * direction / norm
+        elif key.endswith(".weight_v"):
+            continue
+        elif key.endswith(".filter"):
+            # The anti aliasing filters are a deterministic function of the configuration.
+            continue
+        else:
+            folded[key] = value
+
+    converted = {}
+    for key, value in folded.items():
+        name = key
+        for old, new in _VOCODER_PREFIX_RENAMES.items():
+            if name.startswith(old):
+                name = new + name[len(old) :]
+                break
+        name = re.sub(r"\.act(\d)\.act\.alpha$", r".activation\1.alpha", name)
+        converted[name] = value
+    return converted
+
+
+def convert(
+    checkpoint_path: str | None = None,
+    output_dir: str = "prompt_tts_pp",
+    vocoder_checkpoint_path: str | None = None,
+    stats_path: str | None = None,
+    rel_pos_type: str = "legacy",
+    dtype: torch.dtype = torch.float32,
+) -> None:
+    r"""
+    Converts the released PromptTTS++ checkpoints into a directory
+    [`PromptTTSPPForConditionalGeneration.from_pretrained`] and [`PromptTTSPPProcessor.from_pretrained`] can
+    load, with the vocoder written to its own `vocoder` subdirectory.
+
+    Args:
+        checkpoint_path (`str`, *optional*):
+            Path of the acoustic model's `last.ckpt`. Defaults to the one bundled in the
+            `line-corporation/promptttspp` Space.
+        output_dir (`str`, *optional*, defaults to `"prompt_tts_pp"`):
+            Directory the converted config, weights, tokenizers and processor files are written to.
+        vocoder_checkpoint_path (`str`, *optional*):
+            Path of the vocoder's `last.ckpt`. Defaults to the one bundled in the same Space.
+        stats_path (`str`, *optional*):
+            Path of the `stats.yaml` holding the mel spectrogram statistics of the training set. Defaults to the
+            one bundled in the same Space.
+        rel_pos_type (`str`, *optional*, defaults to `"legacy"`):
+            Relative positional encoding variant of the checkpoint, see [`build_config`].
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+    """
+    if checkpoint_path is None:
+        checkpoint_path = hf_hub_download(DEFAULT_REPO_ID, DEFAULT_MODEL_FILE, repo_type="space")
+    if vocoder_checkpoint_path is None:
+        vocoder_checkpoint_path = hf_hub_download(DEFAULT_REPO_ID, DEFAULT_VOCODER_FILE, repo_type="space")
+    if stats_path is None:
+        stats_path = hf_hub_download(DEFAULT_REPO_ID, DEFAULT_STATS_FILE, repo_type="space")
+
+    output_path = Path(output_dir)
+    vocoder_path = output_path / "vocoder"
+    output_path.mkdir(parents=True, exist_ok=True)
+    vocoder_path.mkdir(parents=True, exist_ok=True)
+
+    stats = yaml.safe_load(Path(stats_path).read_text())
+
+    config = build_config(rel_pos_type=rel_pos_type)
+    converted = convert_state_dict(load_upstream_checkpoint(checkpoint_path, "model"))
+    converted = {key: value.to(dtype).contiguous() for key, value in converted.items()}
+    config.save_pretrained(output_path)
+    save_file(converted, str(output_path / "model.safetensors"), metadata={"format": "pt"})
+
+    vocoder_config = build_vocoder_config()
+    vocoder_converted = convert_vocoder_state_dict(load_upstream_checkpoint(vocoder_checkpoint_path, "generator"))
+    vocoder_converted = {key: value.to(dtype).contiguous() for key, value in vocoder_converted.items()}
+    vocoder_config.save_pretrained(vocoder_path)
+    save_file(vocoder_converted, str(vocoder_path / "model.safetensors"), metadata={"format": "pt"})
+
+    processor = PromptTTSPPProcessor(
+        feature_extractor=PromptTTSPPFeatureExtractor(mel_mean=stats["mean"], mel_std=stats["std"]),
+        tokenizer=PromptTTSPPTokenizer(),
+        prompt_tokenizer=AutoTokenizer.from_pretrained(PROMPT_ENCODER_ID),
+    )
+    processor.save_pretrained(output_path)
+
+
+__all__ = [
+    "build_config",
+    "build_vocoder_config",
+    "convert",
+    "convert_state_dict",
+    "convert_vocoder_state_dict",
+    "load_upstream_checkpoint",
+]

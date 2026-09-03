@@ -1,150 +1,176 @@
-# Copyright 2024 LY Corporation
+"""Processor class for PromptTTS++."""
 
-# LY Corporation licenses this file to you under the Apache License,
-# version 2.0 (the "License"); you may not use this file except in compliance
-# with the License. You may obtain a copy of the License at:
-
-#   https://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations
-# under the License.
-
-import gradio as gr
-import hydra
-import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torchaudio
-from g2p_en import G2p
-from hydra.utils import instantiate
-from omegaconf import OmegaConf
-from promptttspp.text.eng import symbols, text_to_sequence
-from promptttspp.utils.model import lowpass_filter
-import nltk
+
+from transformers.feature_extraction_utils import BatchFeature
+from transformers.processing_utils import ProcessorMixin
+from transformers.utils import logging
+from transformers.utils.import_utils import requires
 
 
-def load_model(model_cfg, model_ckpt_path, vocoder_cfg, vocoder_ckpt_path):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = instantiate(model_cfg)
-    model.load_state_dict(torch.load(model_ckpt_path, map_location="cpu")["model"])
-    model = model.to(device).eval()
-
-    vocoder = instantiate(vocoder_cfg)
-    vocoder.load_state_dict(
-        torch.load(vocoder_ckpt_path, map_location="cpu")["generator"]
-    )
-    vocoder = vocoder.to(device).eval()
-    return model, vocoder
+logger = logging.get_logger(__name__)
 
 
-def build_ui(g2p, model, vocoder, to_mel, mel_stats):
-    content_placeholder = (
-        "This is text to speech demo, which allows you to control the speaker identity "
-        "in natural language as follows."
-    )
-    style_placeholder = "A man speaks slowly in a low tone."
+def butterworth_lowpass(order: int, normalized_cutoff: float) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Designs a digital Butterworth lowpass filter by bilinear transform of the analog prototype.
 
-    @torch.no_grad()
-    def onclick_synthesis(content_prompt, style_prompt=None, reference_mel=None):
-        assert style_prompt is not None or reference_mel is not None
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        phonemes = g2p(content_prompt)
-        phonemes = [p if p not in [",", "."] else "sil" for p in phonemes]
-        phonemes = [p for p in phonemes if p in symbols]
-        phoneme_ids = text_to_sequence(" ".join(phonemes))
-        phoneme_ids = torch.LongTensor(phoneme_ids)[None, :].to(device)
+    Args:
+        order (`int`):
+            Order of the filter.
+        normalized_cutoff (`float`):
+            Cutoff frequency, as a fraction of the Nyquist frequency.
+
+    Returns:
+        `tuple[np.ndarray, np.ndarray]`: The numerator and denominator coefficients, highest power first.
+    """
+    # The prototype is designed against a sampling rate of two, so the Nyquist frequency is one.
+    warped = 4 * np.tan(np.pi * normalized_cutoff / 2)
+    poles = -np.exp(1j * np.pi * np.arange(-order + 1, order, 2) / (2 * order)) * warped
+    gain = warped**order
+
+    discrete_poles = (4.0 + poles) / (4.0 - poles)
+    discrete_gain = gain * np.real(1.0 / np.prod(4.0 - poles))
+
+    numerator = discrete_gain * np.real(np.poly(-np.ones(order)))
+    denominator = np.real(np.poly(discrete_poles))
+    return numerator, denominator
+
+
+def lowpass_filter(waveform: torch.Tensor, sampling_rate: int, cutoff: int, order: int = 5) -> torch.Tensor:
+    """
+    Zero phase lowpass filtering with a Butterworth filter.
+
+    Args:
+        waveform (`torch.Tensor`):
+            Signal to filter along its last dimension.
+        sampling_rate (`int`):
+            Sampling rate of `waveform`, in Hz.
+        cutoff (`int`):
+            Cutoff frequency, in Hz.
+        order (`int`, *optional*, defaults to 5):
+            Order of the filter.
+
+    Returns:
+        `torch.Tensor`: The filtered signal, unchanged when it is too short for the filter.
+    """
+    numerator, denominator = butterworth_lowpass(order, cutoff / (sampling_rate // 2))
+    if waveform.shape[-1] <= max(len(numerator), len(denominator)) * (order // 2 + 1):
+        return waveform
+
+    numerator = torch.as_tensor(numerator, dtype=torch.float32, device=waveform.device)
+    denominator = torch.as_tensor(denominator, dtype=torch.float32, device=waveform.device)
+    return torchaudio.functional.filtfilt(waveform, denominator, numerator, clamp=False)
+
+
+@requires(backends=("torch",))
+class PromptTTSPPProcessor(ProcessorMixin):
+    r"""
+    Constructs a PromptTTS++ processor which wraps a [`PromptTTSPPFeatureExtractor`], a
+    [`PromptTTSPPTokenizer`] and the tokenizer of the prompt encoder into a single processor.
+
+    PromptTTS++ reads its content from a phoneme sequence and its speaker from either a natural language style
+    prompt or a reference waveform, so the processor tokenizes the two texts with two different tokenizers and
+    turns the reference waveform into the normalized mel spectrogram the style encoder expects.
+
+    Args:
+        feature_extractor ([`PromptTTSPPFeatureExtractor`], *optional*):
+            Feature extractor turning a reference waveform into a normalized log mel spectrogram.
+        tokenizer ([`PromptTTSPPTokenizer`], *optional*):
+            Phoneme tokenizer of the model.
+        prompt_tokenizer ([`PreTrainedTokenizerBase`], *optional*):
+            Tokenizer of the BERT prompt encoder.
+        chat_template (`str`, *optional*):
+            Template string used by [`~ProcessorMixin.apply_chat_template`].
+    """
+
+    def __init__(self, feature_extractor=None, tokenizer=None, prompt_tokenizer=None, chat_template=None):
+        super().__init__(feature_extractor, tokenizer, prompt_tokenizer, chat_template=chat_template)
+
+    def __call__(
+        self,
+        text=None,
+        style_prompt=None,
+        audio=None,
+        sampling_rate: int | None = None,
+        padding: bool = True,
+        return_tensors: str = "pt",
+        **kwargs,
+    ) -> BatchFeature:
+        r"""
+        Args:
+            text (`str` or `list[str]`, *optional*):
+                Text to speak, phonemized by the phoneme tokenizer.
+            style_prompt (`str` or `list[str]`, *optional*):
+                Natural language description of the speaker and the speaking style.
+            audio (`np.ndarray`, `torch.Tensor` or `list`, *optional*):
+                Reference waveform whose speaker the style encoder reads, as an alternative to `style_prompt`.
+            sampling_rate (`int`, *optional*):
+                Sampling rate of `audio`.
+            padding (`bool`, *optional*, defaults to `True`):
+                Whether sequences of a batch are padded to the longest one.
+            return_tensors (`str`, *optional*, defaults to `"pt"`):
+                Framework of the returned tensors. Only `"pt"` is supported.
+
+        Returns:
+            [`BatchFeature`]: A [`BatchFeature`] holding `input_ids` and `attention_mask` for the phonemes,
+            `prompt_input_ids` and `prompt_attention_mask` for the style prompt, and `reference_spectrogram`
+            and `reference_spectrogram_lengths` for the reference waveform, whichever of the three were given.
+
+        Raises:
+            ValueError: If neither `style_prompt` nor `audio` is given, or if `return_tensors` is not `"pt"`.
+        """
+        if return_tensors != "pt":
+            raise ValueError(f"{self.__class__.__name__} only returns PyTorch tensors, got {return_tensors}.")
+        if style_prompt is None and audio is None:
+            raise ValueError("One of `style_prompt` or `audio` must be given to condition the speaker on.")
+
+        data = {}
+        if text is not None:
+            encoding = self.tokenizer(text, padding=padding, return_tensors=return_tensors, **kwargs)
+            data["input_ids"] = encoding["input_ids"]
+            data["attention_mask"] = encoding["attention_mask"]
+
         if style_prompt is not None:
-            dec, log_cf0, vuv = model.infer(
-                phoneme_ids,
-                style_prompt=style_prompt,
-                use_max=True,
-                noise_scale=0.5,
-                return_f0=True,
+            prompt_encoding = self.prompt_tokenizer(style_prompt, padding=padding, return_tensors=return_tensors)
+            data["prompt_input_ids"] = prompt_encoding["input_ids"]
+            data["prompt_attention_mask"] = prompt_encoding["attention_mask"]
+
+        if audio is not None:
+            features = self.feature_extractor(
+                audio, sampling_rate=sampling_rate, padding=padding, return_tensors=return_tensors
             )
-        else:
-            reference_mel = (reference_mel - mel_stats["mean"]) / mel_stats["std"]
-            reference_mel = reference_mel.to(device)
-            dec, log_cf0, vuv = model.infer(
-                phoneme_ids,
-                reference_mel=reference_mel,
-                use_max=True,
-                noise_scale=0.5,
-                return_f0=True,
-            )
-        modfs = int(1.0 / (10 * 0.001))
-        log_cf0 = lowpass_filter(log_cf0, modfs, cutoff=20)
-        f0 = log_cf0.exp()
-        f0[vuv < 0.5] = 0
-        dec = dec * mel_stats["std"] + mel_stats["mean"]
-        wav = vocoder(dec, f0).squeeze(1).cpu()
-        return wav
+            data["reference_spectrogram"] = features["input_features"]
+            if "attention_mask" in features:
+                data["reference_spectrogram_lengths"] = features["attention_mask"].sum(dim=-1)
 
-    def onclick_with_style_prompt(content_prompt, style_prompt):
-        wav = onclick_synthesis(
-            content_prompt=content_prompt, style_prompt=style_prompt
-        )
-        mel = to_mel(wav)
-        fig = plt.figure(figsize=(12, 8))
-        plt.imshow(mel.squeeze().numpy(), aspect="auto", origin="lower")
-        return (to_mel.sample_rate, wav.squeeze().numpy()), fig
+        return BatchFeature(data=data)
 
-    def onclick_with_reference_mel(content_prompt, reference_wav_path):
-        wav, _ = torchaudio.load(reference_wav_path)
-        ref_mel = to_mel(wav)
-        wav = onclick_synthesis(content_prompt=content_prompt, reference_mel=ref_mel)
-        mel = to_mel(wav)
-        fig = plt.figure(figsize=(12, 8))
-        plt.imshow(mel.squeeze().numpy(), aspect="auto", origin="lower")
-        return (to_mel.sample_rate, wav.squeeze().numpy()), fig
+    def postprocess(self, outputs, frame_rate: int = 100, cutoff: int = 20) -> tuple[torch.Tensor, torch.Tensor]:
+        r"""
+        Turns the model's output into the two inputs of the f0 aware vocoder.
 
-    with gr.Blocks() as demo:
-        gr.Markdown("# PromptTTS++")
-        gr.Markdown("### NOTE: Please do not enter personal information.")
-        content_prompt = gr.Textbox(
-            content_placeholder, lines=3, label="Content prompt"
-        )
-        with gr.Tabs():
-            with gr.TabItem("Style prompt"):
-                style_prompt = gr.Textbox(
-                    style_placeholder, lines=3, label="Style prompt"
-                )
-                syn_button1 = gr.Button("Synthesize")
-                wav1 = gr.Audio(label="Output wav", elem_id="prompt")
-                plot1 = gr.Plot(label="Output mel", elem_id="prompt")
-            with gr.TabItem("Reference wav"):
-                ref_wav_path = gr.Audio(
-                    type="filepath", label="Reference wav", elem_id="ref"
-                )
-                syn_button2 = gr.Button("Synthesize")
-                wav2 = gr.Audio(label="Output wav", elem_id="ref")
-                plot2 = gr.Plot(label="Output mel", elem_id="ref")
-        syn_button1.click(
-            onclick_with_style_prompt,
-            inputs=[content_prompt, style_prompt],
-            outputs=[wav1, plot1],
-        )
-        syn_button2.click(
-            onclick_with_reference_mel,
-            inputs=[content_prompt, ref_wav_path],
-            outputs=[wav2, plot2],
-        )
-    demo.launch()
+        Args:
+            outputs ([`PromptTTSPPOutput`]):
+                Output of [`PromptTTSPPForConditionalGeneration`], holding the generated spectrogram, the
+                predicted log continuous f0 and the predicted voicing.
+            frame_rate (`int`, *optional*, defaults to 100):
+                Number of spectrogram frames per second, which the f0 contour is filtered at.
+            cutoff (`int`, *optional*, defaults to 20):
+                Cutoff frequency, in Hz, of the lowpass filter smoothing the f0 contour.
+
+        Returns:
+            `tuple[torch.Tensor, torch.Tensor]`: The spectrogram on the scale the vocoder was trained on, of
+            shape `(batch_size, num_mel_bins, num_frames)`, and the fundamental frequency in Hz of each frame,
+            of shape `(batch_size, 1, num_frames)`, zero on the unvoiced frames.
+        """
+        log_f0 = lowpass_filter(outputs.log_f0, frame_rate, cutoff)
+        f0 = log_f0.exp()
+        f0 = torch.where(outputs.vuv < 0.5, torch.zeros_like(f0), f0)
+        spectrogram = self.feature_extractor.denormalize(outputs.spectrogram).transpose(1, 2)
+        return spectrogram, f0
 
 
-@hydra.main(version_base=None, config_path="egs/proposed/bin/conf", config_name="demo")
-def main(cfg):
-    model, vocoder = load_model(
-        cfg.model, cfg.model_ckpt_path, cfg.vocoder, cfg.vocoder_ckpt_path
-    )
-    to_mel = instantiate(cfg.transforms)
-    # If the NLTK version is 3.9.1, this download code might be necessary.
-    nltk.download('averaged_perceptron_tagger_eng') 
-    g2p = G2p()
-    mel_stats = OmegaConf.load(cfg.mel_stats_file)
-    build_ui(g2p, model, vocoder, to_mel, mel_stats)
-
-
-if __name__ == "__main__":
-    main()
+__all__ = ["PromptTTSPPProcessor"]
