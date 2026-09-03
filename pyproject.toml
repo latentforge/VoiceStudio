@@ -60,6 +60,7 @@ all = [
     "voicestudio[train]",
     "voicestudio[eval]",
     "voicestudio[flash-prebuilt]",
+    "voicestudio[omni]",
     "voicestudio[onnx]",
     "voicestudio[web]",
 ]
@@ -79,6 +80,10 @@ eval = [
 ]
 flash = [ "flash-attn" ]
 flash-prebuilt = [ "flash-attn" ]
+omni = [  # for Chroma, whose processor subclasses Qwen2_5OmniProcessor
+    "pillow",
+    "torchvision",
+]
 onnx = [  # for Qwen3-TTS, CosyVoice
     "onnxruntime-gpu[cuda,cudnn]>=1.18.0 ; platform_system == 'Linux' or platform_system == 'Windows'",
     "onnxruntime>=1.18.0 ; platform_system == 'Darwin'",
