@@ -1289,19 +1289,41 @@ class F5TTSForConditionalGeneration(F5TTSPreTrainedModel, F5TTSGenerationMixin):
         self.freeze_vocoder()
 
     @classmethod
-    def from_pretrained(cls, *args, **kwargs):
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
         r"""
+        Loads an F5-TTS or E2-TTS checkpoint, from a published repository as it stands or from a directory
+        [`~weight_conversion.convert`] wrote. A published checkpoint holds the backbone alone, so the vocoder of
+        the mel front end it was trained against is read out of that vocoder's own repository and composed in.
+
         Args:
-            args:
-                Forwarded to [`~PreTrainedModel.from_pretrained`].
-            kwargs:
-                Forwarded to [`~PreTrainedModel.from_pretrained`].
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                `"SWivid/F5-TTS"`, `"SWivid/E2-TTS"`, any key of `PUBLISHED_CHECKPOINTS`, or any repository id or
+                directory holding one of the two layouts.
+            model_args (`tuple`, *optional*):
+                Positional arguments of [`~PreTrainedModel.from_pretrained`].
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~PreTrainedModel.from_pretrained`]. `subfolder` names which of the
+                checkpoints a published repository holds to load, and defaults to the entry of
+                `DEFAULT_CHECKPOINTS` that repository names.
 
         Returns:
-            The loaded model, with the vocoder frozen again after loading replaced the parameters created by
-            `__init__`.
+            [`F5TTSForConditionalGeneration`]: The loaded model, with the vocoder frozen again after loading
+            replaced the parameters created by `__init__`.
         """
-        outputs = super().from_pretrained(*args, **kwargs)
+        from .weight_conversion import build_model_files, is_published_layout
+
+        subfolder = kwargs.get("subfolder") or None
+        if (
+            pretrained_model_name_or_path is not None
+            and kwargs.get("config") is None
+            and kwargs.get("state_dict") is None
+            and is_published_layout(pretrained_model_name_or_path, subfolder)
+        ):
+            kwargs.pop("subfolder", None)
+            config, state_dict = build_model_files(pretrained_model_name_or_path, subfolder=subfolder)
+            outputs = super().from_pretrained(None, *model_args, config=config, state_dict=state_dict, **kwargs)
+        else:
+            outputs = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
         model = outputs[0] if isinstance(outputs, tuple) else outputs
         model.freeze_vocoder()
         return outputs

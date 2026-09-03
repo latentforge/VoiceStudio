@@ -73,6 +73,33 @@ class F5TTSProcessor(ProcessorMixin):
         self.cross_fade_duration = cross_fade_duration
         super().__init__(feature_extractor, tokenizer, **kwargs)
 
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+        r"""
+        Loads an F5-TTS processor, from a published repository as it stands or from a directory
+        [`~weight_conversion.convert`] wrote.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                `"SWivid/F5-TTS"`, `"SWivid/E2-TTS"`, any key of `PUBLISHED_CHECKPOINTS`, or any repository id or
+                directory holding one of the two layouts.
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~ProcessorMixin.from_pretrained`]. `subfolder` names which of the
+                checkpoints a published repository holds to build the processor of, and defaults to the entry of
+                `DEFAULT_CHECKPOINTS` that repository names.
+
+        Returns:
+            [`F5TTSProcessor`]: The processor.
+        """
+        from .weight_conversion import build_processor, is_published_layout
+
+        subfolder = kwargs.get("subfolder") or None
+        if pretrained_model_name_or_path is not None and is_published_layout(
+            pretrained_model_name_or_path, subfolder
+        ):
+            return build_processor(pretrained_model_name_or_path, subfolder=subfolder)
+        return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
+
     @staticmethod
     def chunk_text(text: str, max_chars: int) -> list[str]:
         r"""
