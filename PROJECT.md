@@ -278,8 +278,24 @@ bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts
 conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
 `Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
 
-One item left open:
+Two items left open:
 
+- **Qwen3-TTS audio tokenizer reports `encoder.upsample.conv.weight` MISSING.** The key is real but
+  the weight is not: `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`'s `speech_tokenizer/model.safetensors`
+  holds 496 tensors, none named `encoder.upsample.*` and none of the required `(512, 1, 4)` shape,
+  so there is nothing to patch in the way `weight_conversion.py` patches the code predictor's
+  `lm_head`. The cause is a divergence in transformers-tts between
+  `modular_qwen3_tts_tokenizer_multi_codebook.py`, which nulls `decoder`, `decoder_transformer` and
+  `upsample` after `super().__init__(config)`, and the generated
+  `modeling_qwen3_tts_tokenizer_multi_codebook.py`, which nulls `upsample` at line 1999 and then
+  rebuilds it at line 2012 inside the `frame_rate != encodec_frame_rate` branch without nulling it
+  again. Its own comment still says it nulls upsample, so the generated file contradicts its stated
+  intent. The module is dead either way: forward hooks show it is called zero times during both
+  `encode()` and `decode()`, and overwriting the weight with random values leaves the encoded codes
+  bit-identical and the decoded waveform bit-exact, against a positive control where the same
+  treatment of `encoder.downsample.conv.weight` changes 99.9 percent of the codes. H7 forbids
+  hand-editing a generated file, so the fix belongs in transformers-tts's modular source; the
+  warning is harmless until then.
 - **DAC weight-norm coverage.** `in_proj` and `out_proj` take `apply_weight_norm` the same way the
   convolutions do, so they need the `original0`/`original1`/`bias` rules too. Delegating to
   transformers' own `convert_dac_checkpoint` should cover it; confirm by checking that no source
