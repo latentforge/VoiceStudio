@@ -1,54 +1,55 @@
-import os
+from transformers import AutoConfig, AutoModel, AutoModelForTextToWaveform, AutoProcessor
+from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+from transformers.models.qwen3_tts_tokenizer_multi_codebook import Qwen3TTSTokenizerMultiCodebookConfig
+from transformers.utils.auto_docstring import HARDCODED_CONFIG_FOR_MODELS
 
-from transformers import AutoConfig, AutoModel
-from transformers.models.t5gemma.configuration_t5gemma import T5GemmaModuleConfig
-from transformers.models.t5gemma.modeling_t5gemma import T5GemmaEncoder
+# `@auto_docstring` derives the model name from a decorated class's `.../models/<name>/` source
+# path and looks it up in `CONFIG_MAPPING_NAMES`/`HARDCODED_CONFIG_FOR_MODELS` at decoration time
+# (i.e. while `.modeling_breeze_tts` below is being imported), neither of which knows about
+# voicestudio-only models; must run before that import or its "Config not found" fallback warning
+# already fired.
+HARDCODED_CONFIG_FOR_MODELS["breeze-tts"] = "BreezeTTSConfig"
 
-from .breeze_base_config import BreezeConfig as BreezeConfig_transformers
-from .breeze_base_config import BreezeDepthDecoderConfig
-from .t5gemma2_compat import T5Gemma2TextConfig, T5Gemma2TextEncoder
-
-
-class T5GemmaEncoderWrapper(T5GemmaEncoder):
-    config_class = T5GemmaModuleConfig
-
-
-# register T5GemmaModuleConfig
-AutoConfig.register("t5_gemma_module", T5GemmaModuleConfig)
-AutoModel.register(T5GemmaModuleConfig, T5GemmaEncoderWrapper)
-AutoConfig.register("t5gemma2_text", T5Gemma2TextConfig)
-AutoModel.register(T5Gemma2TextConfig, T5Gemma2TextEncoder)
-
-
-# Update BreezeConfig to handle text_encoder_config properly
-class BreezeConfig(BreezeConfig_transformers):
-    model_type = "breeze"
-
-    sub_configs = {
-        "codec_config": AutoConfig,
-        "depth_decoder_config": BreezeDepthDecoderConfig,
-    }
-
-    def __init__(self, **kwargs):
-        text_encoder_config = kwargs.get("text_encoder_config", None)
-        super().__init__(**kwargs)
-
-        if text_encoder_config is None:
-            self.text_encoder_config = None
-        elif isinstance(text_encoder_config, str):
-            assert os.path.isdir(text_encoder_config), (
-                f"text_encoder_config as str must be a valid directory path: '{text_encoder_config}'"
-            )
-            self.text_encoder_config = AutoConfig.from_pretrained(text_encoder_config)
-        elif isinstance(text_encoder_config, dict):
-            self.text_encoder_config = AutoConfig.for_model(**text_encoder_config)
-        else:
-            raise ValueError(
-                f"text_encoder_config must be a str (path), dict, or AutoConfig instance. but got {type(text_encoder_config)}"
-            )
-
-
-AutoConfig.register(
-    "breeze_depth_decoder_model", BreezeDepthDecoderConfig, exist_ok=True
+from .configuration_breeze_tts import BreezeTTSConfig, BreezeTTSDepthDecoderConfig
+from .generation_breeze_tts import (
+    BreezeTTSGenerateOutput,
+    BreezeTTSGenerationMixin,
+    GeneratedTokenRepetitionPenaltyLogitsProcessor,
 )
-AutoConfig.register("breeze", BreezeConfig, exist_ok=True)
+from .modeling_breeze_tts import (
+    BreezeTTSBackboneModel,
+    BreezeTTSDepthDecoderForCausalLM,
+    BreezeTTSDepthDecoderModel,
+    BreezeTTSForConditionalGeneration,
+    BreezeTTSOutputWithPast,
+    BreezeTTSPreTrainedModel,
+)
+from .processing_breeze_tts import BreezeTTSProcessor
+
+
+AutoConfig.register(BreezeTTSConfig.model_type, BreezeTTSConfig, exist_ok=True)
+AutoConfig.register(BreezeTTSDepthDecoderConfig.model_type, BreezeTTSDepthDecoderConfig, exist_ok=True)
+# Real checkpoints report model_type "breeze", "breeze_depth_decoder_model" and, for the bundled audio
+# tokenizer, "qwen3_tts_tokenizer_12hz"; alias all three.
+CONFIG_MAPPING.register("breeze", BreezeTTSConfig, exist_ok=True)
+CONFIG_MAPPING.register("breeze_depth_decoder_model", BreezeTTSDepthDecoderConfig, exist_ok=True)
+CONFIG_MAPPING.register("qwen3_tts_tokenizer_12hz", Qwen3TTSTokenizerMultiCodebookConfig, exist_ok=True)
+AutoModel.register(BreezeTTSConfig, BreezeTTSForConditionalGeneration, exist_ok=True)
+AutoModelForTextToWaveform.register(BreezeTTSConfig, BreezeTTSForConditionalGeneration, exist_ok=True)
+AutoProcessor.register(BreezeTTSConfig, BreezeTTSProcessor, exist_ok=True)
+
+
+__all__ = [
+    "BreezeTTSBackboneModel",
+    "BreezeTTSConfig",
+    "BreezeTTSDepthDecoderConfig",
+    "BreezeTTSDepthDecoderForCausalLM",
+    "BreezeTTSDepthDecoderModel",
+    "BreezeTTSForConditionalGeneration",
+    "BreezeTTSGenerateOutput",
+    "BreezeTTSGenerationMixin",
+    "BreezeTTSOutputWithPast",
+    "BreezeTTSPreTrainedModel",
+    "BreezeTTSProcessor",
+    "GeneratedTokenRepetitionPenaltyLogitsProcessor",
+]
