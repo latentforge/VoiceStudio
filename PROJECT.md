@@ -288,17 +288,10 @@ bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts
 conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
 `Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
 
-Four items left open:
+Two items left open:
 
-- **The conversion cache roughly doubles disk per converted model**, about 20 GB locally today.
-  VoxInstruct's entry is 5.6 GB against 4.4 GB of parameters, because the mT5 shared table is one
-  tensor under two names and safetensors stores no aliases. Dropping the duplicate would surface as
-  a missing key, since `_tied_weights_keys` is `None` on both VoxInstruct classes.
 - **An interrupted conversion leaves its staging directory** in the cache. It is never read, and
   nothing prunes it.
-- **`CACHE_VERSION` is a manual lever.** A conversion that changes what it writes without a bump
-  serves a stale entry. Keying on the conversion module's own source would make that automatic at
-  the cost of invalidating on unrelated edits.
 
 
 - **Qwen3-TTS audio tokenizer reports `encoder.upsample.conv.weight` MISSING.** The key is real but
@@ -408,6 +401,22 @@ Worth knowing if a repository ever does publish a root one:
 `from_pretrained(None, state_dict=..., generation_config=<GenerationConfig>)` is accepted and
 applied through `adjust_generation_fn`, which is a cheaper fix than parler's post-assignment and
 preserves a model's own `generation_config_class`.
+
+## Decided: the converted directory is the artifact, not a cache beside one
+
+A successful conversion reclaims the source it converted from, through
+`huggingface_hub`'s own cache API, so a model is stored once rather than twice. That is safe because
+a cache hit resolves only the small discriminator file the folder already reads and the key comes
+from the snapshot path, `models--owner--repo@commit`, rather than from any file's bytes.
+
+`CACHE_VERSION` was removed with it. Versioning made sense for a derived copy sitting beside an
+original; it does not for the only copy, and a constant somebody has to remember to bump is not
+worth carrying.
+
+The cost, which is real and was accepted rather than overlooked: a converter whose output changes
+keeps serving what it wrote before, and with the source gone there is nothing to compare against.
+Changing a converter means clearing `$HF_HOME/converted` by hand and letting the source download
+again. Several converters changed today, so this is not hypothetical.
 
 ## Decided: the Auto classes are left alone
 
