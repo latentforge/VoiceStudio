@@ -6,4 +6,6 @@ from .f5_tts import *
 from .higgs_tts2 import *
 from .higgs_tts3 import *
 from .qwen3_tts import *
+from .spark_tts import *
+from .spark_tts_bicodec import *
 from .vox_instruct import *
