@@ -286,16 +286,7 @@ bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts
 conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
 `Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
 
-Two items left open:
-
-- **Qwen3-TTS's code predictor runs at the wrong rope base.** The published `config.json` sets
-  `talker_config.code_predictor_config.rope_theta` to 1000000, but it reaches
-  `Qwen3TTSTalkerCodePredictorConfig` under the pre-5.0 field name and is dropped, so the code
-  predictor runs at the class default of 500000. `transformers`'s own `convert_qwen3_tts_to_hf`
-  drops it identically, so the direct load is no worse than every checkpoint converted before it,
-  and the 17 of 17 verbatim result was measured in this state. Fixing it changes generation away
-  from that calibration, so it was reported rather than fixed.
-
+One item left open:
 
 - **Qwen3-TTS audio tokenizer reports `encoder.upsample.conv.weight` MISSING.** The key is real but
   the weight is not: `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`'s `speech_tokenizer/model.safetensors`
@@ -346,6 +337,30 @@ real time factor of each model under `cache_implementation="static"` with a `com
 which ones fall out of the static path and why, and fix those. Restoring a vendored capture is a
 last resort. Breeze TTS 2's `models/stream_runtime/` is not a candidate at all, since it is built
 entirely on the third party `qwen_tts` package and H11 forbids taking that dependency back.
+
+## Decided: the code predictor's rope base is 1000000
+
+The published `config.json` sets `talker_config.code_predictor_config.rope_theta` to 1000000 under
+the pre-5.0 field name, and transformers 5 replaced it with the class default of 500000:
+`Qwen3TTSTalkerCodePredictorConfig.__init__` assigns `rope_parameters` after `super().__init__()`
+has already migrated the old spelling, so the migrated value is overwritten.
+
+A source trace settled which base is right rather than a preference. `qwen_tts` 0.1.1 pins
+transformers 4.57.3, whose `_compute_default_rope_parameters` opens with `base = config.rope_theta`,
+and `Qwen3TTSTalkerCodePredictorModel.__init__` builds its rotary embedding from the config that
+carries the field (`modeling_qwen3_tts.py:991`, `configuration_qwen3_tts.py:237` and `:439`). So
+upstream serves the code predictor at 1000000 and the dropped field was the defect.
+
+The difference is real. Over the code predictor's 17 positions the rotary angles differ by up to
+0.264 radians, and replaying identical inputs at the two bases moves 26 percent of the residual
+codebook tokens, which shifts utterance length by up to 8 frames at a fixed seed. Both bases still
+transcribe 17 of 17 verbatim, because the words come from the talker's first-layer token and the
+talker was already at the right base; the code predictor only fills the residual codebooks. So the
+earlier calibration stands and the fix does not regress it.
+
+`b32a0a18` deletes the talker-only special case and normalizes the pre-5.0 rope spelling at any
+depth instead. `transformers`'s own `convert_qwen3_tts_to_hf` still drops the field, firing only on
+`rope_scaling`, so checkpoints written by that script stay at 500000; that fix belongs upstream.
 
 ## Auto classes cannot open a published layout
 
