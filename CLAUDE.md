@@ -465,12 +465,24 @@ Two ways to get there, in this order of preference:
    and `MergeModulelist`, and applies them as the checkpoint loads. Key renaming, weight-norm
    folding and tensor concatenation all belong here. `voicestudio/models/higgs_tts3/` and
    `voicestudio/models/ommivoice/` are the in-repo references.
-2. **Convert on failure.** Some conversions cannot be expressed as a mapping: building a config
-   from tensor shapes, reading an ONNX graph, merging several separately published files. Where
-   that is genuinely true, `from_pretrained` still takes the official repo id. It attempts the load,
-   and when the load fails on the published layout it runs the conversion and loads the result.
-   Catch the specific failure, not every exception, and do not silently convert a checkpoint that
-   failed for an unrelated reason.
+2. **Convert once into a cached directory, and load that.** Some conversions cannot be expressed as
+   a mapping: building a config from tensor shapes, reading an ONNX graph, merging several
+   separately published files. Where that is genuinely true, `from_pretrained` still takes the
+   official repo id. It probes the layout, converts into a directory under `HF_HOME` if the
+   published one is what it finds, and hands that directory to the ordinary loading path.
+   `voicestudio/utils/checkpoint_cache.py` holds the shared writer and the cache; stream into it a
+   file at a time rather than building the whole state dict, and key the cache on the source
+   repository and its resolved commit so a moved upstream tag does not serve a stale conversion.
+
+   Loading the written directory rather than passing `state_dict=` is not only about memory. A
+   `from_pretrained` given `state_dict=` must be given `None` for the path, and it resolves
+   `generation_config.json` off that path, so the published generation config is silently lost. In
+   Parler-TTS that cost the published `max_length` and produced a clean load report, the right
+   parameter count, no NaN, and audio that transcribed to nothing.
+
+   Probe the layout rather than catching an exception. A missing or foreign `config.json` does not
+   raise: `cached_file` returns `None` and `PreTrainedConfig.from_dict` absorbs an unknown schema as
+   extra attributes, so four models here silently produced a defaults-only config.
 
 "Automatic conversion is hard here" is a reason to take the second route, never a reason to leave a
 manual step. If neither route works, that is a finding to report under §2.6, with the specific step
