@@ -240,3 +240,59 @@ upstream authors), not a checked-out file tree: the actual checked-out files fro
 `filter-repo` were removed in a follow-up commit after Dependabot flagged hundreds of
 long-fixed vulnerabilities in those old dependency manifests. Higgs TTS 3 has no
 upstream code repo to graft (weights-only checkpoint).
+
+## Salvaged from the abandoned `wip/ai-migration-2026-08-19` branch
+
+Recorded here before `/home/work/voice_research/VoiceStudio-backup`, that branch's worktree, was
+removed. The branch itself, its `origin` copy, and `922f3969` in develop's own history all still
+carry the code, so nothing below needs the worktree to stay on disk.
+
+Findings that had not reached develop:
+
+- **Parler-TTS half-precision load.** `from_pretrained(dtype=torch.bfloat16)` casts only
+  `text_encoder` and `embed_prompts`; `decoder` and `audio_encoder` stay at the checkpoint's
+  float32, because all three submodels are built and loaded as independent `PreTrainedModel`s.
+  Cross-attention then mixes dtypes and crashes. The `from_pretrained` override sets `_fast_init`
+  and nothing else. Not caught here because verification ran in float32 on a T4.
+- **`get_text_config()` and composite configs.** Transformers 5's implementation probes only the
+  names `decoder`, `generator`, `text_config` and `text_encoder`, and never consults `sub_configs`.
+  Any composite model whose sub-config is named something else needs an override. Check this for
+  ommivoice, cosyvoice and spark_tts before their migrations land.
+- **OmniVoice reference transcription.** Upstream `OmniVoice.create_voice_clone_prompt` transcribes
+  the reference audio with Whisper when `ref_text` is `None`, defaulting to
+  `openai/whisper-large-v3-turbo`, and folds the result into the prompt. That is inference-time
+  behaviour, so it belongs in the processor.
+- **CosyVoice conversion facts**, useful when that migration starts: `f0_predictor.condnet` holds
+  five convolutions at indices 0, 2, 4, 6 and 8; HiFT's `stft_window` as a non-persistent buffer is
+  left uninitialised under meta-device init, so `torch.istft`'s NOLA check fails with
+  `window overlap add min: 1`; `torch.cumprod(torch.tensor(...))` raises
+  `NotImplementedError: Cannot copy out of meta tensor` in the same context and needs
+  `itertools.accumulate` instead.
+- **`WeightRenaming` substitutes only `\1`.** A two-group rule leaves a literal `\2` in the renamed
+  key, which then goes MISSING without an error. This applies to every converter in the repo, not
+  only CosyVoice.
+
+Checked and already handled, recorded so they are not re-investigated: f5-TTS's converter reads
+`ema_model_state_dict`, strips the `ema_model.` prefix and discards the `initted` and `step`
+bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts3's `body.`/`tied.`
+conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
+`Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
+
+Two items left open:
+
+- **Higgs TTS 2 checkpoint identity.** The branch verified against
+  `eustlb/higgs-audio-v2-generation-3B-base`; this repo uses `bosonai/higgs-tts-2-3b-base`. Whether
+  they are the same weights was never established. Comparing `architectures`, `num_hidden_layers`,
+  `num_codebooks` and the tensor key set of the two `config.json`/`model.safetensors.index.json`
+  pairs would settle it; the branch's figures were `num_codebooks` 8 and logits `(1, 299, 8208)`.
+- **DAC weight-norm coverage.** `in_proj` and `out_proj` take `apply_weight_norm` the same way the
+  convolutions do, so they need the `original0`/`original1`/`bias` rules too. Delegating to
+  transformers' own `convert_dac_checkpoint` should cover it; confirm by checking that no source
+  weight goes unused.
+
+Nothing was salvageable for generation defaults. The branch's `PROJECT.md` records no
+`temperature`, `top_k`, `top_p`, `guidance`, `do_sample` or `max_new_tokens` value for any
+checkpoint, which follows from its verification standard: a plausible waveform RMS passes even when
+the sampling parameters and the generation length are wrong. It cleared Higgs TTS 2 at
+"RMS 0.091, max abs 0.69, plausible speech-level amplitude" on the same `max_length=53` truncation
+that this repo later caught by transcribing the audio.
