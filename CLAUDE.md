@@ -26,6 +26,10 @@ ask instead of proceeding.
 | H10 | Never write a migration as new files added beside an untouched vendored tree, and never delete that tree to make room. `git mv` the real upstream file and edit it in place (§2.4). |
 | H11 | Never add a third-party dependency to make a migration work, and never `pip install` one into the environment to get past a blocker. Removing the upstream model's dependencies is part of the migration; if one cannot be removed, report it and let a human decide (§9.1). |
 | H12 | Never rewrite shared history. No `git reset`, `rebase`, `commit --amend`, or force push, and never move the branch. Undo your own work with `git revert` only, and never touch a commit you did not create. Other agents commit to this branch concurrently (§1.3). |
+| H13 | Never report a model verified without transcribing its generated audio back. A waveform with plausible amplitude and no NaN is not evidence (§2.5). |
+| H14 | Never verify on the local GPU. Real-checkpoint runs go through the `colab` CLI (§2.5). |
+| H15 | Every git command carries an explicit pathspec, and never create a git worktree (§1.4). |
+| H16 | Model weights go under `.cache/` (`HF_HOME`), never `ckpts/` or any other ad hoc path. |
 
 ---
 
@@ -62,6 +66,21 @@ brought back.
 
 ---
 
+### 1.4 Sharing a working tree
+
+Agents run concurrently in one checkout and one git index, so every git command
+carries an explicit pathspec naming only your own folder:
+`git commit voicestudio/models/<folder>/ -m "..."`. A bare `git commit` or
+`git add -A` commits whatever else is staged. That has happened here: one agent's
+commit swallowed 152 file deletions belonging to two others, which cost nothing but
+made the commit boundary a lie.
+
+Do not reach for a git worktree to get isolation. This harness bases a new worktree on
+`main`, which is far behind `develop`, and agents that tried it either worked against
+stale code or spent their run merging.
+
+---
+
 ## 2. Model Migration Workflow
 
 Follow these steps **in order** for every new model migration. Do not skip ahead to
@@ -82,6 +101,24 @@ models here decode Mimi codebooks, and several are multi-codebook codec LMs with
 the same backbone-plus-depth-decoder shape. Check the sibling folders before
 writing a class, and say in the migration report which lineage was chosen and why
 the alternatives were rejected.
+
+Inherit layers, compose models. A codec or vocoder that is independently published
+with its own checkpoint is its own model folder, and the models that use it hold it as
+a composed sub-model or as the processor's `audio_tokenizer`, never as a base class.
+`transformers-tts` does the same, pairing `qwen3_tts` with
+`qwen3_tts_tokenizer_multi_codebook` and `higgs_audio_v2` with
+`higgs_audio_v2_tokenizer`, and `vocos`, `bigvgan` and `spark_tts_bicodec` follow it
+here. Inheriting a *layer* across folders is the opposite case and is encouraged, the
+way `spark_tts_bicodec` inherits DAC's `Snake1d` and `DacResidualUnit` and xcodec2's
+`Xcodec2FiniteScalarQuantization`.
+
+Never inherit a general model from a specific one's copy of it. Qwen2.5-Omni carries
+its own BigVGAN, but a `bigvgan` model that subclassed it would make the general case
+depend on one consumer. Trace the original author's source instead.
+
+`PROJECT.md` carries a measured map of which classes appear in more than one folder.
+Check it before writing a class, and if you reimplement something on that list, say in
+the migration report why inheriting was rejected.
 
 ### 2.2 Step 2 — Trace the real upstream source, line by line
 Never match a submodule (attention block, FFN, normalization, encoder layer, ...) to
@@ -143,6 +180,25 @@ pretrained weights is a **confirmation step for Step 2**, not a substitute for i
 
 A dummy-tensor forward/backward smoke test proves nothing about architectural
 correctness and must never be reported or treated as verification.
+
+The standard is intelligibility, not signal. Generate speech from a real checkpoint,
+transcribe it back with wav2vec2 or Whisper, and report that transcript against the
+prompt you asked for. Waveform RMS, peak amplitude and absence of NaN are not
+evidence: a truncated half-second generation and a model ignoring its script both
+pass every one of them. Two real cases here were caught only by transcription, a
+`max_length` fallback that cut a sentence in half and a script below the model's
+documented length floor that produced fluent unrelated speech.
+
+Transcription has its own blind spot, so reach past it when the failure mode is not
+lexical. Pairing a checkpoint with the wrong vocoder transcribed word for word while
+the waveform was 37 times too quiet; level, spectrum and a copy-synthesis log mel
+distance caught it. Where a numeric check against upstream's own classes is possible,
+that is the strongest evidence available, and several models here match upstream to
+1e-07 or bit for bit.
+
+Verification does not run on the local GPU. Use the `colab` CLI for real-checkpoint
+runs. `colab exec` can time out client-side while the remote script keeps running, so
+poll for the result rather than reading a timeout as a failure.
 
 ### 2.6 Handling gaps found during the trace
 Reading the real upstream source correctly is not the same as deciding it's fine to
@@ -210,8 +266,8 @@ The set of `<kind>` prefixes a given model needs is whatever the real
 `transformers`/`transformers-tts` convention actually uses for a model with that
 shape — **not** a fixed shortlist.
 
-Besides `modeling_` / `configuration_`, real examples already present in the
-`transformers-tts` fork include:
+Besides `modeling_` / `configuration_`, real examples already present in
+`transformers-tts` include:
 - `generation_` (e.g. `csm`, `dia`, `higgs_audio_v2`, `qwen3_tts`, `whisper` — for a
   model with a custom `GenerationMixin` override worth splitting out)
 - `processing_`
@@ -221,11 +277,11 @@ Besides `modeling_` / `configuration_`, real examples already present in the
 - `modular_`
 
 **Before** assuming a migrated model must be squeezed into a smaller file set than
-its real upstream source used, check the actual fork for the closest precedent
+its real upstream source used, check `transformers-tts` for the closest precedent
 (`grep` its `src/transformers/models/` tree) rather than inferring the allowed set
 from this document's examples.
 
-- Do not invent a `<kind>` prefix with no precedent in the fork.
+- Do not invent a `<kind>` prefix with no precedent in `transformers-tts`.
 - Do not merge multiple real upstream files together (e.g. folding a model's own
   `generation_<model>.py` into `modeling_<model>.py`) just because this document's
   examples didn't happen to name that file.
@@ -298,8 +354,16 @@ formatting reference.
 - `configuration_<model>.py`, `processing_<model>.py`, `tokenization_<model>.py`,
   `__init__.py`, and any other file in a model's folder do **not** get a license
   header.
-- Each model's folder also gets a `README.md` linking back to the original code
-  repository it was migrated from.
+- No per-model `LICENSE` or `INFO.md` file. The license lives in the modeling header
+  and one `LICENSE` sits at the repository root, which is how `transformers` does it.
+  An upstream `README.md` carried in during vendoring is replaced, not kept alongside.
+- Each model's folder gets a `README.md` in the format of
+  `voicestudio/models/higgs_tts2/README.md`: the model name, a paragraph on what it
+  does architecturally, then a line reading
+  `Original model and code: [owner/repo](https://github.com/owner/repo)` with the
+  repository hyperlinked, then `## Usage`. Where a source-trace found something the
+  migration does not implement, the README also carries a
+  `## Not carried over from upstream` section listing it.
 
 ---
 
@@ -327,7 +391,8 @@ step outside the processor.
 - Target `transformers` 5.0 conventions for anything newly written.
 - Checkpoint conversions go through `WeightConvert`.
 - The `transformers` dependency in `pyproject.toml` points at
-  `latentforge/transformers-tts`, not upstream `transformers`.
+  `latentforge/transformers-tts`, not upstream `transformers`. Refer to it by name;
+  it is not "the fork".
 - Flash attention support goes through the `kernels` package, not
   vendored/prebuilt `flash-attn` wheels.
 

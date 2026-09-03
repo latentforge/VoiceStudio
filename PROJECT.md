@@ -7,28 +7,29 @@ resets across sessions and agents. Update it as work progresses; do not let it g
 
 ## Workspace layout
 
-The project checkout lives on the `C:` drive, which does not have room for model
-checkpoints. `dep/` (vendored source clones) and `ckpts/` (downloaded checkpoints, used
-only for local testing during migration) are relocated to `D:\VoiceWork`:
+Model weights live under `.cache/` in the repository checkout, which is gitignored:
 
-- `D:\VoiceWork\dep` — vendored source clones, linked at `dep/` in this repo.
-- `D:\VoiceWork\ckpts` — downloaded checkpoints for local testing, linked at `ckpts/`.
-- `D:\VoiceWork\worktree` — scratch location for any git worktrees created while
-  working on a migration in isolation.
+- `.cache/huggingface` is `HF_HOME`, holding everything `huggingface_hub` downloads.
+- `.cache/torch` is `TORCH_HOME`.
 
-`ckpts/` is a temporary scratch folder, not an artifact of the migration. Everything
-under it gets deleted once the full migration is complete; do not treat anything placed
-there as something to preserve or commit.
+Both are mapped in two places so they apply everywhere, not only inside the editor.
+`.vscode/settings.json` sets them for VS Code integrated terminals, and `.env` sets
+them for every other shell, which is what agent tool calls and `uv run` actually use.
+`.env` is gitignored, so recreate it if it is missing; without it a download silently
+falls back to `~/.cache/huggingface` outside the editor.
 
-Both `dep/` and `ckpts/` are gitignored.
+`ckpts/` is the old location and is gitignored. Nothing new goes there.
 
 ### Downloading models for local testing
 
-- Always download through `hf_xet` (the accelerated Hugging Face download path), never
-  the default `huggingface_hub` cache resolution.
-- Downloads must land under `ckpts/` (which resolves to `D:\VoiceWork\ckpts`), never the
-  default `~/.cache/huggingface` location. Pass an explicit local target, do not rely on
-  `HF_HOME`/cache defaults pointing there implicitly without checking.
+- Always download through `hf_xet`, the accelerated Hugging Face download path.
+- Let `huggingface_hub` resolve its own cache under `HF_HOME`. Do not pass an explicit
+  local target that writes outside `.cache/`.
+- Nothing under `.cache/` is an artifact of the migration. Do not treat anything there
+  as something to preserve or commit.
+
+Do not create git worktrees. This harness bases a new worktree on `main`, which is far
+behind `develop`, and that has silently blocked several tasks here.
 
 ### GPU verification
 
