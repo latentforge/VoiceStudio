@@ -286,16 +286,7 @@ bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts
 conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
 `Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
 
-Two items left open:
-
-- **Two Parler-TTS classes are stuck on the old docstring convention.**
-  `ParlerTTSPreTrainedModel` and `ParlerTTSModel` still use `add_start_docstrings` rather than
-  `@auto_docstring`, because each is directly preceded by a
-  `# Copied from transformers.models.musicgen.modeling_musicgen...` marker and H7 forbids editing
-  inside such a block. Upstream `MusicgenPreTrainedModel` and `MusicgenModel` do carry
-  `@auto_docstring`, so the copy is now behind the source it names. Resyncing a copied block against
-  an upstream that has moved is arguably not the edit H7 prohibits, but that is a call for a human.
-
+One item left open:
 
 - **Qwen3-TTS audio tokenizer reports `encoder.upsample.conv.weight` MISSING.** The key is real but
   the weight is not: `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`'s `speech_tokenizer/model.safetensors`
@@ -310,9 +301,12 @@ Two items left open:
   intent. The module is dead either way: forward hooks show it is called zero times during both
   `encode()` and `decode()`, and overwriting the weight with random values leaves the encoded codes
   bit-identical and the decoded waveform bit-exact, against a positive control where the same
-  treatment of `encoder.downsample.conv.weight` changes 99.9 percent of the codes. H7 forbids
-  hand-editing a generated file, so the fix belongs in transformers-tts's modular source; the
-  warning is harmless until then.
+  treatment of `encoder.downsample.conv.weight` changes 99.9 percent of the codes. The modular source is correct and the generated file is not, so neither editing it, which H7
+  forbids, nor editing the modular file, which is already right, is the fix. The generator collapsed
+  two identical looking `self.upsample = None` statements that had different positions: `MimiModel.__init__`
+  nulls it before conditionally building it, and the modular subclass nulls it again afterwards. Inlining
+  the parent merged the two, so the second null landed before the build. That belongs upstream in
+  transformers-tts, either in the generator or as a modular form that survives inlining.
 Nothing was salvageable for generation defaults. The branch's `PROJECT.md` records no
 `temperature`, `top_k`, `top_p`, `guidance`, `do_sample` or `max_new_tokens` value for any
 checkpoint, which follows from its verification standard: a plausible waveform RMS passes even when
