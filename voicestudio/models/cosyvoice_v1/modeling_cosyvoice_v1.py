@@ -28,7 +28,9 @@ from torch.nn.utils.parametrizations import weight_norm
 from transformers.activations import ACT2FN
 from transformers.modeling_outputs import ModelOutput
 from transformers.modeling_utils import PreTrainedModel
+from transformers.models.speecht5.modeling_speecht5 import HifiGanResidualBlock
 
+from ..bigvgan.modeling_bigvgan import dynamic_range_compression, mel_spectrogram
 from .configuration_cosyvoice_v1 import CosyVoiceV1Config
 from .generation_cosyvoice_v1 import CosyVoiceV1GenerationMixin
 
@@ -1535,9 +1537,11 @@ class CosyVoiceV1Snake(nn.Module):
         return hidden_states + (1.0 / (alpha + 1e-9)) * torch.pow(torch.sin(hidden_states * alpha), 2)
 
 
-class CosyVoiceV1ResBlock(nn.Module):
+class CosyVoiceV1ResBlock(HifiGanResidualBlock):
     """
-    Dilated residual block of the vocoder, with Snake activations.
+    Dilated residual block of the vocoder. Its convolutions are those of a HiFi-GAN residual block, and
+    a per channel Snake activation runs in front of each of them where the base class applies a leaky
+    ReLU.
 
     Args:
         channels (`int`):
@@ -1549,30 +1553,8 @@ class CosyVoiceV1ResBlock(nn.Module):
     """
 
     def __init__(self, channels: int, kernel_size: int, dilations: list[int]):
-        super().__init__()
-        self.convs1 = nn.ModuleList(
-            [
-                weight_norm(
-                    nn.Conv1d(
-                        channels,
-                        channels,
-                        kernel_size,
-                        1,
-                        dilation=dilation,
-                        padding=(kernel_size * dilation - dilation) // 2,
-                    )
-                )
-                for dilation in dilations
-            ]
-        )
-        self.convs2 = nn.ModuleList(
-            [
-                weight_norm(
-                    nn.Conv1d(channels, channels, kernel_size, 1, dilation=1, padding=(kernel_size - 1) // 2)
-                )
-                for _ in dilations
-            ]
-        )
+        super().__init__(channels, kernel_size, dilations)
+        self.apply_weight_norm()
         self.activations1 = nn.ModuleList([CosyVoiceV1Snake(channels) for _ in dilations])
         self.activations2 = nn.ModuleList([CosyVoiceV1Snake(channels) for _ in dilations])
 
@@ -1706,6 +1688,32 @@ class CosyVoiceV1F0Predictor(nn.Module):
         """
         hidden_states = self.condnet(mel).transpose(1, 2)
         return torch.abs(self.classifier(hidden_states).squeeze(-1))
+
+
+@dataclass
+class CosyVoiceV1VocoderOutput(ModelOutput):
+    """
+    Output of [`CosyVoiceV1HiFTGenerator.compute_loss`].
+
+    Args:
+        loss (`torch.FloatTensor` of shape `(1,)`):
+            Sum of the terms of the vocoder objective that do not need a discriminator.
+        mel_loss (`torch.FloatTensor` of shape `(1,)`):
+            Log mel spectrogram distance between the generated and the ground truth waveform, weighted
+            by `config.vocoder_mel_loss_coeff`.
+        f0_loss (`torch.FloatTensor` of shape `(1,)`):
+            L1 distance between the predicted and the extracted f0 contour.
+        waveform (`torch.FloatTensor` of shape `(batch_size, num_samples)`):
+            Generated waveform.
+        f0 (`torch.FloatTensor` of shape `(batch_size, mel_length)`):
+            Predicted f0 contour.
+    """
+
+    loss: Optional[torch.FloatTensor] = None
+    mel_loss: Optional[torch.FloatTensor] = None
+    f0_loss: Optional[torch.FloatTensor] = None
+    waveform: Optional[torch.FloatTensor] = None
+    f0: Optional[torch.FloatTensor] = None
 
 
 class CosyVoiceV1HiFTGenerator(nn.Module):
@@ -1875,6 +1883,67 @@ class CosyVoiceV1HiFTGenerator(nn.Module):
         source = self.m_source(source).transpose(1, 2)
         return self.decode(mel, source), f0
 
+    def mel_loss(self, waveform: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """
+        Measures the log mel spectrogram distance the generator is regressed onto. Its filter bank runs
+        up to the Nyquist frequency rather than to the `fmax` of the mel the model consumes.
+
+        Args:
+            waveform (`torch.Tensor` of shape `(batch_size, num_samples)`):
+                Generated waveform.
+            labels (`torch.Tensor` of shape `(batch_size, num_samples)`):
+                Ground truth waveform.
+
+        Returns:
+            `torch.Tensor`: the distance, weighted by `config.vocoder_mel_loss_coeff`.
+        """
+        resolution = {
+            "sampling_rate": self.config.sample_rate,
+            "n_fft": self.config.vocoder_mel_loss_n_fft,
+            "hop_length": self.config.vocoder_mel_loss_hop_length,
+            "win_length": self.config.vocoder_mel_loss_win_length,
+            "num_mel_bins": self.config.vocoder_mel_loss_num_mel_bins,
+            "fmin": self.config.vocoder_mel_loss_fmin,
+            "fmax": self.config.vocoder_mel_loss_fmax,
+            "centered": False,
+        }
+        return self.config.vocoder_mel_loss_coeff * F.l1_loss(
+            dynamic_range_compression(mel_spectrogram(waveform, **resolution)),
+            dynamic_range_compression(mel_spectrogram(labels, **resolution)),
+        )
+
+    def compute_loss(
+        self, mel: torch.Tensor, labels: torch.Tensor, pitch_feat: torch.Tensor
+    ) -> CosyVoiceV1VocoderOutput:
+        """
+        Runs the generator and scores it with the terms of the vocoder objective that need no
+        discriminator, the weighted mel spectrogram reconstruction loss and the L1 loss between the
+        predicted and the extracted f0 contour. The adversarial, feature matching and true positive
+        rate terms are not implemented.
+
+        Args:
+            mel (`torch.Tensor` of shape `(batch_size, vocoder_in_channels, mel_length)`):
+                Mel spectrogram of the ground truth waveform.
+            labels (`torch.Tensor` of shape `(batch_size, num_samples)`):
+                Ground truth waveform.
+            pitch_feat (`torch.Tensor` of shape `(batch_size, mel_length)`):
+                Extracted f0 contour, which [`~CosyVoiceV1Processor.compute_f0`] produces.
+
+        Returns:
+            [`CosyVoiceV1VocoderOutput`]: the loss, its two terms, the generated waveform and the
+            predicted f0 contour.
+        """
+        waveform, f0 = self(mel)
+        reconstruction_loss = self.mel_loss(waveform, labels)
+        f0_loss = F.l1_loss(f0, pitch_feat)
+        return CosyVoiceV1VocoderOutput(
+            loss=reconstruction_loss + f0_loss,
+            mel_loss=reconstruction_loss,
+            f0_loss=f0_loss,
+            waveform=waveform,
+            f0=f0,
+        )
+
     @torch.inference_mode()
     def inference(self, mel: torch.Tensor, cache_source: Optional[torch.Tensor] = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -1988,8 +2057,8 @@ class CosyVoiceV1ForConditionalGeneration(CosyVoiceV1GenerationMixin, CosyVoiceV
 
     The three networks are trained one at a time upstream, so `forward` optimizes the language model
     objective only. [`CosyVoiceV1FlowModel.forward`] returns the flow matching objective and
-    [`CosyVoiceV1HiFTGenerator.forward`] returns the waveform and the f0 contour the vocoder objective
-    is computed from.
+    [`CosyVoiceV1HiFTGenerator.compute_loss`] returns the terms of the vocoder objective that need no
+    discriminator.
 
     Args:
         config ([`CosyVoiceV1Config`]):
@@ -2063,6 +2132,7 @@ __all__ = [
     "CosyVoiceV1Output",
     "CosyVoiceV1PreTrainedModel",
     "CosyVoiceV1SpeechTokenLM",
+    "CosyVoiceV1VocoderOutput",
     "build_speech_token_labels",
     "make_pad_mask",
 ]

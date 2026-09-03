@@ -1,6 +1,8 @@
 """Processor class for CosyVoice v1."""
 
-from typing import Optional, Union
+import re
+import unicodedata
+from typing import Callable, Optional, Union
 
 import numpy as np
 import torch
@@ -11,6 +13,199 @@ from librosa.filters import mel as librosa_mel
 from transformers.feature_extraction_sequence_utils import SequenceFeatureExtractor
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.processing_utils import ProcessorMixin
+
+
+CHINESE_CHARACTERS = re.compile(r"[\u4e00-\u9fff]+")
+
+CORNER_MARKS = {"\u00b2": "\u5e73\u65b9", "\u00b3": "\u7acb\u65b9"}
+
+CHINESE_PUNCTUATION = ["\u3002", "\uff1f", "\uff01", "\uff1b", "\uff1a", "\u3001", ".", "?", "!", ";"]
+
+ENGLISH_PUNCTUATION = [".", "?", "!", ";", ":"]
+
+
+def contains_chinese(text: str) -> bool:
+    """
+    Args:
+        text (`str`):
+            Text to test.
+
+    Returns:
+        `bool`: Whether the text holds at least one Chinese character.
+    """
+    return bool(CHINESE_CHARACTERS.search(text))
+
+
+def replace_corner_mark(text: str) -> str:
+    """
+    Spells the squared and cubed corner marks out in Chinese.
+
+    Args:
+        text (`str`):
+            Text to rewrite.
+
+    Returns:
+        `str`: The rewritten text.
+    """
+    for mark, replacement in CORNER_MARKS.items():
+        text = text.replace(mark, replacement)
+    return text
+
+
+def remove_bracket(text: str) -> str:
+    """
+    Drops the bracket and quote characters the Chinese front end treats as meaningless.
+
+    Args:
+        text (`str`):
+            Text to rewrite.
+
+    Returns:
+        `str`: The rewritten text.
+    """
+    text = text.replace("\uff08", "").replace("\uff09", "")
+    text = text.replace("\u3010", "").replace("\u3011", "")
+    text = text.replace("`", "")
+    text = text.replace("\u2014\u2014", " ")
+    return text
+
+
+def replace_blank(text: str) -> str:
+    """
+    Drops every space that does not sit between two ASCII characters, which is how a Chinese sentence
+    keeps the spaces of an embedded English word and loses the rest.
+
+    Args:
+        text (`str`):
+            Text to rewrite.
+
+    Returns:
+        `str`: The rewritten text.
+    """
+    characters = []
+    for index, character in enumerate(text):
+        if character != " ":
+            characters.append(character)
+        elif (
+            text[index + 1].isascii()
+            and text[index + 1] != " "
+            and text[index - 1].isascii()
+            and text[index - 1] != " "
+        ):
+            characters.append(character)
+    return "".join(characters)
+
+
+def spell_out_number(text: str, inflect_parser) -> str:
+    """
+    Replaces every run of digits with its English reading.
+
+    Args:
+        text (`str`):
+            Text to rewrite.
+        inflect_parser (`inflect.engine`):
+            Engine whose `number_to_words` reads a digit run out.
+
+    Returns:
+        `str`: The rewritten text.
+    """
+    spelled = []
+    start = None
+    for index, character in enumerate(text):
+        if character.isdigit():
+            if start is None:
+                start = index
+            continue
+        if start is not None:
+            spelled.append(inflect_parser.number_to_words(text[start:index]))
+            start = None
+        spelled.append(character)
+    if start is not None and start < len(text):
+        spelled.append(inflect_parser.number_to_words(text[start:]))
+    return "".join(spelled)
+
+
+def is_only_punctuation(text: str) -> bool:
+    """
+    Args:
+        text (`str`):
+            Text to test.
+
+    Returns:
+        `bool`: Whether the text is empty or made of punctuation and symbols alone.
+    """
+    return all(unicodedata.category(character)[0] in "PS" for character in text)
+
+
+def split_paragraph(
+    text: str,
+    tokenize: Callable[[str], list[int]],
+    lang: str = "zh",
+    token_max_n: int = 80,
+    token_min_n: int = 60,
+    merge_len: int = 20,
+    comma_split: bool = False,
+) -> list[str]:
+    """
+    Splits a paragraph into sentences on punctuation, then greedily merges neighbouring sentences so
+    that each piece stays under `token_max_n` and a trailing piece shorter than `merge_len` joins the
+    one before it. A Chinese piece is measured in characters and any other in tokens.
+
+    Args:
+        text (`str`):
+            Paragraph to split.
+        tokenize (`Callable`):
+            Callable returning the token ids of a string, used to measure a non Chinese piece.
+        lang (`str`, *optional*, defaults to `"zh"`):
+            `"zh"` to measure in characters and split on Chinese punctuation, anything else to measure
+            in tokens and split on ASCII punctuation.
+        token_max_n (`int`, *optional*, defaults to 80):
+            Length above which a piece is closed, provided the piece is already longer than
+            `token_min_n`.
+        token_min_n (`int`, *optional*, defaults to 60):
+            Length below which a piece keeps growing.
+        merge_len (`int`, *optional*, defaults to 20):
+            Length below which a trailing piece is merged into the one before it.
+        comma_split (`bool`, *optional*, defaults to `False`):
+            Whether a comma also ends a sentence.
+
+    Returns:
+        `list[str]`: The pieces.
+    """
+
+    def length(piece: str) -> int:
+        return len(piece) if lang == "zh" else len(tokenize(piece))
+
+    punctuation = list(CHINESE_PUNCTUATION if lang == "zh" else ENGLISH_PUNCTUATION)
+    if comma_split:
+        punctuation.extend(["\uff0c", ","])
+    if text[-1] not in punctuation:
+        text += "\u3002" if lang == "zh" else "."
+
+    start, sentences = 0, []
+    for index, character in enumerate(text):
+        if character not in punctuation:
+            continue
+        if len(text[start:index]) > 0:
+            sentences.append(text[start:index] + character)
+        if index + 1 < len(text) and text[index + 1] in ['"', "\u201d"]:
+            sentences.append(sentences.pop(-1) + text[index + 1])
+            start = index + 2
+        else:
+            start = index + 1
+
+    pieces, current = [], ""
+    for sentence in sentences:
+        if length(current + sentence) > token_max_n and length(current) > token_min_n:
+            pieces.append(current)
+            current = ""
+        current = current + sentence
+    if len(current) > 0:
+        if length(current) < merge_len and len(pieces) != 0:
+            pieces[-1] = pieces[-1] + current
+        else:
+            pieces.append(current)
+    return pieces
 
 
 class CosyVoiceV1FeatureExtractor(SequenceFeatureExtractor):
@@ -179,6 +374,28 @@ class CosyVoiceV1Processor(ProcessorMixin):
         self._speech_tokenizer_session = None
         self._speaker_encoder_session = None
         self._speaker_info = None
+        self._inflect_parser = None
+
+    @property
+    def inflect_parser(self):
+        """
+        Returns:
+            `inflect.engine`: The engine that reads an English digit run out.
+
+        Raises:
+            ImportError: If `inflect` is not installed.
+        """
+        if self._inflect_parser is None:
+            try:
+                import inflect
+            except ImportError as error:
+                raise ImportError(
+                    "reading the digits of an English sentence out is upstream's own text front end, "
+                    "which does it with `inflect`. This package does not depend on it. Remove the "
+                    "digits, pass the text already spelled out, or install `inflect` yourself."
+                ) from error
+            self._inflect_parser = inflect.engine()
+        return self._inflect_parser
 
     @property
     def speech_token_feature_extractor(self):
@@ -350,12 +567,114 @@ class CosyVoiceV1Processor(ProcessorMixin):
         )[0].flatten()
         return torch.tensor([embedding])
 
+    def normalize_text(self, text: str, split: bool = True) -> Union[str, list[str]]:
+        """
+        Rewrites a sentence the way upstream's text front end does, then optionally splits it into the
+        pieces upstream synthesizes one at a time.
+
+        A Chinese sentence loses the spaces that do not sit inside an embedded English word, has its
+        corner marks spelled out, its brackets removed, its full stops and dashes replaced by their
+        Chinese counterparts and a trailing run of commas turned into a full stop. Any other sentence
+        has its digit runs read out with `inflect`. Text carrying a `<|` `|>` marker is returned
+        untouched. Neither branch runs a text normalizer over numbers, dates or abbreviations, which is
+        what upstream reaches `ttsfrd` or `wetext` for.
+
+        Args:
+            text (`str`):
+                Text to rewrite.
+            split (`bool`, *optional*, defaults to `True`):
+                Whether the rewritten text is split into pieces.
+
+        Returns:
+            `str` or `list[str]`: The rewritten text, or its pieces when `split` is set.
+        """
+        if ("<|" in text and "|>" in text) or text == "":
+            return [text] if split else text
+        text = text.strip()
+
+        def tokenize(piece: str) -> list[int]:
+            return self.tokenizer.encode(piece, add_special_tokens=False)
+
+        if contains_chinese(text):
+            text = text.replace("\n", "")
+            text = replace_blank(text)
+            text = replace_corner_mark(text)
+            text = text.replace(".", "\u3002")
+            text = text.replace(" - ", "\uff0c")
+            text = remove_bracket(text)
+            text = re.sub(r"[\uff0c,\u3001]+$", "\u3002", text)
+            pieces = split_paragraph(text, tokenize, "zh", token_max_n=80, token_min_n=60, merge_len=20)
+        else:
+            if any(character.isdigit() for character in text):
+                text = spell_out_number(text, self.inflect_parser)
+            pieces = split_paragraph(text, tokenize, "en", token_max_n=80, token_min_n=60, merge_len=20)
+        pieces = [piece for piece in pieces if not is_only_punctuation(piece)]
+        return pieces if split else text
+
+    def compute_f0(
+        self,
+        audio: Union[np.ndarray, torch.Tensor],
+        sampling_rate: Optional[int] = None,
+        num_frames: Optional[int] = None,
+    ) -> torch.Tensor:
+        """
+        Extracts the f0 contour the vocoder objective regresses the f0 predictor onto, with the WORLD
+        harvest estimator, falling back to dio when fewer than five frames come back voiced, refined
+        by stonemask and interpolated onto the mel frame count.
+
+        Args:
+            audio (`np.ndarray` or `torch.Tensor`):
+                Mono waveform.
+            sampling_rate (`int`, *optional*):
+                Rate of `audio`. It is resampled to the rate the mel filter bank is built for.
+            num_frames (`int`, *optional*):
+                Number of frames the contour is interpolated onto. Defaults to the number of mel frames
+                of the resampled waveform.
+
+        Returns:
+            `torch.Tensor` of shape `(num_frames,)`: the f0 contour, in Hz.
+
+        Raises:
+            ImportError: If `pyworld` is not installed.
+        """
+        try:
+            import pyworld
+        except ImportError as error:
+            raise ImportError(
+                "the CosyVoice v1 vocoder objective regresses its f0 predictor onto the WORLD harvest "
+                "contour, which upstream extracts with `pyworld`. This package does not depend on it. "
+                "Pass a contour of your own to `CosyVoiceV1HiFTGenerator.compute_loss`, or install "
+                "`pyworld` yourself."
+            ) from error
+
+        target_rate = self.feature_extractor.mel_sampling_rate
+        hop_length = self.feature_extractor.hop_length
+        waveform = self._resample(
+            audio if isinstance(audio, torch.Tensor) else torch.as_tensor(np.asarray(audio)),
+            sampling_rate,
+            target_rate,
+        )
+        samples = waveform.squeeze(0).numpy().astype("double")
+        frame_period = hop_length * 1000 / target_rate
+        contour, time_axis = pyworld.harvest(samples, target_rate, frame_period=frame_period)
+        if (contour != 0).sum() < 5:
+            contour, time_axis = pyworld.dio(samples, target_rate, frame_period=frame_period)
+        contour = pyworld.stonemask(samples, contour, time_axis, target_rate)
+        if num_frames is None:
+            num_frames = self.feature_extractor._mel_spectrogram(waveform).shape[-1]
+        # The interpolation stays in the double precision the WORLD estimator returns: at a voicing
+        # boundary a float32 source index can round onto the neighbouring frame.
+        contour = torch.from_numpy(contour).view(1, 1, -1)
+        contour = torch.nn.functional.interpolate(contour, size=num_frames, mode="linear")
+        return contour.view(-1).float()
+
     def __call__(
         self,
         text: Optional[Union[str, list[str]]] = None,
         audio: Optional[Union[np.ndarray, torch.Tensor]] = None,
         sampling_rate: Optional[int] = None,
         prompt_text: Optional[Union[str, list[str]]] = None,
+        normalize: bool = False,
         **kwargs,
     ) -> BatchFeature:
         """
@@ -369,12 +688,25 @@ class CosyVoiceV1Processor(ProcessorMixin):
                 Rate of `audio`.
             prompt_text (`str` or `list[str]`, *optional*):
                 Transcript of the prompt utterance.
+            normalize (`bool`, *optional*, defaults to `False`):
+                Whether every string is rewritten by [`~CosyVoiceV1Processor.normalize_text`] first.
+                Splitting a long paragraph into the pieces upstream synthesizes one at a time is
+                `normalize_text(text)` instead, since one call here encodes one sequence.
 
         Returns:
             [`BatchFeature`]: `input_ids` and `input_lengths` for the text, plus
             `prompt_input_ids`, `prompt_speech_token_ids`, `prompt_speech_token_lengths`,
             `speech_feat`, `speech_feat_lengths` and `speaker_embedding` when a prompt is given.
         """
+        if normalize:
+            if isinstance(text, str):
+                text = self.normalize_text(text, split=False)
+            elif text is not None:
+                text = [self.normalize_text(item, split=False) for item in text]
+            if isinstance(prompt_text, str):
+                prompt_text = self.normalize_text(prompt_text, split=False)
+            elif prompt_text is not None:
+                prompt_text = [self.normalize_text(item, split=False) for item in prompt_text]
         data = {}
         if text is not None:
             encoded = self.tokenizer(text, add_special_tokens=False, return_tensors="pt", **kwargs)
@@ -393,4 +725,14 @@ class CosyVoiceV1Processor(ProcessorMixin):
         return BatchFeature(data)
 
 
-__all__ = ["CosyVoiceV1FeatureExtractor", "CosyVoiceV1Processor"]
+__all__ = [
+    "CosyVoiceV1FeatureExtractor",
+    "CosyVoiceV1Processor",
+    "contains_chinese",
+    "is_only_punctuation",
+    "remove_bracket",
+    "replace_blank",
+    "replace_corner_mark",
+    "spell_out_number",
+    "split_paragraph",
+]

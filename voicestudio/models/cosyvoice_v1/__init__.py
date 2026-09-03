@@ -26,9 +26,11 @@ from .modeling_cosyvoice_v1 import (
     CosyVoiceV1Output,
     CosyVoiceV1PreTrainedModel,
     CosyVoiceV1SpeechTokenLM,
+    CosyVoiceV1VocoderOutput,
     build_speech_token_labels,
 )
 from .processing_cosyvoice_v1 import CosyVoiceV1FeatureExtractor, CosyVoiceV1Processor
+from .tokenization_cosyvoice_v1 import CosyVoiceV1Tokenizer
 
 
 AutoConfig.register(CosyVoiceV1Config.model_type, CosyVoiceV1Config, exist_ok=True)
@@ -54,6 +56,8 @@ __all__ = [
     "CosyVoiceV1PreTrainedModel",
     "CosyVoiceV1Processor",
     "CosyVoiceV1SpeechTokenLM",
+    "CosyVoiceV1Tokenizer",
+    "CosyVoiceV1VocoderOutput",
     "build_speech_token_labels",
     "fade_in_out",
     "nucleus_sampling",

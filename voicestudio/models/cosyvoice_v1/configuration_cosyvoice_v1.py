@@ -165,6 +165,21 @@ class CosyVoiceV1Config(PretrainedConfig):
             Absolute value the generated waveform is clamped to.
         f0_predictor_hidden_size (`int`, *optional*, defaults to 512):
             Channels of the convolutional f0 predictor.
+        vocoder_mel_loss_n_fft (`int`, *optional*, defaults to 1024):
+            Size of the Fourier transform of the mel spectrogram the vocoder is regressed onto.
+        vocoder_mel_loss_hop_length (`int`, *optional*, defaults to 256):
+            Hop of that mel spectrogram.
+        vocoder_mel_loss_win_length (`int`, *optional*, defaults to 1024):
+            Analysis window of that mel spectrogram.
+        vocoder_mel_loss_num_mel_bins (`int`, *optional*, defaults to 80):
+            Number of mel bins of that mel spectrogram.
+        vocoder_mel_loss_fmin (`float`, *optional*, defaults to 0.0):
+            Lowest frequency of its mel filter bank.
+        vocoder_mel_loss_fmax (`float`, *optional*):
+            Highest frequency of its mel filter bank. `None` means half the sampling rate, which is
+            what the vocoder objective uses and what sets it apart from the mel the model consumes.
+        vocoder_mel_loss_coeff (`float`, *optional*, defaults to 45.0):
+            Weight of the mel reconstruction term of the vocoder objective.
         initializer_range (`float`, *optional*, defaults to 0.02):
             Standard deviation of the truncated normal initializer.
     """
@@ -245,6 +260,13 @@ class CosyVoiceV1Config(PretrainedConfig):
         vocoder_leaky_relu_slope: float = 0.1,
         vocoder_audio_limit: float = 0.99,
         f0_predictor_hidden_size: int = 512,
+        vocoder_mel_loss_n_fft: int = 1024,
+        vocoder_mel_loss_hop_length: int = 256,
+        vocoder_mel_loss_win_length: int = 1024,
+        vocoder_mel_loss_num_mel_bins: int = 80,
+        vocoder_mel_loss_fmin: float = 0.0,
+        vocoder_mel_loss_fmax: float | None = None,
+        vocoder_mel_loss_coeff: float = 45.0,
         initializer_range: float = 0.02,
         **kwargs,
     ):
@@ -341,6 +363,13 @@ class CosyVoiceV1Config(PretrainedConfig):
         self.vocoder_leaky_relu_slope = vocoder_leaky_relu_slope
         self.vocoder_audio_limit = vocoder_audio_limit
         self.f0_predictor_hidden_size = f0_predictor_hidden_size
+        self.vocoder_mel_loss_n_fft = vocoder_mel_loss_n_fft
+        self.vocoder_mel_loss_hop_length = vocoder_mel_loss_hop_length
+        self.vocoder_mel_loss_win_length = vocoder_mel_loss_win_length
+        self.vocoder_mel_loss_num_mel_bins = vocoder_mel_loss_num_mel_bins
+        self.vocoder_mel_loss_fmin = vocoder_mel_loss_fmin
+        self.vocoder_mel_loss_fmax = vocoder_mel_loss_fmax
+        self.vocoder_mel_loss_coeff = vocoder_mel_loss_coeff
 
         self.initializer_range = initializer_range
         super().__init__(**kwargs)
