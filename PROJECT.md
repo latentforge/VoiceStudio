@@ -286,7 +286,16 @@ bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts
 conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
 `Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
 
-Three items left open:
+Four items left open:
+
+- **Two Parler-TTS classes are stuck on the old docstring convention.**
+  `ParlerTTSPreTrainedModel` and `ParlerTTSModel` still use `add_start_docstrings` rather than
+  `@auto_docstring`, because each is directly preceded by a
+  `# Copied from transformers.models.musicgen.modeling_musicgen...` marker and H7 forbids editing
+  inside such a block. Upstream `MusicgenPreTrainedModel` and `MusicgenModel` do carry
+  `@auto_docstring`, so the copy is now behind the source it names. Resyncing a copied block against
+  an upstream that has moved is arguably not the edit H7 prohibits, but that is a call for a human.
+
 
 - **CosyVoice's vocoder objective is half implemented.** `CosyVoiceV1HiFTGenerator.compute_loss`
   now returns the 45 times mel term and the f0 term, which is what could be written without a
