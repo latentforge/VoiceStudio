@@ -23,10 +23,6 @@ from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 # they were converted from live in.
 CACHE_DIR_NAME = "converted"
 
-# Part of every cache key, so that an earlier conversion's output is not served to code that writes
-# something else. Raise it whenever a conversion changes what it writes.
-CACHE_VERSION = 1
-
 # Bytes a shard holds before the writer starts another one, which is what bounds how much of a converted
 # checkpoint is resident at a time.
 MAX_SHARD_SIZE = 2 * 1024**3
@@ -116,6 +112,10 @@ def source_identity(source, resolved) -> str:
 
 def cache_key(parts: Iterable) -> str:
     r"""
+    The key covers the source a conversion reads and the options it takes, and nothing about the code that
+    writes it, so a converter that starts writing something else keeps being served the entry it wrote before.
+    Changing what a conversion produces means deleting its directories under [`cache_root`] by hand.
+
     Args:
         parts (`Iterable`):
             Everything the conversion's output depends on, as [`file_identity`] strings for the files it reads
@@ -125,7 +125,7 @@ def cache_key(parts: Iterable) -> str:
         `str`: Hexadecimal digest naming the directory the conversion is cached in.
     """
     digest = hashlib.sha256()
-    for part in (CACHE_VERSION, *parts):
+    for part in parts:
         digest.update(str(part).encode())
         digest.update(b"\0")
     return digest.hexdigest()[:32]
@@ -377,7 +377,6 @@ class CheckpointWriter:
 
 __all__ = [
     "CACHE_DIR_NAME",
-    "CACHE_VERSION",
     "MAX_SHARD_SIZE",
     "RECLAIMED_FILE_EXCEPTIONS",
     "RECLAIMED_FILE_SIZE",
