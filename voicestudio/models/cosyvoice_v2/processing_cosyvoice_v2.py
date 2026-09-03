@@ -1,13 +1,17 @@
 """Processor class for CosyVoice v2."""
 
+from pathlib import Path
 from typing import Optional, Union
 
 import numpy as np
 import torch
 
 from transformers.feature_extraction_utils import BatchFeature
+from transformers.models.auto.tokenization_auto import AutoTokenizer
 
 from ..cosyvoice_v1.processing_cosyvoice_v1 import CosyVoiceV1FeatureExtractor, CosyVoiceV1Processor
+from ..cosyvoice_v1.weight_conversion import SPEAKER_ENCODER_FILE, resolve_checkpoint
+from .weight_conversion import SPEECH_TOKENIZER_FILE, TEXT_MODEL_SUBDIR
 
 
 # The tokens upstream's `CosyVoice2Tokenizer` adds to the Qwen2 tokenizer, in the order it adds them.
@@ -102,6 +106,53 @@ class CosyVoiceV2Processor(CosyVoiceV1Processor):
             Number of mel frames per speech token. A prompt is truncated so that its mel spectrogram
             and its speech tokens keep exactly this ratio.
     """
+
+    feature_extractor_type = CosyVoiceV2FeatureExtractor
+    speech_tokenizer_file = SPEECH_TOKENIZER_FILE
+
+    @classmethod
+    def _released_processor(cls, directory: "str | Path") -> "CosyVoiceV2Processor":
+        r"""
+        Builds the processor of a released CosyVoice v2 directory.
+
+        The directory carries the speech tokenizer, the speaker encoder and the Qwen2 directory the
+        text tokenizer is read from, to which upstream's own special tokens are added.
+
+        Args:
+            directory (`str` or `os.PathLike`):
+                Local directory of the released checkpoint.
+
+        Returns:
+            [`CosyVoiceV2Processor`]: The processor.
+        """
+        directory = Path(directory)
+        tokenizer = AutoTokenizer.from_pretrained(str(directory / TEXT_MODEL_SUBDIR))
+        cls.add_special_tokens(tokenizer)
+        return cls(
+            feature_extractor=cls.feature_extractor_type(),
+            tokenizer=tokenizer,
+            speech_token_model_path=str(directory / cls.speech_tokenizer_file),
+            speaker_encoder_model_path=str(directory / SPEAKER_ENCODER_FILE),
+        )
+
+    @classmethod
+    def _resolve_released_checkpoint(cls, source, **kwargs) -> "Path | None":
+        r"""
+        Fetches the files a released CosyVoice v2 directory holds for the processor.
+
+        Args:
+            source (`str` or `os.PathLike`, *optional*):
+                Repository id or local directory.
+            kwargs (`dict`, *optional*):
+                Fields of `weight_conversion.DOWNLOAD_KWARGS` selecting a revision and a cache.
+
+        Returns:
+            `Path` or `None`: The local directory, or `None` when `source` holds no released
+            checkpoint.
+        """
+        return resolve_checkpoint(
+            source, (SPEAKER_ENCODER_FILE, cls.speech_tokenizer_file), (f"{TEXT_MODEL_SUBDIR}/*",), **kwargs
+        )
 
     @staticmethod
     def add_special_tokens(tokenizer, tokens: Optional[list[str]] = None) -> int:

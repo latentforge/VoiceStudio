@@ -26,16 +26,53 @@ from torch import nn
 from torch.nn.utils.parametrizations import weight_norm
 
 from transformers.activations import ACT2FN
+from transformers.conversion_mapping import WeightRenaming, register_checkpoint_conversion_mapping
 from transformers.modeling_outputs import ModelOutput
 from transformers.modeling_utils import PreTrainedModel
 from transformers.models.speecht5.modeling_speecht5 import HifiGanResidualBlock
+from transformers.utils import auto_docstring
 
 from ..bigvgan.modeling_bigvgan import dynamic_range_compression, mel_spectrogram
 from .configuration_cosyvoice_v1 import CosyVoiceV1Config
 from .generation_cosyvoice_v1 import CosyVoiceV1GenerationMixin
+from .weight_conversion import CHECKPOINT_FILES, build_config, load_checkpoint, resolve_checkpoint
 
 
 IGNORE_ID = -1
+
+
+# A released CosyVoice v1 directory holds one file per network, and [`load_checkpoint`] merges them
+# under the name of the submodule each belongs to. What is left is upstream's own module names.
+# `BaseEncoder` calls its input projection `embed.out`, its blocks `encoders` and its closing norm
+# `after_norm`, and `TransformerEncoderLayer` calls its two norms `norm1`/`norm2` where
+# `ConformerEncoderLayer` calls the same two `norm_mha`/`norm_ff`. The vocoder was trained with the
+# pre-parametrization spelling of weight norm. Every rule names one leaf rather than a whole block,
+# so that the reverse mapping `save_pretrained` builds from it stays exact.
+CHECKPOINT_CONVERSION = [
+    WeightRenaming(source_patterns=r"\.embed\.out\.0\.", target_patterns=r"\.input_projection\.proj\."),
+    WeightRenaming(source_patterns=r"\.embed\.out\.1\.", target_patterns=r"\.input_projection\.layer_norm\."),
+    WeightRenaming(source_patterns=r"\.encoders\.(\d+)\.self_attn\.", target_patterns=r"\.layers\.\1\.self_attn\."),
+    WeightRenaming(
+        source_patterns=r"\.encoders\.(\d+)\.feed_forward\.", target_patterns=r"\.layers\.\1\.feed_forward\."
+    ),
+    WeightRenaming(
+        source_patterns=r"\.encoders\.(\d+)\.norm1\.", target_patterns=r"\.layers\.\1\.self_attn_layer_norm\."
+    ),
+    WeightRenaming(
+        source_patterns=r"\.encoders\.(\d+)\.norm2\.", target_patterns=r"\.layers\.\1\.final_layer_norm\."
+    ),
+    WeightRenaming(
+        source_patterns=r"\.encoders\.(\d+)\.norm_mha\.", target_patterns=r"\.layers\.\1\.self_attn_layer_norm\."
+    ),
+    WeightRenaming(
+        source_patterns=r"\.encoders\.(\d+)\.norm_ff\.", target_patterns=r"\.layers\.\1\.final_layer_norm\."
+    ),
+    WeightRenaming(source_patterns=r"\.after_norm\.", target_patterns=r"\.layer_norm\."),
+    WeightRenaming(source_patterns=r"\.weight_g$", target_patterns=r"\.parametrizations\.weight\.original0"),
+    WeightRenaming(source_patterns=r"\.weight_v$", target_patterns=r"\.parametrizations\.weight\.original1"),
+]
+
+register_checkpoint_conversion_mapping("CosyVoiceV1ForConditionalGeneration", CHECKPOINT_CONVERSION, overwrite=True)
 
 
 def make_pad_mask(lengths: torch.Tensor, max_len: int = 0) -> torch.Tensor:
@@ -1690,23 +1727,25 @@ class CosyVoiceV1F0Predictor(nn.Module):
         return torch.abs(self.classifier(hidden_states).squeeze(-1))
 
 
+@auto_docstring(
+    custom_intro="""
+    Output of [`CosyVoiceV1HiFTGenerator.compute_loss`].
+    """
+)
 @dataclass
 class CosyVoiceV1VocoderOutput(ModelOutput):
-    """
-    Output of [`CosyVoiceV1HiFTGenerator.compute_loss`].
-
-    Args:
-        loss (`torch.FloatTensor` of shape `(1,)`):
-            Sum of the terms of the vocoder objective that do not need a discriminator.
-        mel_loss (`torch.FloatTensor` of shape `(1,)`):
-            Log mel spectrogram distance between the generated and the ground truth waveform, weighted
-            by `config.vocoder_mel_loss_coeff`.
-        f0_loss (`torch.FloatTensor` of shape `(1,)`):
-            L1 distance between the predicted and the extracted f0 contour.
-        waveform (`torch.FloatTensor` of shape `(batch_size, num_samples)`):
-            Generated waveform.
-        f0 (`torch.FloatTensor` of shape `(batch_size, mel_length)`):
-            Predicted f0 contour.
+    r"""
+    loss (`torch.FloatTensor` of shape `(1,)`):
+        Sum of the terms of the vocoder objective that do not need a discriminator.
+    mel_loss (`torch.FloatTensor` of shape `(1,)`):
+        Log mel spectrogram distance between the generated and the ground truth waveform, weighted
+        by `config.vocoder_mel_loss_coeff`.
+    f0_loss (`torch.FloatTensor` of shape `(1,)`):
+        L1 distance between the predicted and the extracted f0 contour.
+    waveform (`torch.FloatTensor` of shape `(batch_size, num_samples)`):
+        Generated waveform.
+    f0 (`torch.FloatTensor` of shape `(batch_size, mel_length)`):
+        Predicted f0 contour.
     """
 
     loss: Optional[torch.FloatTensor] = None
@@ -1964,18 +2003,20 @@ class CosyVoiceV1HiFTGenerator(nn.Module):
         return self.decode(mel, source), source
 
 
+@auto_docstring(
+    custom_intro="""
+    Output of [`CosyVoiceV1ForConditionalGeneration`].
+    """
+)
 @dataclass
 class CosyVoiceV1Output(ModelOutput):
-    """
-    Output of [`CosyVoiceV1ForConditionalGeneration`].
-
-    Args:
-        loss (`torch.FloatTensor` of shape `(1,)`, *optional*):
-            Label smoothed cross entropy over the speech tokens, returned when `labels` is provided.
-        logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, speech_vocab_size + 1)`):
-            Speech token scores.
-        accuracy (`torch.FloatTensor` of shape `(1,)`, *optional*):
-            Fraction of correctly predicted speech tokens, returned when `labels` is provided.
+    r"""
+    loss (`torch.FloatTensor` of shape `(1,)`, *optional*):
+        Label smoothed cross entropy over the speech tokens, returned when `labels` is provided.
+    logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, speech_vocab_size + 1)`):
+        Speech token scores.
+    accuracy (`torch.FloatTensor` of shape `(1,)`, *optional*):
+        Fraction of correctly predicted speech tokens, returned when `labels` is provided.
     """
 
     loss: Optional[torch.FloatTensor] = None
@@ -1983,11 +2024,57 @@ class CosyVoiceV1Output(ModelOutput):
     accuracy: Optional[torch.FloatTensor] = None
 
 
+@auto_docstring
 class CosyVoiceV1PreTrainedModel(PreTrainedModel):
-    config_class = CosyVoiceV1Config
+    config: CosyVoiceV1Config
     base_model_prefix = "cosyvoice_v1"
     main_input_name = "input_ids"
     supports_gradient_checkpointing = False
+
+    @classmethod
+    def _released_checkpoint(cls, source, **kwargs) -> "tuple[CosyVoiceV1Config, dict[str, torch.Tensor]] | None":
+        r"""
+        Reads a released CosyVoice v1 directory.
+
+        Args:
+            source (`str` or `os.PathLike`, *optional*):
+                Repository id or local directory.
+            kwargs (`dict`, *optional*):
+                Fields of `weight_conversion.DOWNLOAD_KWARGS` selecting a revision and a cache.
+
+        Returns:
+            `tuple[CosyVoiceV1Config, dict[str, torch.Tensor]]` or `None`: The configuration and the
+            merged tensors, or `None` when `source` holds no released checkpoint.
+        """
+        directory = resolve_checkpoint(source, tuple(CHECKPOINT_FILES.values()), **kwargs)
+        if directory is None:
+            return None
+        return build_config(directory), load_checkpoint(directory)
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        r"""
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`, *optional*):
+                Repository id or local directory. The directories the CosyVoice authors published hold
+                one file per network rather than a single checkpoint, and are read as they are.
+            model_args:
+                Forwarded to [`~PreTrainedModel.from_pretrained`].
+            kwargs:
+                Forwarded to [`~PreTrainedModel.from_pretrained`].
+
+        Returns:
+            [`CosyVoiceV1PreTrainedModel`]: The loaded model.
+        """
+        try:
+            return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        except OSError:
+            released = cls._released_checkpoint(pretrained_model_name_or_path, **kwargs)
+            if released is None:
+                raise
+        config, state_dict = released
+        kwargs.setdefault("config", config)
+        return super().from_pretrained(None, *model_args, state_dict=state_dict, **kwargs)
 
     def _init_weights(self, module):
         std = self.config.initializer_range
@@ -2050,8 +2137,8 @@ def build_speech_token_labels(
     return nn.utils.rnn.pad_sequence(targets, batch_first=True, padding_value=IGNORE_ID).to(speech_token_ids.device)
 
 
-class CosyVoiceV1ForConditionalGeneration(CosyVoiceV1GenerationMixin, CosyVoiceV1PreTrainedModel):
-    """
+@auto_docstring(
+    custom_intro="""
     CosyVoice v1, made of an autoregressive text to speech token language model, a conditional flow
     matching model turning speech tokens into a mel spectrogram, and a HiFTNet vocoder.
 
@@ -2059,12 +2146,9 @@ class CosyVoiceV1ForConditionalGeneration(CosyVoiceV1GenerationMixin, CosyVoiceV
     objective only. [`CosyVoiceV1FlowModel.forward`] returns the flow matching objective and
     [`CosyVoiceV1HiFTGenerator.compute_loss`] returns the terms of the vocoder objective that need no
     discriminator.
-
-    Args:
-        config ([`CosyVoiceV1Config`]):
-            Model configuration.
     """
-
+)
+class CosyVoiceV1ForConditionalGeneration(CosyVoiceV1GenerationMixin, CosyVoiceV1PreTrainedModel):
     def __init__(self, config: CosyVoiceV1Config):
         super().__init__(config)
         self.llm = CosyVoiceV1SpeechTokenLM(config)
@@ -2075,6 +2159,7 @@ class CosyVoiceV1ForConditionalGeneration(CosyVoiceV1GenerationMixin, CosyVoiceV
         )
         self.post_init()
 
+    @auto_docstring
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -2084,24 +2169,20 @@ class CosyVoiceV1ForConditionalGeneration(CosyVoiceV1GenerationMixin, CosyVoiceV
         speaker_embedding: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
     ) -> CosyVoiceV1Output:
-        """
-        Args:
-            input_ids (`torch.Tensor` of shape `(batch_size, text_length)`):
-                Text token ids.
-            input_lengths (`torch.Tensor` of shape `(batch_size,)`):
-                Number of valid text tokens per sequence.
-            speech_token_ids (`torch.Tensor` of shape `(batch_size, speech_length)`):
-                Teacher forced speech tokens.
-            speech_token_lengths (`torch.Tensor` of shape `(batch_size,)`):
-                Number of valid speech tokens per sequence.
-            speaker_embedding (`torch.Tensor` of shape `(batch_size, speaker_embedding_dim)`):
-                Utterance level speaker embedding.
-            labels (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Speech token targets, padded with -1 on the positions that carry no target. They are
-                built by [`build_speech_token_labels`].
-
-        Returns:
-            [`CosyVoiceV1Output`]: the loss, the logits and the speech token accuracy.
+        r"""
+        input_ids (`torch.Tensor` of shape `(batch_size, text_length)`):
+            Text token ids.
+        input_lengths (`torch.Tensor` of shape `(batch_size,)`):
+            Number of valid text tokens per sequence.
+        speech_token_ids (`torch.Tensor` of shape `(batch_size, speech_length)`):
+            Teacher forced speech tokens.
+        speech_token_lengths (`torch.Tensor` of shape `(batch_size,)`):
+            Number of valid speech tokens per sequence.
+        speaker_embedding (`torch.Tensor` of shape `(batch_size, speaker_embedding_dim)`):
+            Utterance level speaker embedding.
+        labels (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Speech token targets, padded with -1 on the positions that carry no target. They are
+            built by [`build_speech_token_labels`].
         """
         text_hidden_states = self.llm.encode_text(input_ids, input_lengths)
         speaker_hidden_states = self.llm.encode_speaker(speaker_embedding)

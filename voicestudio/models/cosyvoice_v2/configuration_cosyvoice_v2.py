@@ -83,6 +83,9 @@ class CosyVoiceV2Config(CosyVoiceV1Config):
             "vocoder_upsample_kernel_sizes": [16, 11, 7],
             "vocoder_source_resblock_kernel_sizes": [7, 7, 11],
             "vocoder_source_resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+            "vocoder_mel_loss_n_fft": 1920,
+            "vocoder_mel_loss_hop_length": 480,
+            "vocoder_mel_loss_win_length": 1920,
         }
         for name, value in defaults.items():
             kwargs.setdefault(name, value)

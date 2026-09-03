@@ -7,6 +7,7 @@ from ..cosyvoice_v2.processing_cosyvoice_v2 import (
     CosyVoiceV2FeatureExtractor,
     CosyVoiceV2Processor,
 )
+from .weight_conversion import SPEECH_TOKENIZER_FILE
 
 
 # The tokens upstream's `CosyVoice3Tokenizer` adds to the Qwen2 tokenizer, in the order it adds
@@ -73,6 +74,9 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
         kwargs:
             Forwarded to [`CosyVoiceV2Processor`].
     """
+
+    feature_extractor_type = CosyVoiceV3FeatureExtractor
+    speech_tokenizer_file = SPEECH_TOKENIZER_FILE
 
     @staticmethod
     def add_special_tokens(tokenizer, tokens: Optional[list[str]] = None) -> int:

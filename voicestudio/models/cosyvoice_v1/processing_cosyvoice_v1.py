@@ -2,6 +2,7 @@
 
 import re
 import unicodedata
+from pathlib import Path
 from typing import Callable, Optional, Union
 
 import numpy as np
@@ -12,7 +13,16 @@ from librosa.filters import mel as librosa_mel
 
 from transformers.feature_extraction_sequence_utils import SequenceFeatureExtractor
 from transformers.feature_extraction_utils import BatchFeature
+from transformers.models.whisper.tokenization_whisper import WhisperTokenizer
 from transformers.processing_utils import ProcessorMixin
+
+from .weight_conversion import (
+    SPEAKER_ENCODER_FILE,
+    SPEAKER_INFO_FILE,
+    SPEECH_TOKENIZER_FILE,
+    TEXT_TOKENIZER_ID,
+    resolve_checkpoint,
+)
 
 
 CHINESE_CHARACTERS = re.compile(r"[\u4e00-\u9fff]+")
@@ -354,6 +364,8 @@ class CosyVoiceV1Processor(ProcessorMixin):
     speech_tokenizer_sampling_rate = 16000
     speaker_encoder_sampling_rate = 16000
     speaker_encoder_max_seconds = 10
+    feature_extractor_type = CosyVoiceV1FeatureExtractor
+    speech_tokenizer_file = SPEECH_TOKENIZER_FILE
 
     def __init__(
         self,
@@ -375,6 +387,73 @@ class CosyVoiceV1Processor(ProcessorMixin):
         self._speaker_encoder_session = None
         self._speaker_info = None
         self._inflect_parser = None
+
+    @classmethod
+    def _released_processor(cls, directory: "str | Path") -> "CosyVoiceV1Processor":
+        r"""
+        Builds the processor of a released CosyVoice v1 directory.
+
+        The directory carries the speech tokenizer, the speaker encoder and, on the SFT and Instruct
+        releases, the speaker table. Its text tokenizer is not part of it: upstream builds one with
+        `whisper.tokenizer.get_tokenizer`, whose vocabulary is the one [`TEXT_TOKENIZER_ID`] ships.
+
+        Args:
+            directory (`str` or `os.PathLike`):
+                Local directory of the released checkpoint.
+
+        Returns:
+            [`CosyVoiceV1Processor`]: The processor.
+        """
+        directory = Path(directory)
+        speaker_info = directory / SPEAKER_INFO_FILE
+        return cls(
+            feature_extractor=cls.feature_extractor_type(),
+            tokenizer=WhisperTokenizer.from_pretrained(TEXT_TOKENIZER_ID, language="en", task="transcribe"),
+            speech_token_model_path=str(directory / cls.speech_tokenizer_file),
+            speaker_encoder_model_path=str(directory / SPEAKER_ENCODER_FILE),
+            speaker_info_path=str(speaker_info) if speaker_info.is_file() else None,
+        )
+
+    @classmethod
+    def _resolve_released_checkpoint(cls, source, **kwargs) -> "Path | None":
+        r"""
+        Fetches the files a released CosyVoice v1 directory holds for the processor.
+
+        Args:
+            source (`str` or `os.PathLike`, *optional*):
+                Repository id or local directory.
+            kwargs (`dict`, *optional*):
+                Fields of `weight_conversion.DOWNLOAD_KWARGS` selecting a revision and a cache.
+
+        Returns:
+            `Path` or `None`: The local directory, or `None` when `source` holds no released
+            checkpoint.
+        """
+        return resolve_checkpoint(
+            source, (SPEAKER_ENCODER_FILE, cls.speech_tokenizer_file), (SPEAKER_INFO_FILE,), **kwargs
+        )
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+        r"""
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                Repository id or local directory. The directories the CosyVoice authors published
+                carry the speech tokenizer and the speaker encoder but no saved processor, and are
+                read as they are.
+            kwargs:
+                Forwarded to [`~ProcessorMixin.from_pretrained`].
+
+        Returns:
+            [`CosyVoiceV1Processor`]: The processor.
+        """
+        try:
+            return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
+        except OSError:
+            directory = cls._resolve_released_checkpoint(pretrained_model_name_or_path, **kwargs)
+            if directory is None:
+                raise
+        return cls._released_processor(directory)
 
     @property
     def inflect_parser(self):

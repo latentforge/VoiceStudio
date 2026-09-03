@@ -17,8 +17,8 @@ Original model and code: https://github.com/FunAudioLLM/CosyVoice
 ```python
 from voicestudio.models.cosyvoice_v1 import CosyVoiceV1ForConditionalGeneration, CosyVoiceV1Processor
 
-model = CosyVoiceV1ForConditionalGeneration.from_pretrained("cosyvoice-v1-converted")
-processor = CosyVoiceV1Processor.from_pretrained("cosyvoice-v1-converted")
+model = CosyVoiceV1ForConditionalGeneration.from_pretrained("FunAudioLLM/CosyVoice-300M-SFT")
+processor = CosyVoiceV1Processor.from_pretrained("FunAudioLLM/CosyVoice-300M-SFT")
 
 inputs = processor(text="The quick brown fox jumps over the lazy dog.")
 prompt = processor.get_speaker("英文女")
@@ -50,17 +50,15 @@ regresses onto, and `model.hift.compute_loss(mel, waveform, pitch_feat)` scores 
 it. See "Training".
 
 `CosyVoiceV1Tokenizer` is the text tokenizer of the `CosyVoice-300M-25Hz` release, built from that
-release's `multilingual_zh_ja_yue_char_del.tiktoken`. The three checkpoints
-`weight_conversion.py` converts do not use it; they use Whisper's vocabulary, which the converted
-directory carries as a `WhisperTokenizer`.
+release's `multilingual_zh_ja_yue_char_del.tiktoken`. The three released 50 Hz checkpoints do not
+use it; they use Whisper's vocabulary, which the processor carries as a `WhisperTokenizer`.
 
-Converting a released directory:
-
-```python
-from voicestudio.models.cosyvoice_v1.weight_conversion import convert
-
-convert("base", "cosyvoice-v1-converted")
-```
+The released directories hold one `.pt` file per network rather than a single checkpoint.
+`from_pretrained` reads that layout directly: it merges the three files under the name of the
+submodule each belongs to, and the `WeightRenaming` rules registered in `modeling_cosyvoice_v1.py`
+turn upstream's module names into this model's as the checkpoint loads. The processor takes the
+same repository id and picks up the speech tokenizer, the speaker encoder and, where the release
+ships one, the speaker table.
 
 ## Training
 
@@ -292,20 +290,21 @@ for token.
 8.12406063079834 on both. Gradients land only where they should: the language model loss reaches
 401 parameters, all under `llm`; the flow loss reaches 1185, all under `flow`.
 
-**Generated speech, transcribed back.** Two utterances were synthesized from the converted weights
-and transcribed with `facebook/wav2vec2-base-960h`. The prompt is the first of the seven speakers
-in the base model's own `spk2info.pt`, which carries a speech token sequence, a prompt mel and a
-speaker embedding, so no ONNX graph was involved. The language model saw only the speaker
-embedding, which is upstream's cross lingual conditioning.
+**Generated speech, transcribed back.** Two utterances were synthesized and transcribed with
+`facebook/wav2vec2-base-960h`. Model and processor were both built by
+`from_pretrained("FunAudioLLM/CosyVoice-300M-SFT")` with no conversion step before it, and the load
+report carried no missing, unexpected or mismatched key over 436,053,808 parameters. The prompt is
+the `英文女` entry of that release's `spk2info.pt`, which carries a speaker embedding, so no ONNX
+graph was involved.
 
 | Prompt text | Transcript |
 |---|---|
 | `The quick brown fox jumps over the lazy dog.` | `THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG` |
-| `She sells sea shells by the sea shore.` | `SHE SAILS SEA SHELLS BY THE SEA SHORE` |
+| `She sells sea shells by the sea shore.` | `SHE SELLS SEASHELLS BY THE SEASHORE` |
 
-The first is word for word. The second reads `sells` back as `SAILS`, a homophone the connectionist
-temporal classification decoder cannot separate, and is otherwise word for word. The two waveforms
-are 2.88 s at RMS 0.1206 and 2.11 s at RMS 0.0985.
+The first is word for word. The second is too, with the connectionist temporal classification
+decoder merging both compounds. The two waveforms are 2.97 s at RMS 0.1221 and 2.28 s at RMS
+0.0866.
 
 **Copy synthesis through the vocoder alone.** A transcription passes even when the vocoder is badly
 wrong, so the vocoder was measured directly. A 13.7 s recording was resampled to 22050 Hz, turned
@@ -337,9 +336,9 @@ where `CosyVoiceV1HiFTGenerator.mel_loss` returns 4.80676174, a difference of 4.
 of 4.8. The residual is `librosa.filters.mel` against `torchaudio.functional.melscale_fbanks` in
 float32; both are the Slaney scaled, Slaney normalized filter bank.
 
-**Round trip through the hub format.** `weight_conversion.convert` writes a directory that
-`from_pretrained` loads back to the same 436,053,808 parameters, `save_pretrained` followed by
-`from_pretrained` reproduces every parameter with a largest difference of 0.0 and leaves no meta
+**Round trip through the hub format.** `from_pretrained` on the released repository id loads
+436,053,808 parameters, and `save_pretrained` followed by `from_pretrained` reproduces every
+parameter with a largest difference of 0.0 and leaves no meta
 parameter or buffer behind. A model reloaded that way computes bit for bit what the model it was
 saved from computes: 0.0 on the text encoder, 0.0 on the language model logits and 0.0 on the
 vocoder waveform.
@@ -432,8 +431,8 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
   actually uses. Identical behaviour for v1; a subclass with a different mel width would diverge.
 - **The `CosyVoice-300M-25Hz` release.** Its text tokenizer is migrated,
   `tokenization_cosyvoice_v1.py`, but the release itself is not. `PUBLISHED_CHECKPOINTS` lists only
-  the three 50 Hz repositories, `weight_conversion.py` writes a `WhisperTokenizer` beside the
-  converted weights, and `CosyVoiceV1Config.text_vocab_size` defaults to 51866 rather than the
+  the three 50 Hz repositories, `CosyVoiceV1Processor` builds a `WhisperTokenizer` for them, and
+  `CosyVoiceV1Config.text_vocab_size` defaults to 51866 rather than the
   60515 the 25 Hz recipe sets. Whether to cover that release is the decision this leaves open. The
   two vocabularies are not interchangeable: it carries 58836 mergeable ranks where
   `openai/whisper-large-v3` carries 51866, 9292 of its tokens are absent from that vocabulary and
@@ -467,10 +466,10 @@ rewrote 199 of that file's 327 lines and only the language table survived intact
 | `cosyvoice/llm/llm.py` | `modeling_cosyvoice_v1.py`. `TransformerLM` became `CosyVoiceV1SpeechTokenLM` plus `CosyVoiceV1ForConditionalGeneration`. |
 | `cosyvoice/cli/model.py` | `generation_cosyvoice_v1.py`. `CosyVoiceModel.token2wav` and `CosyVoiceModel.tts` became `CosyVoiceV1GenerationMixin`. |
 | `cosyvoice/cli/frontend.py` | `processing_cosyvoice_v1.py`. |
-| `cosyvoice/cli/cosyvoice.py` | `weight_conversion.py`. Its `load` method became the conversion. |
+| `cosyvoice/cli/cosyvoice.py` | `weight_conversion.py`. Its `load` method became the reading of a released directory, which `from_pretrained` calls when the published layout is what it was given. |
 | `cosyvoice.yaml` | `configuration_cosyvoice_v1.py`. |
 | `cosyvoice/__init__.py` | `__init__.py`. |
-| `cosyvoice/tokenizer/tokenizer.py` | `tokenization_cosyvoice_v1.py`. `get_encoding` and `get_tokenizer` became `CosyVoiceV1Tokenizer` over `CosyVoiceV1TikTokenConverter`. `TO_LANGUAGE_CODE` went, because it only validated the `language` argument of Whisper's decoding API, which the text tokenizer never reaches, and `LANGUAGES` stays because the order of its keys fixes the id of every special token after it. `get_qwen_tokenizer`, `CosyVoice2Tokenizer` and `CosyVoice3Tokenizer` are `SPECIAL_TOKENS` and `CosyVoiceV3Processor.add_special_tokens` in `processing_cosyvoice_v3.py`, which v3's `weight_conversion.py` applies. |
+| `cosyvoice/tokenizer/tokenizer.py` | `tokenization_cosyvoice_v1.py`. `get_encoding` and `get_tokenizer` became `CosyVoiceV1Tokenizer` over `CosyVoiceV1TikTokenConverter`. `TO_LANGUAGE_CODE` went, because it only validated the `language` argument of Whisper's decoding API, which the text tokenizer never reaches, and `LANGUAGES` stays because the order of its keys fixes the id of every special token after it. `get_qwen_tokenizer`, `CosyVoice2Tokenizer` and `CosyVoice3Tokenizer` are `SPECIAL_TOKENS` and `CosyVoiceV3Processor.add_special_tokens` in `processing_cosyvoice_v3.py`. |
 
 ### Removed, with a counterpart in one of the three folders
 
@@ -506,7 +505,7 @@ rewrote 199 of that file's 327 lines and only the language table survived intact
 
 | Upstream path | Category |
 |---|---|
-| `runtime/`, 55 files | Serving stacks: a FastAPI server, a gRPC server and a Triton model repository backed by TensorRT-LLM, with their Dockerfiles, clients and conversion scripts. `runtime/triton_trtllm/token2wav*.py` are that stack's own token to waveform paths, which `generation_cosyvoice_v1.py`, `generation_cosyvoice_v2.py` and `generation_cosyvoice_v3.py` cover, and `scripts/convert_cosyvoice3_to_hf.py` merges the speech embedding into the Qwen2 table so `trtllm-build` can read it, which is not the layout `weight_conversion.py` produces. |
+| `runtime/`, 55 files | Serving stacks: a FastAPI server, a gRPC server and a Triton model repository backed by TensorRT-LLM, with their Dockerfiles, clients and conversion scripts. `runtime/triton_trtllm/token2wav*.py` are that stack's own token to waveform paths, which `generation_cosyvoice_v1.py`, `generation_cosyvoice_v2.py` and `generation_cosyvoice_v3.py` cover, and `scripts/convert_cosyvoice3_to_hf.py` merges the speech embedding into the Qwen2 table so `trtllm-build` can read it, which is not the layout this migration reads. |
 | `examples/`, 37 files | Training recipes: the LibriTTS and MagicData shell pipelines, DeepSpeed stage configurations, data preparation scripts, and the GRPO recipe under `examples/grpo/cosyvoice2/`, whose reward in `reward_tts.py` is an HTTP call to the Triton server above. `local/prepare_reject_sample.py` generates the rejected half of a preference batch by running `inference_zero_shot`, which `CosyVoiceV2ForConditionalGeneration.generate` covers. |
 | `tools/`, 3 files | Data preparation: `extract_embedding.py` and `extract_speech_token.py` run `campplus.onnx` and the speech tokenizer graph over a manifest, which `CosyVoiceV1Processor.encode_speaker` and `encode_speech_tokens` do per utterance, and `make_parquet_list.py` writes the parquet shards. |
 | `cosyvoice/vllm/cosyvoice2.py` | Serving: a vLLM plugin registering `CosyVoice2ForCausalLM`. |

@@ -5,6 +5,14 @@ from transformers import (
     AutoModelForTextToWaveform,
     AutoProcessor,
 )
+from transformers.utils.auto_docstring import HARDCODED_CONFIG_FOR_MODELS
+
+# `@auto_docstring` derives the model name from a decorated class's `.../models/<name>/` source
+# path and looks it up in `CONFIG_MAPPING_NAMES`/`HARDCODED_CONFIG_FOR_MODELS` at decoration time
+# (i.e. while `.modeling_cosyvoice_v2` below is being imported), neither of which knows about
+# voicestudio-only models; must run before that import or its "Config not found" fallback warning
+# already fired.
+HARDCODED_CONFIG_FOR_MODELS["cosyvoice-v2"] = "CosyVoiceV2Config"
 
 from .configuration_cosyvoice_v2 import CosyVoiceV2Config
 from .generation_cosyvoice_v2 import CosyVoiceV2GenerationMixin

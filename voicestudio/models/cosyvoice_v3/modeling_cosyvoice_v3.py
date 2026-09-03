@@ -26,9 +26,11 @@ import torch.nn.functional as F
 from torch import nn
 from torch.nn.utils.parametrizations import weight_norm
 
+from transformers.conversion_mapping import WeightRenaming, register_checkpoint_conversion_mapping
 from transformers.modeling_outputs import ModelOutput
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers.models.qwen2.modeling_qwen2 import Qwen2Model
+from transformers.utils import auto_docstring
 
 from ..cosyvoice_v1.modeling_cosyvoice_v1 import (
     IGNORE_ID,
@@ -43,6 +45,8 @@ from ..cosyvoice_v2.modeling_cosyvoice_v2 import (
     CosyVoiceV2PreTrainedModel,
     CosyVoiceV2SpeechTokenLM,
 )
+from ..cosyvoice_v1.weight_conversion import CHECKPOINT_FILES, load_checkpoint, resolve_checkpoint
+from ..cosyvoice_v2.weight_conversion import TEXT_MODEL_SUBDIR
 from ..f5_tts.modeling_f5_tts import (
     F5TTSAdaLayerNormFinal,
     F5TTSDecoderLayer,
@@ -51,6 +55,20 @@ from ..f5_tts.modeling_f5_tts import (
 )
 from .configuration_cosyvoice_v3 import CosyVoiceV3Config
 from .generation_cosyvoice_v3 import CosyVoiceV3GenerationMixin
+from .weight_conversion import build_config
+
+
+# v3 keeps `Qwen2Encoder` and the pre-parametrization spelling of weight norm, and drops the flow
+# matching encoder whose block names v1 and v2 have to rename.
+register_checkpoint_conversion_mapping(
+    "CosyVoiceV3ForConditionalGeneration",
+    [
+        WeightRenaming(source_patterns=r"^llm\.llm\.model\.model\.", target_patterns=r"llm\.model\."),
+        WeightRenaming(source_patterns=r"\.weight_g$", target_patterns=r"\.parametrizations\.weight\.original0"),
+        WeightRenaming(source_patterns=r"\.weight_v$", target_patterns=r"\.parametrizations\.weight\.original1"),
+    ],
+    overwrite=True,
+)
 
 
 def build_chunk_mask(padding_mask: torch.Tensor, chunk_size: int) -> torch.Tensor:
@@ -945,18 +963,20 @@ class CosyVoiceV3HiFTGenerator(CosyVoiceV1HiFTGenerator):
         return waveform, source
 
 
+@auto_docstring(
+    custom_intro="""
+    Output of [`CosyVoiceV3ForConditionalGeneration`].
+    """
+)
 @dataclass
 class CosyVoiceV3Output(ModelOutput):
-    """
-    Output of [`CosyVoiceV3ForConditionalGeneration`].
-
-    Args:
-        loss (`torch.FloatTensor` of shape `(1,)`, *optional*):
-            Label smoothed cross entropy over the speech tokens, returned when `labels` is provided.
-        logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, speech_head_size)`):
-            Speech token scores.
-        accuracy (`torch.FloatTensor` of shape `(1,)`, *optional*):
-            Fraction of correctly predicted speech tokens, returned when `labels` is provided.
+    r"""
+    loss (`torch.FloatTensor` of shape `(1,)`, *optional*):
+        Label smoothed cross entropy over the speech tokens, returned when `labels` is provided.
+    logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, speech_head_size)`):
+        Speech token scores.
+    accuracy (`torch.FloatTensor` of shape `(1,)`, *optional*):
+        Fraction of correctly predicted speech tokens, returned when `labels` is provided.
     """
 
     loss: Optional[torch.FloatTensor] = None
@@ -964,8 +984,9 @@ class CosyVoiceV3Output(ModelOutput):
     accuracy: Optional[torch.FloatTensor] = None
 
 
+@auto_docstring
 class CosyVoiceV3PreTrainedModel(CosyVoiceV2PreTrainedModel):
-    config_class = CosyVoiceV3Config
+    config: CosyVoiceV3Config
     base_model_prefix = "cosyvoice_v3"
     main_input_name = "input_ids"
     supports_gradient_checkpointing = False
@@ -974,6 +995,29 @@ class CosyVoiceV3PreTrainedModel(CosyVoiceV2PreTrainedModel):
         r"llm\.model\.lm_head\.",
         r"flow\.decoder\.estimator\.rotary_embed\.",
     ]
+
+    @classmethod
+    def _released_checkpoint(cls, source, **kwargs) -> "tuple[CosyVoiceV3Config, dict[str, torch.Tensor]] | None":
+        r"""
+        Reads a released CosyVoice v3 directory, whose Qwen2 sub directory is fetched alongside the
+        three network files because the configuration is built from it.
+
+        Args:
+            source (`str` or `os.PathLike`, *optional*):
+                Repository id or local directory.
+            kwargs (`dict`, *optional*):
+                Fields of `weight_conversion.DOWNLOAD_KWARGS` selecting a revision and a cache.
+
+        Returns:
+            `tuple[CosyVoiceV3Config, dict[str, torch.Tensor]]` or `None`: The configuration and the
+            merged tensors, or `None` when `source` holds no released checkpoint.
+        """
+        directory = resolve_checkpoint(
+            source, tuple(CHECKPOINT_FILES.values()), (f"{TEXT_MODEL_SUBDIR}/*",), **kwargs
+        )
+        if directory is None:
+            return None
+        return build_config(directory), load_checkpoint(directory)
 
     def _init_weights(self, module):
         # The rotary embedding computes its frequencies in its constructor and registers them as two
@@ -992,8 +1036,8 @@ class CosyVoiceV3PreTrainedModel(CosyVoiceV2PreTrainedModel):
             super()._init_weights(module)
 
 
-class CosyVoiceV3ForConditionalGeneration(CosyVoiceV3GenerationMixin, CosyVoiceV3PreTrainedModel):
-    """
+@auto_docstring(
+    custom_intro="""
     CosyVoice v3, made of a Qwen2 based text to speech token language model, a diffusion transformer
     flow matching model turning speech tokens into a mel spectrogram, and a causal HiFTNet vocoder.
 
@@ -1001,12 +1045,9 @@ class CosyVoiceV3ForConditionalGeneration(CosyVoiceV3GenerationMixin, CosyVoiceV
     objective only. [`CosyVoiceV3FlowModel.forward`] returns the flow matching objective and
     [`CosyVoiceV3HiFTGenerator.forward`] returns the waveform and the f0 contour the vocoder
     objective is computed from.
-
-    Args:
-        config ([`CosyVoiceV3Config`]):
-            Model configuration.
     """
-
+)
+class CosyVoiceV3ForConditionalGeneration(CosyVoiceV3GenerationMixin, CosyVoiceV3PreTrainedModel):
     def __init__(self, config: CosyVoiceV3Config):
         super().__init__(config)
         self.llm = CosyVoiceV3SpeechTokenLM(config)
@@ -1017,6 +1058,7 @@ class CosyVoiceV3ForConditionalGeneration(CosyVoiceV3GenerationMixin, CosyVoiceV
         )
         self.post_init()
 
+    @auto_docstring
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -1026,24 +1068,20 @@ class CosyVoiceV3ForConditionalGeneration(CosyVoiceV3GenerationMixin, CosyVoiceV
         labels: Optional[torch.Tensor] = None,
         bistream: bool = False,
     ) -> CosyVoiceV3Output:
-        """
-        Args:
-            input_ids (`torch.Tensor` of shape `(batch_size, text_length)`):
-                Text token ids.
-            input_lengths (`torch.Tensor` of shape `(batch_size,)`):
-                Number of valid text tokens per sequence.
-            speech_token_ids (`torch.Tensor` of shape `(batch_size, speech_length)`):
-                Teacher forced speech tokens.
-            speech_token_lengths (`torch.Tensor` of shape `(batch_size,)`):
-                Number of valid speech tokens per sequence.
-            labels (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Speech token targets padded with -1. When left out they are built alongside the
-                inputs, which is what upstream does.
-            bistream (`bool`, *optional*, defaults to `False`):
-                Whether the interleaved training layout is used.
-
-        Returns:
-            [`CosyVoiceV3Output`]: the loss, the logits and the speech token accuracy.
+        r"""
+        input_ids (`torch.Tensor` of shape `(batch_size, text_length)`):
+            Text token ids.
+        input_lengths (`torch.Tensor` of shape `(batch_size,)`):
+            Number of valid text tokens per sequence.
+        speech_token_ids (`torch.Tensor` of shape `(batch_size, speech_length)`):
+            Teacher forced speech tokens.
+        speech_token_lengths (`torch.Tensor` of shape `(batch_size,)`):
+            Number of valid speech tokens per sequence.
+        labels (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Speech token targets padded with -1. When left out they are built alongside the
+            inputs, which is what upstream does.
+        bistream (`bool`, *optional*, defaults to `False`):
+            Whether the interleaved training layout is used.
         """
         inputs_embeds, lengths, built_labels = self.llm.build_inputs(
             input_ids, input_lengths, speech_token_ids, speech_token_lengths, bistream=bistream

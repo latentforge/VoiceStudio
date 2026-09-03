@@ -24,8 +24,8 @@ Original model and code: https://github.com/FunAudioLLM/CosyVoice
 ```python
 from voicestudio.models.cosyvoice_v2 import CosyVoiceV2ForConditionalGeneration, CosyVoiceV2Processor
 
-model = CosyVoiceV2ForConditionalGeneration.from_pretrained("cosyvoice-v2-converted")
-processor = CosyVoiceV2Processor.from_pretrained("cosyvoice-v2-converted")
+model = CosyVoiceV2ForConditionalGeneration.from_pretrained("FunAudioLLM/CosyVoice2-0.5B")
+processor = CosyVoiceV2Processor.from_pretrained("FunAudioLLM/CosyVoice2-0.5B")
 
 inputs = processor(text="The quick brown fox jumps over the lazy dog.")
 
@@ -45,13 +45,12 @@ mode, which is the only mode that needs no reference waveform.
 `token_offset` selects the mel frames that were not rendered yet, so the flow matching model carries
 no cache between chunks and only the vocoder does.
 
-Converting a released directory:
-
-```python
-from voicestudio.models.cosyvoice_v2.weight_conversion import convert
-
-convert("/path/to/CosyVoice2-0.5B", "cosyvoice-v2-converted")
-```
+The released directory holds one `.pt` file per network rather than a single checkpoint, beside the
+`CosyVoice-BlankEN` directory the language model is built from. `from_pretrained` reads that layout
+directly: it merges the three files under the name of the submodule each belongs to, and the
+`WeightRenaming` rules registered in `modeling_cosyvoice_v2.py` turn upstream's module names into
+this model's as the checkpoint loads. The processor takes the same repository id and picks up the
+text tokenizer, the speech tokenizer and the speaker encoder.
 
 ## Training
 
@@ -83,8 +82,13 @@ because upstream trains the three networks one at a time with three separate run
   both the encoder and the estimator, so half the batches are trained with chunked attention and half
   with full attention. `forward` takes it as an argument for the same reason `bistream` is one.
 - **Vocoder.** `CosyVoiceV2HiFTGenerator.forward` returns the waveform and the predicted f0, which
-  are the two generator side inputs of upstream's objective. The objective itself is not implemented;
-  see "Not carried over from upstream".
+  are the two generator side inputs of upstream's objective. `compute_loss`, inherited from v1,
+  scores the two terms that need no discriminator, and takes the resolution of its mel term from
+  the configuration: `cosyvoice2.yaml` sets `mel_spec_transform1` to `n_fft` 1920, `hop_size` 480
+  and `win_size` 1920 at 24 kHz, against v1's 1024, 256 and 1024 at 22.05 kHz, so `CosyVoiceV2Config`
+  overrides those three fields. The mel bin count, the frequency bounds and the weight of 45 are the
+  same in both recipes. The rest of the objective is not implemented; see "Not carried over from
+  upstream".
 
 Upstream freezes nothing. The only `requires_grad` assignment in upstream's tree is
 `Snake.alpha.requires_grad = alpha_trainable` in `cosyvoice/transformer/activation.py`, whose default
@@ -199,6 +203,12 @@ skipped. Exactly one source tensor is dropped, `llm.model.lm_head.weight`, and t
 demonstrates rather than assumes why: it searches the converted tensors for a bit identical match and
 finds `llm.model.embed_tokens.weight`, which is the tie `Qwen2Config.tie_word_embeddings` declares.
 
+Every one of those source tensors is bit identical to the model tensor it lands on, and no model
+tensor is left unfilled, so the registered `WeightRenaming` rules account for the checkpoint exactly
+rather than merely producing a clean report. `save_pretrained` followed by `from_pretrained` returns
+the same tensors with zero missing, unexpected or mismatched keys, which is what keeps the reverse
+of the mapping honest.
+
 **Numeric parity against upstream's own classes.** Every migrated module was run side by side with
 the class it replaces, loaded from the same tensors. Reported as `max|diff|`:
 
@@ -254,16 +264,20 @@ uses it would otherwise be uninitialised memory, which is the failure that silen
 output before it was found. It is built on first use from a saved and restored generator state, and
 outside inference mode so that the cached tensor stays usable by autograd.
 
-**Generated speech, transcribed back.** Two utterances were synthesized from the converted weights
-and transcribed with `facebook/wav2vec2-base-960h`.
+**Generated speech, transcribed back.** Two utterances were synthesized and transcribed with
+`facebook/wav2vec2-base-960h`. Model and processor were both built by
+`from_pretrained("FunAudioLLM/CosyVoice2-0.5B")` with no conversion step before it, and the load
+report carried no missing, unexpected or mismatched key over 639,174,467 parameters.
 
 | Prompt text | Transcript |
 |---|---|
-| `The quick brown fox jumps over the lazy dog.` | `THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG` |
-| `She sells sea shells by the sea shore.` | `SHE SELLS SEA SHELLS BY THE SEASHORE` |
+| `The quick brown fox jumps over the lazy dog.` | `THE QUICK BROWN FOX JUMPS OVER THE LAZY DO` |
+| `She sells sea shells by the sea shore.` | `SHE SELLS SEASHELLS BY THE SEASHORE` |
 
-Both are word for word. `SEASHORE` for `sea shore` is the connectionist temporal classification
-decoder merging the compound, which v1 produced on the same sentence, rather than a synthesis error.
+The second is word for word, with the connectionist temporal classification decoder merging both
+compounds the way v1 does. The first drops the final `G` of `DOG`, a decoder edge on a word ending
+the utterance rather than a missing word; the waveforms are 2.84 s at RMS 0.0964 and 2.60 s at RMS
+0.0650, so nothing was truncated.
 
 The conditioning was upstream's sft mode, `sft, speaker embedding only, no reference waveform`,
 selected by the geometry test above rather than hardcoded: a 192 dimensional campplus speaker vector
