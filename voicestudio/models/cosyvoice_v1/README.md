@@ -451,9 +451,14 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
 
 One counterpart per upstream file, per CLAUDE.md section 2.4. The renames are recorded in
 `7e93ecff` and the removals in `86a9fa18` and in the commit that emptied the last of the nested
-tree, so `git log --follow` walks back into the original authors' commits and `git show` recovers
-any file named below. Nothing of upstream's directory layout is left: the folder holds a `README`,
-an `__init__.py`, five `<kind>_cosyvoice_v1.py` files and `weight_conversion.py`.
+tree, and `git show` recovers any file named below. Nothing of upstream's directory layout is left:
+the folder holds a `README`, an `__init__.py`, five `<kind>_cosyvoice_v1.py` files and
+`weight_conversion.py`.
+
+`tokenization_cosyvoice_v1.py` is the one file whose history needs a lowered threshold. Git records
+it as a rename of `cosyvoice/tokenizer/tokenizer.py` at 22% similarity, because the migration
+rewrote 199 of that file's 327 lines and only the language table survived intact, so
+`git log --follow` finds it at `-M20%` and not at the default 50%.
 
 ### Transformed into this folder
 
