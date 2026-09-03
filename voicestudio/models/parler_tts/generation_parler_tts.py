@@ -124,7 +124,7 @@ class ParlerTTSStreamer(BaseStreamer):
         if stride is not None:
             self.stride = stride
         else:
-            hop_length = math.floor(self.audio_encoder.config.sampling_rate / self.audio_encoder.config.frame_rate)
+            hop_length = math.prod(self.audio_encoder.config.upsampling_ratios)
             self.stride = hop_length * (play_steps - self.decoder.num_codebooks) // 6
         self.token_cache = None
         self.to_yield = 0
