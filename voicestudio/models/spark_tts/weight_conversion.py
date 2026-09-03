@@ -1,5 +1,6 @@
 """Checkpoint conversion for Spark-TTS."""
 
+import json
 import os
 import re
 import shutil
@@ -9,9 +10,10 @@ import torch
 import yaml
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import HFValidationError, RepositoryNotFoundError
-from safetensors.torch import load_file, save_file
+from safetensors.torch import load_file
 from transformers import AutoTokenizer, Qwen2Config, Wav2Vec2Model
 
+from ...utils.checkpoint_cache import CheckpointWriter, cached_conversion, file_identity
 from ..spark_tts_bicodec.configuration_spark_tts_bicodec import SparkTTSBiCodecConfig
 from .configuration_spark_tts import SparkTTSConfig
 from .feature_extraction_spark_tts import SparkTTSFeatureExtractor
@@ -71,6 +73,9 @@ _TOKENIZER_FILES = (
 # nothing here reads.
 _PUBLISHED_PATTERNS = ("config.yaml", "BiCodec/*", "LLM/*", "wav2vec2-large-xlsr-53/*")
 
+# Directory of `convert`'s output that BiCodec is written to, which is what `SparkTTSProcessor` reads it back from.
+AUDIO_TOKENIZER_SUBFOLDER = "audio_tokenizer"
+
 _PUBLISHED_FILES = (
     "config.yaml",
     "BiCodec/config.yaml",
@@ -79,10 +84,6 @@ _PUBLISHED_FILES = (
     "LLM/model.safetensors",
     "wav2vec2-large-xlsr-53/config.json",
 )
-
-# Written by the `SparkTTSProcessor.save_pretrained` that closes `convert`, so a directory holding it is one whose
-# conversion ran to completion rather than one an interrupted run left half written.
-_CONVERSION_COMPLETE = "processor_config.json"
 
 
 def _rename_bicodec_key(key: str) -> str:
@@ -228,7 +229,7 @@ def convert(checkpoint_path, output_dir):
     if not source.is_dir():
         source = Path(snapshot_download(checkpoint_path, allow_patterns=list(_PUBLISHED_PATTERNS)))
     target = Path(output_dir)
-    audio_tokenizer_target = target / "audio_tokenizer"
+    audio_tokenizer_target = target / AUDIO_TOKENIZER_SUBFOLDER
     audio_tokenizer_target.mkdir(parents=True, exist_ok=True)
 
     repo_config = yaml.safe_load((source / "config.yaml").read_text())
@@ -252,7 +253,8 @@ def convert(checkpoint_path, output_dir):
 
     from ..spark_tts_bicodec.modeling_spark_tts_bicodec import SparkTTSBiCodecModel
 
-    expected = dict(SparkTTSBiCodecModel(audio_tokenizer_config).state_dict())
+    with torch.device("meta"):
+        expected = dict(SparkTTSBiCodecModel(audio_tokenizer_config).state_dict())
     if set(converted) != set(expected):
         raise ValueError(
             f"Converted BiCodec weights do not match SparkTTSBiCodecModel: "
@@ -263,11 +265,9 @@ def convert(checkpoint_path, output_dir):
         raise ValueError(f"Converted BiCodec weights have the wrong shape: {mismatched}.")
 
     audio_tokenizer_config.save_pretrained(audio_tokenizer_target)
-    save_file(
-        {key: value.contiguous() for key, value in converted.items()},
-        audio_tokenizer_target / "model.safetensors",
-        metadata={"format": "pt"},
-    )
+    with CheckpointWriter(audio_tokenizer_target) as writer:
+        for key in list(converted):
+            writer.add(key, converted.pop(key))
 
     text_config = Qwen2Config.from_pretrained(source / "LLM").to_dict()
     for key in ("model_type", "architectures", "transformers_version"):
@@ -307,13 +307,38 @@ def convert(checkpoint_path, output_dir):
     return str(target)
 
 
+def retarget_audio_tokenizer(directory) -> None:
+    """
+    Point a converted directory's processor at the copy of BiCodec that sits beside it.
+
+    `ProcessorMixin.save_pretrained` records the audio tokenizer as the path it was loaded from rather than as a
+    location inside the directory being written, so a converted directory that ends up somewhere other than where
+    it was written records a path that is not there.
+
+    Args:
+        directory (`str` or `os.PathLike`):
+            A directory [`convert`] wrote.
+    """
+    config_file = Path(directory) / "processor_config.json"
+    processor_config = json.loads(config_file.read_text())
+    audio_tokenizer = processor_config.get("audio_tokenizer", {})
+    target = str(Path(directory) / AUDIO_TOKENIZER_SUBFOLDER)
+    if audio_tokenizer.get("audio_tokenizer_name_or_path") == target:
+        return
+
+    audio_tokenizer["audio_tokenizer_name_or_path"] = target
+    written = config_file.with_name(f"{config_file.name}.{os.getpid()}")
+    written.write_text(json.dumps(processor_config, indent=2, sort_keys=True) + "\n")
+    os.replace(written, config_file)
+
+
 def convert_published_checkpoint(pretrained_model_name_or_path, **kwargs):
     """
     Convert `pretrained_model_name_or_path` if it is a published Spark-TTS checkpoint, reusing an earlier conversion
     of the same checkpoint when one is already there.
 
-    The converted checkpoint is written beside the downloaded snapshot, inside the Hugging Face cache, so it is found
-    again on the next call and removed with the snapshot it came from.
+    The conversion is cached on the checkpoint's resolved revision and written into place with a single rename, so
+    a second process reading the cache never sees a half written directory.
 
     Args:
         pretrained_model_name_or_path (`str` or `os.PathLike`):
@@ -343,10 +368,9 @@ def convert_published_checkpoint(pretrained_model_name_or_path, **kwargs):
     if not all((source / name).is_file() for name in _PUBLISHED_FILES):
         return None
 
-    target = source.with_name(f"{source.name}_converted")
-    if not (target / _CONVERSION_COMPLETE).is_file():
-        convert(source, target)
+    target = cached_conversion("spark_tts", [file_identity(source)], lambda staging: convert(source, staging))
+    retarget_audio_tokenizer(target)
     return str(target)
 
 
-__all__ = ["convert", "convert_published_checkpoint"]
+__all__ = ["AUDIO_TOKENIZER_SUBFOLDER", "convert", "convert_published_checkpoint", "retarget_audio_tokenizer"]
