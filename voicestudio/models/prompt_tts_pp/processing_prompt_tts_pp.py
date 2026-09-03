@@ -102,6 +102,33 @@ class PromptTTSPPProcessor(ProcessorMixin):
     def __init__(self, feature_extractor=None, tokenizer=None, prompt_tokenizer=None, chat_template=None):
         super().__init__(feature_extractor, tokenizer, prompt_tokenizer, chat_template=chat_template)
 
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+        r"""
+        Loads a PromptTTS++ processor, from the Space that publishes the model as it stands or from a directory
+        [`weight_conversion.convert`] wrote. The Space ships the mel spectrogram statistics of the training set
+        beside the weights, which is what the feature extractor normalizes against.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                `"line-corporation/promptttspp"`, which is the Space the only public weights are bundled in, or
+                a directory holding either layout.
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~ProcessorMixin.from_pretrained`]. `phonemize` decides whether the
+                phoneme tokenizer runs grapheme to phoneme conversion, which needs the `g2p_en` backend.
+
+        Returns:
+            [`PromptTTSPPProcessor`]: The processor.
+        """
+        from .configuration_prompt_tts_pp import PromptTTSPPConfig
+        from .weight_conversion import build_processor, is_published_layout
+
+        if pretrained_model_name_or_path is not None and is_published_layout(
+            pretrained_model_name_or_path, PromptTTSPPConfig.model_type
+        ):
+            return build_processor(pretrained_model_name_or_path, phonemize=kwargs.pop("phonemize", True))
+        return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
+
     def __call__(
         self,
         text=None,

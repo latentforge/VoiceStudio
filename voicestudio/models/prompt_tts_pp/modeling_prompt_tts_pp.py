@@ -1893,6 +1893,38 @@ class PromptTTSPPForConditionalGeneration(PromptTTSPPPreTrainedModel):
 
         self.post_init()
 
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        r"""
+        Loads the PromptTTS++ acoustic model, from the Space that publishes it as it stands or from a directory
+        [`~weight_conversion.convert`] wrote.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                `"line-corporation/promptttspp"`, which is the Space the only public weights are bundled in, or
+                a directory holding either layout.
+            model_args (`tuple`, *optional*):
+                Positional arguments of [`~PreTrainedModel.from_pretrained`].
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~PreTrainedModel.from_pretrained`]. `rel_pos_type` names the relative
+                positional encoding variant of a published checkpoint.
+
+        Returns:
+            [`PromptTTSPPForConditionalGeneration`]: The loaded model.
+        """
+        from .weight_conversion import build_model_files, is_published_layout
+
+        if (
+            pretrained_model_name_or_path is not None
+            and kwargs.get("config") is None
+            and kwargs.get("state_dict") is None
+            and is_published_layout(pretrained_model_name_or_path, PromptTTSPPConfig.model_type)
+        ):
+            rel_pos_type = kwargs.pop("rel_pos_type", "legacy")
+            config, state_dict = build_model_files(pretrained_model_name_or_path, rel_pos_type=rel_pos_type)
+            return super().from_pretrained(None, *model_args, config=config, state_dict=state_dict, **kwargs)
+        return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+
     def get_input_embeddings(self):
         return self.model.phoneme_embedding
 
@@ -1955,11 +1987,10 @@ class PromptTTSPPForConditionalGeneration(PromptTTSPPPreTrainedModel):
         ```python
         >>> import torch
         >>> from voicestudio.models.prompt_tts_pp import PromptTTSPPForConditionalGeneration, PromptTTSPPProcessor
-        >>> from voicestudio.models.prompt_tts_pp.weight_conversion import convert
 
-        >>> convert(output_dir="prompt-tts-pp-converted")
-        >>> processor = PromptTTSPPProcessor.from_pretrained("prompt-tts-pp-converted")
-        >>> model = PromptTTSPPForConditionalGeneration.from_pretrained("prompt-tts-pp-converted")
+        >>> model_id = "line-corporation/promptttspp"
+        >>> processor = PromptTTSPPProcessor.from_pretrained(model_id)
+        >>> model = PromptTTSPPForConditionalGeneration.from_pretrained(model_id)
 
         >>> inputs = processor(
         ...     text="This is a text to speech demo.",
@@ -2207,6 +2238,41 @@ class PromptTTSPPBigVGan(BigVGANModel):
                 self.noise_convs.append(nn.Conv1d(1, channels, 1))
 
         self.post_init()
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        r"""
+        Loads the f0 aware PromptTTS++ vocoder, from the Space that publishes it as it stands or from the
+        `vocoder` subdirectory [`~weight_conversion.convert`] wrote.
+
+        `BigVGANModel.from_pretrained` reads NVIDIA's own published layout, which this vocoder is not published
+        in, so it is skipped rather than inherited.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                `"line-corporation/promptttspp"`, which is the Space the only public weights are bundled in, or
+                a directory holding either layout.
+            model_args (`tuple`, *optional*):
+                Positional arguments of [`~PreTrainedModel.from_pretrained`].
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~PreTrainedModel.from_pretrained`].
+
+        Returns:
+            [`PromptTTSPPBigVGan`]: The loaded vocoder.
+        """
+        from .weight_conversion import build_vocoder_files, is_published_layout
+
+        if (
+            pretrained_model_name_or_path is not None
+            and kwargs.get("config") is None
+            and kwargs.get("state_dict") is None
+            and is_published_layout(pretrained_model_name_or_path, PromptTTSPPBigVGanConfig.model_type)
+        ):
+            config, state_dict = build_vocoder_files(pretrained_model_name_or_path)
+            return super(BigVGANModel, cls).from_pretrained(
+                None, *model_args, config=config, state_dict=state_dict, **kwargs
+            )
+        return super(BigVGANModel, cls).from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
 
     def build_upsample_layer(
         self, in_channels: int, out_channels: int, kernel_size: int, rate: int

@@ -1,5 +1,6 @@
 """Checkpoint conversion for PromptTTS++."""
 
+import json
 import pickle
 import re
 import types
@@ -10,6 +11,8 @@ import yaml
 from huggingface_hub import hf_hub_download
 from safetensors.torch import save_file
 from transformers.models.auto.tokenization_auto import AutoTokenizer
+from transformers.utils import CONFIG_NAME
+from transformers.utils.hub import cached_file
 
 from .configuration_prompt_tts_pp import PromptTTSPPBigVGanConfig, PromptTTSPPConfig
 from .feature_extraction_prompt_tts_pp import PromptTTSPPFeatureExtractor
@@ -17,7 +20,8 @@ from .processing_prompt_tts_pp import PromptTTSPPProcessor
 from .tokenization_prompt_tts_pp import PromptTTSPPTokenizer
 
 
-# The Space that ships the only public PromptTTS++ weights, and the three files of it the conversion reads.
+# The Space that ships the only public PromptTTS++ weights, and the three files of it the loaders read. No model
+# repository holds them, so the Space is the repository id `from_pretrained` takes.
 DEFAULT_REPO_ID = "line-corporation/promptttspp"
 DEFAULT_MODEL_FILE = "pretrained_model/checkpoint/proposed/last.ckpt"
 DEFAULT_VOCODER_FILE = "pretrained_model/checkpoint/bigvgan_f0_full/last.ckpt"
@@ -101,6 +105,54 @@ def load_upstream_checkpoint(path: str, key: str) -> dict[str, torch.Tensor]:
     pickle_module.load = lambda file, **kwargs: _Unpickler(file, **kwargs).load()
     checkpoint = torch.load(path, map_location="cpu", pickle_module=pickle_module, weights_only=False)
     return checkpoint[key]
+
+
+def is_published_layout(source, model_type: str) -> bool:
+    r"""
+    Returns whether `source` is the published Space rather than a directory [`convert`] wrote.
+
+    The Space holds the upstream trainer's own `.ckpt` files under `pretrained_model/checkpoint/` and no
+    `config.json` anywhere, so the discriminator is a `config.json` declaring the caller's own `model_type`.
+    `PreTrainedConfig.from_pretrained` draws no such distinction of its own: `cached_file` returns `None` for
+    the missing file and the configuration silently falls back to its defaults.
+
+    Args:
+        source (`str` or `os.PathLike`):
+            [`DEFAULT_REPO_ID`], or a repository id or local directory.
+        model_type (`str`):
+            `model_type` of the configuration the caller loads, which a converted directory declares.
+
+    Returns:
+        `bool`: Whether `source` holds the published layout.
+    """
+    if str(source) == DEFAULT_REPO_ID:
+        return True
+    config_file = cached_file(
+        source,
+        CONFIG_NAME,
+        _raise_exceptions_for_missing_entries=False,
+        _raise_exceptions_for_connection_errors=False,
+    )
+    if config_file is None:
+        return True
+    return json.loads(Path(config_file).read_text()).get("model_type") != model_type
+
+
+def resolve_file(source, filename: str) -> str:
+    r"""
+    Args:
+        source (`str` or `os.PathLike`):
+            Repository id of the Space, or a local directory holding a copy of its tree.
+        filename (`str`):
+            Path of the file inside the Space or the directory.
+
+    Returns:
+        `str`: Local path of the file, downloading it from the Space if `source` is a repository id.
+    """
+    path = Path(source) / filename
+    if path.is_file():
+        return str(path)
+    return hf_hub_download(str(source), filename, repo_type="space")
 
 
 def build_config(rel_pos_type: str = "legacy") -> PromptTTSPPConfig:
@@ -214,74 +266,127 @@ def convert_vocoder_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str,
     return converted
 
 
+def build_model_files(
+    source=DEFAULT_REPO_ID, rel_pos_type: str = "legacy", dtype: torch.dtype = torch.float32
+) -> tuple[PromptTTSPPConfig, dict[str, torch.Tensor]]:
+    r"""
+    Reads the released acoustic model out of the Space and returns what
+    [`PromptTTSPPForConditionalGeneration`] needs to load it.
+
+    Args:
+        source (`str` or `os.PathLike`, *optional*, defaults to [`DEFAULT_REPO_ID`]):
+            Repository id of the Space, or a local directory holding a copy of its tree.
+        rel_pos_type (`str`, *optional*, defaults to `"legacy"`):
+            Relative positional encoding variant of the checkpoint, see [`build_config`].
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+
+    Returns:
+        `tuple[PromptTTSPPConfig, dict[str, torch.Tensor]]`: The configuration and the renamed tensors.
+    """
+    config = build_config(rel_pos_type=rel_pos_type)
+    converted = convert_state_dict(load_upstream_checkpoint(resolve_file(source, DEFAULT_MODEL_FILE), "model"))
+    return config, {key: value.to(dtype).contiguous() for key, value in converted.items()}
+
+
+def build_vocoder_files(
+    source=DEFAULT_REPO_ID, dtype: torch.dtype = torch.float32
+) -> tuple[PromptTTSPPBigVGanConfig, dict[str, torch.Tensor]]:
+    r"""
+    Reads the released f0 aware vocoder out of the Space and returns what [`PromptTTSPPBigVGan`] needs to load
+    it.
+
+    Args:
+        source (`str` or `os.PathLike`, *optional*, defaults to [`DEFAULT_REPO_ID`]):
+            Repository id of the Space, or a local directory holding a copy of its tree.
+        dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+            Dtype the converted weights are cast to.
+
+    Returns:
+        `tuple[PromptTTSPPBigVGanConfig, dict[str, torch.Tensor]]`: The configuration and the renamed tensors.
+    """
+    config = build_vocoder_config()
+    converted = convert_vocoder_state_dict(
+        load_upstream_checkpoint(resolve_file(source, DEFAULT_VOCODER_FILE), "generator")
+    )
+    return config, {key: value.to(dtype).contiguous() for key, value in converted.items()}
+
+
+def build_processor(source=DEFAULT_REPO_ID, phonemize: bool = True) -> PromptTTSPPProcessor:
+    r"""
+    Builds the [`PromptTTSPPProcessor`] of the released checkpoint, over the mel spectrogram statistics of the
+    training set the Space ships beside the weights.
+
+    Args:
+        source (`str` or `os.PathLike`, *optional*, defaults to [`DEFAULT_REPO_ID`]):
+            Repository id of the Space, or a local directory holding a copy of its tree.
+        phonemize (`bool`, *optional*, defaults to `True`):
+            Whether the phoneme tokenizer runs grapheme to phoneme conversion, which needs the `g2p_en` backend.
+            Pass `False` to hand it a whitespace separated phoneme sequence instead.
+
+    Returns:
+        [`PromptTTSPPProcessor`]: The processor.
+    """
+    stats = yaml.safe_load(Path(resolve_file(source, DEFAULT_STATS_FILE)).read_text())
+    return PromptTTSPPProcessor(
+        feature_extractor=PromptTTSPPFeatureExtractor(mel_mean=stats["mean"], mel_std=stats["std"]),
+        tokenizer=PromptTTSPPTokenizer(phonemize=phonemize),
+        prompt_tokenizer=AutoTokenizer.from_pretrained(PROMPT_ENCODER_ID),
+    )
+
+
 def convert(
-    checkpoint_path: str | None = None,
+    source=DEFAULT_REPO_ID,
     output_dir: str = "prompt_tts_pp",
-    vocoder_checkpoint_path: str | None = None,
-    stats_path: str | None = None,
     rel_pos_type: str = "legacy",
     dtype: torch.dtype = torch.float32,
 ) -> None:
     r"""
-    Converts the released PromptTTS++ checkpoints into a directory
-    [`PromptTTSPPForConditionalGeneration.from_pretrained`] and [`PromptTTSPPProcessor.from_pretrained`] can
-    load, with the vocoder written to its own `vocoder` subdirectory.
+    Writes the released PromptTTS++ checkpoints into a directory of its own, with the vocoder in its `vocoder`
+    subdirectory, which [`PromptTTSPPForConditionalGeneration.from_pretrained`],
+    [`PromptTTSPPBigVGan.from_pretrained`] and [`PromptTTSPPProcessor.from_pretrained`] read without reaching
+    the Space again, for a checkpoint that is loaded many times or shipped elsewhere.
 
     Args:
-        checkpoint_path (`str`, *optional*):
-            Path of the acoustic model's `last.ckpt`. Defaults to the one bundled in the
-            `line-corporation/promptttspp` Space.
+        source (`str` or `os.PathLike`, *optional*, defaults to [`DEFAULT_REPO_ID`]):
+            Repository id of the Space, or a local directory holding a copy of its tree.
         output_dir (`str`, *optional*, defaults to `"prompt_tts_pp"`):
             Directory the converted config, weights, tokenizers and processor files are written to.
-        vocoder_checkpoint_path (`str`, *optional*):
-            Path of the vocoder's `last.ckpt`. Defaults to the one bundled in the same Space.
-        stats_path (`str`, *optional*):
-            Path of the `stats.yaml` holding the mel spectrogram statistics of the training set. Defaults to the
-            one bundled in the same Space.
         rel_pos_type (`str`, *optional*, defaults to `"legacy"`):
             Relative positional encoding variant of the checkpoint, see [`build_config`].
         dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
             Dtype the converted weights are cast to.
     """
-    if checkpoint_path is None:
-        checkpoint_path = hf_hub_download(DEFAULT_REPO_ID, DEFAULT_MODEL_FILE, repo_type="space")
-    if vocoder_checkpoint_path is None:
-        vocoder_checkpoint_path = hf_hub_download(DEFAULT_REPO_ID, DEFAULT_VOCODER_FILE, repo_type="space")
-    if stats_path is None:
-        stats_path = hf_hub_download(DEFAULT_REPO_ID, DEFAULT_STATS_FILE, repo_type="space")
-
     output_path = Path(output_dir)
     vocoder_path = output_path / "vocoder"
     output_path.mkdir(parents=True, exist_ok=True)
     vocoder_path.mkdir(parents=True, exist_ok=True)
 
-    stats = yaml.safe_load(Path(stats_path).read_text())
-
-    config = build_config(rel_pos_type=rel_pos_type)
-    converted = convert_state_dict(load_upstream_checkpoint(checkpoint_path, "model"))
-    converted = {key: value.to(dtype).contiguous() for key, value in converted.items()}
+    config, converted = build_model_files(source, rel_pos_type=rel_pos_type, dtype=dtype)
     config.save_pretrained(output_path)
     save_file(converted, str(output_path / "model.safetensors"), metadata={"format": "pt"})
 
-    vocoder_config = build_vocoder_config()
-    vocoder_converted = convert_vocoder_state_dict(load_upstream_checkpoint(vocoder_checkpoint_path, "generator"))
-    vocoder_converted = {key: value.to(dtype).contiguous() for key, value in vocoder_converted.items()}
+    vocoder_config, vocoder_converted = build_vocoder_files(source, dtype=dtype)
     vocoder_config.save_pretrained(vocoder_path)
     save_file(vocoder_converted, str(vocoder_path / "model.safetensors"), metadata={"format": "pt"})
 
-    processor = PromptTTSPPProcessor(
-        feature_extractor=PromptTTSPPFeatureExtractor(mel_mean=stats["mean"], mel_std=stats["std"]),
-        tokenizer=PromptTTSPPTokenizer(),
-        prompt_tokenizer=AutoTokenizer.from_pretrained(PROMPT_ENCODER_ID),
-    )
-    processor.save_pretrained(output_path)
+    build_processor(source).save_pretrained(output_path)
 
 
 __all__ = [
+    "DEFAULT_MODEL_FILE",
+    "DEFAULT_REPO_ID",
+    "DEFAULT_STATS_FILE",
+    "DEFAULT_VOCODER_FILE",
     "build_config",
+    "build_model_files",
+    "build_processor",
     "build_vocoder_config",
+    "build_vocoder_files",
     "convert",
     "convert_state_dict",
     "convert_vocoder_state_dict",
+    "is_published_layout",
     "load_upstream_checkpoint",
+    "resolve_file",
 ]
