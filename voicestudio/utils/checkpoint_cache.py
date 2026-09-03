@@ -1,0 +1,257 @@
+"""Cached streaming conversion of published checkpoints."""
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import tempfile
+from collections.abc import Callable, Iterable, Mapping
+from pathlib import Path
+
+import torch
+from huggingface_hub.constants import HF_HOME
+from safetensors.torch import save_file
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
+
+
+# Directory under `HF_HOME` the converted checkpoints are written to, beside the `hub` cache the sources
+# they were converted from live in.
+CACHE_DIR_NAME = "converted"
+
+# Part of every cache key, so that an earlier conversion's output is not served to code that writes
+# something else. Raise it whenever a conversion changes what it writes.
+CACHE_VERSION = 1
+
+# Bytes a shard holds before the writer starts another one, which is what bounds how much of a converted
+# checkpoint is resident at a time.
+MAX_SHARD_SIZE = 2 * 1024**3
+
+# Layout `huggingface_hub` gives a downloaded file, whose two components pin the repository and the commit
+# the file was read from.
+_SNAPSHOT = re.compile(r"(?:^|/)(?P<repo>(?:models|datasets|spaces)--[^/]+)/snapshots/(?P<revision>[^/]+)(?:/|$)")
+
+
+def cache_root() -> Path:
+    r"""
+    Returns:
+        `Path`: Directory the converted checkpoints of every model are cached under.
+    """
+    return Path(HF_HOME) / CACHE_DIR_NAME
+
+
+def file_identity(path) -> str:
+    r"""
+    Names the exact revision of a file or directory a conversion reads, so that a cache key built from it
+    changes when what it names does.
+
+    A download is named by the repository and the commit its snapshot directory carries, which is what a moved
+    tag or branch changes and a repository id on its own does not. A local path is named by itself, by the size
+    and modification time of the file, or of every file under the directory.
+
+    Args:
+        path (`str` or `os.PathLike`):
+            Local path, as `huggingface_hub` resolved it or as the caller holds it.
+
+    Returns:
+        `str`: The path's identity.
+    """
+    match = _SNAPSHOT.search(Path(path).as_posix())
+    if match is not None:
+        return f"{match['repo']}@{match['revision']}"
+
+    real = Path(os.path.realpath(path))
+    if real.is_file():
+        status = real.stat()
+        return f"{real.as_posix()}:{status.st_size}:{status.st_mtime_ns}"
+
+    digest = hashlib.sha256()
+    for entry in sorted(real.rglob("*")):
+        if entry.is_file():
+            status = entry.stat()
+            digest.update(f"{entry.relative_to(real).as_posix()}:{status.st_size}:{status.st_mtime_ns}\0".encode())
+    return f"{real.as_posix()}:{digest.hexdigest()[:32]}"
+
+
+def source_identity(source, resolved) -> str:
+    r"""
+    Names the revision of the checkpoint a loader was handed.
+
+    Args:
+        source (`str` or `os.PathLike`):
+            Repository id or local directory the checkpoint was asked for by.
+        resolved (`str` or `os.PathLike`):
+            Local path of a file already read out of `source`, whose snapshot names the commit the whole
+            repository resolved to and so covers every other file of it.
+
+    Returns:
+        `str`: The checkpoint's identity.
+    """
+    return file_identity(source if Path(source).is_dir() else resolved)
+
+
+def cache_key(parts: Iterable) -> str:
+    r"""
+    Args:
+        parts (`Iterable`):
+            Everything the conversion's output depends on, as [`file_identity`] strings for the files it reads
+            and as plain values for the options it takes.
+
+    Returns:
+        `str`: Hexadecimal digest naming the directory the conversion is cached in.
+    """
+    digest = hashlib.sha256()
+    for part in (CACHE_VERSION, *parts):
+        digest.update(str(part).encode())
+        digest.update(b"\0")
+    return digest.hexdigest()[:32]
+
+
+def cached_conversion(name: str, parts: Iterable, write: Callable[[Path], None]) -> Path:
+    r"""
+    Returns a directory holding the converted checkpoint `parts` names, running `write` to produce it the first
+    time it is asked for.
+
+    The conversion is written to a temporary directory beside the cached one and moved into place with a single
+    rename, so a second process reading the cache sees either nothing or a directory whose conversion ran to
+    completion, and two processes converting the same checkpoint at once leave one result rather than a mixture.
+
+    Args:
+        name (`str`):
+            Model the checkpoint belongs to, which is the directory the cache groups it under.
+        parts (`Iterable`):
+            Cache key of the conversion, see [`cache_key`].
+        write (`Callable[[Path], None]`):
+            Writes the converted checkpoint into the directory it is handed.
+
+    Returns:
+        `Path`: The directory holding the converted checkpoint.
+    """
+    directory = cache_root() / name / cache_key(parts)
+    if directory.is_dir():
+        return directory
+
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f"{directory.name}.", dir=directory.parent))
+    try:
+        write(staging)
+        try:
+            os.replace(staging, directory)
+        except OSError:
+            if not directory.is_dir():
+                raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return directory
+
+
+class CheckpointWriter:
+    r"""
+    Writes a converted checkpoint to disk a shard at a time, for a conversion that reads its source the same
+    way and so never holds the whole model.
+
+    Shards are named once the last one is written, since the name `transformers` reads carries the total.
+
+    Args:
+        directory (`str` or `os.PathLike`):
+            Directory the shards and, when there is more than one, their index are written to.
+        max_shard_size (`int`, *optional*, defaults to `MAX_SHARD_SIZE`):
+            Bytes a shard holds before the next tensor starts another one.
+    """
+
+    def __init__(self, directory, max_shard_size: int = MAX_SHARD_SIZE):
+        self.directory = Path(directory)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.max_shard_size = max_shard_size
+        self._buffer: dict[str, torch.Tensor] = {}
+        self._buffered_size = 0
+        self._shards: list[list[str]] = []
+        self._total_size = 0
+
+    def __enter__(self) -> "CheckpointWriter":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if exc_type is None:
+            self.close()
+
+    def add(self, key: str, tensor: torch.Tensor) -> None:
+        r"""
+        Buffers one tensor, writing the buffer out first if this one would take it past a shard.
+
+        Args:
+            key (`str`):
+                Name the tensor is stored under.
+            tensor (`torch.Tensor`):
+                The tensor. A view of a larger storage is copied, since safetensors stores whole buffers.
+        """
+        tensor = tensor.detach().contiguous()
+        if tensor.numel() * tensor.element_size() != tensor.untyped_storage().nbytes():
+            tensor = tensor.clone()
+
+        size = tensor.numel() * tensor.element_size()
+        if self._buffer and self._buffered_size + size > self.max_shard_size:
+            self.flush()
+        self._buffer[key] = tensor
+        self._buffered_size += size
+
+    def update(self, tensors: Mapping[str, torch.Tensor]) -> None:
+        r"""
+        Args:
+            tensors (`Mapping[str, torch.Tensor]`):
+                Tensors to buffer, in the order they are to be written.
+        """
+        for key, tensor in tensors.items():
+            self.add(key, tensor)
+
+    def flush(self) -> None:
+        """Writes the buffered tensors out as a shard of their own, and drops the buffer holding them."""
+        if not self._buffer:
+            return
+        save_file(self._buffer, str(self.directory / self._staged_name(len(self._shards))), metadata={"format": "pt"})
+        self._shards.append(sorted(self._buffer))
+        self._total_size += self._buffered_size
+        self._buffer = {}
+        self._buffered_size = 0
+
+    def close(self) -> None:
+        r"""
+        Writes what is left buffered, gives the shards the names `transformers` reads and, for more than one,
+        writes their index.
+
+        Raises:
+            ValueError: If the conversion wrote no tensor at all.
+        """
+        self.flush()
+        if not self._shards:
+            raise ValueError(f"The conversion wrote no tensors to {self.directory}.")
+
+        if len(self._shards) == 1:
+            (self.directory / self._staged_name(0)).rename(self.directory / SAFE_WEIGHTS_NAME)
+            return
+
+        weight_map = {}
+        for index, keys in enumerate(self._shards):
+            name = f"model-{index + 1:05d}-of-{len(self._shards):05d}.safetensors"
+            (self.directory / self._staged_name(index)).rename(self.directory / name)
+            weight_map.update(dict.fromkeys(keys, name))
+        (self.directory / SAFE_WEIGHTS_INDEX_NAME).write_text(
+            json.dumps({"metadata": {"total_size": self._total_size}, "weight_map": weight_map}, indent=2)
+        )
+
+    @staticmethod
+    def _staged_name(index: int) -> str:
+        return f"shard-{index:05d}.safetensors"
+
+
+__all__ = [
+    "CACHE_DIR_NAME",
+    "CACHE_VERSION",
+    "MAX_SHARD_SIZE",
+    "CheckpointWriter",
+    "cache_key",
+    "cache_root",
+    "cached_conversion",
+    "file_identity",
+    "source_identity",
+]
