@@ -288,14 +288,22 @@ conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` to
 
 Four items left open:
 
-- **CosyVoice's vocoder objective and its `CosyVoice-300M-25Hz` text tokenizer.**
-  `cosyvoice/hifigan/hifigan.py`, `discriminator.py`, `utils/losses.py` and the `compute_f0` half
-  of `dataset/processor.py` are the four files the unimplemented vocoder objective lives in, and
-  they were kept rather than moved, because moving them means implementing them. Separately,
-  `tokenizer/tokenizer.py` plus its tiktoken asset is a second text tokenizer that upstream's v1
-  recipe selects for the 25 Hz release: 58836 mergeable ranks against `openai/whisper-large-v3`'s
-  51866, 9292 tokens absent and 48003 at a different rank, plus specials whisper lacks. That
-  release is not in `PUBLISHED_CHECKPOINTS` and the processor has no counterpart for it.
+- **CosyVoice's vocoder is not trainable.** `forward(labels=...)` covers the language model and the
+  flow matching decoder, but not the HiFiGAN vocoder that turns mel into a waveform. Its objective is
+  a GAN: `cosyvoice/hifigan/hifigan.py` holds the generator loss, `discriminator.py` the multi period
+  and multi resolution discriminators, `utils/losses.py` the terms, and `compute_f0` in
+  `dataset/processor.py` builds the `pitch_feat` target the f0 term reads. Those four files are kept
+  in the folder rather than moved, because moving them under `git mv` means implementing them. This
+  is the same shape as the Vocos gap: the discriminators are training-only modules that appear in no
+  published checkpoint, so inference and fine tuning of everything else are unaffected, and only
+  training the vocoder from scratch needs them.
+- **The `CosyVoice-300M-25Hz` release uses a different text tokenizer.** `cosyvoice/tokenizer/`
+  holds a tiktoken tokenizer that upstream's v1 recipe selects for that release instead of whisper's,
+  confirmed in the recipe yaml at `01c21f07`. It is not interchangeable: 58836 mergeable ranks
+  against `openai/whisper-large-v3`'s 51866, with 9292 tokens absent and 48003 at a different rank,
+  plus audio-event, emotion and TTS-vocal specials whisper lacks. The release is not in
+  `PUBLISHED_CHECKPOINTS` and the processor has no counterpart for it, so the open question is
+  whether that release is in scope at all, not how to migrate it.
 - **A possible CosyVoice v2 special-token gap.** Upstream `CosyVoice2Tokenizer.__init__` adds 19
   special tokens. `cosyvoice_v3/weight_conversion.py` calls
   `CosyVoiceV3Processor.add_special_tokens`, while `cosyvoice_v2/weight_conversion.py` passes a
