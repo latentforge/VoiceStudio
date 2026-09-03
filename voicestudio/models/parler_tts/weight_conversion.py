@@ -17,6 +17,10 @@ from transformers.models.dac.convert_dac_checkpoint import apply_weight_norm, re
 # `encoder.block.<i>.res_unit<j>` names with the weight norm already folded in.
 _DAC_PREFIX = "audio_encoder.model."
 
+# Subfolder the converted DAC codec is additionally saved to, standalone, for `ParlerTTSProcessor`
+# to load with a plain `DacModel.from_pretrained`.
+_AUDIO_TOKENIZER_SUBFOLDER = "audio_encoder"
+
 _COPIED_FILES = (
     "generation_config.json",
     "preprocessor_config.json",
@@ -108,6 +112,8 @@ def convert(checkpoint_path, output_dir):
     for name in _COPIED_FILES:
         if (source / name).is_file():
             shutil.copy(source / name, target / name)
+
+    dac_model.save_pretrained(target / _AUDIO_TOKENIZER_SUBFOLDER)
 
     return str(target)
 

@@ -2712,16 +2712,20 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
 
         Examples:
         ```python
-        >>> from transformers import AutoProcessor, ParlerTTSForConditionalGeneration
         >>> import torch
+        >>> from voicestudio.models.parler_tts import ParlerTTSForConditionalGeneration, ParlerTTSProcessor
+        >>> from voicestudio.models.parler_tts.weight_conversion import convert
 
-        >>> processor = AutoProcessor.from_pretrained("parler-tts/parler-tts-mini-v1")
-        >>> model = ParlerTTSForConditionalGeneration.from_pretrained("parler-tts/parler-tts-mini-v1")
+        >>> model_id = convert("parler-tts/parler-tts-mini-v1", "parler-tts-mini-v1-converted")
+        >>> processor = ParlerTTSProcessor.from_pretrained(model_id)
+        >>> model = ParlerTTSForConditionalGeneration.from_pretrained(model_id)
 
         >>> inputs = processor(
-        ...     text=["80s pop track with bassy drums and synth", "90s rock song with loud guitars and heavy drums"],
-        ...     padding=True,
-        ...     return_tensors="pt",
+        ...     description=[
+        ...         "A calm, clear female voice with a close recording and almost no background noise.",
+        ...         "A calm, clear female voice with a close recording and almost no background noise.",
+        ...     ],
+        ...     transcript=["Hey, how are you doing today?", "The weather is nice this afternoon."],
         ... )
 
         >>> pad_token_id = model.generation_config.pad_token_id
@@ -2731,8 +2735,8 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
         ... )
 
         >>> logits = model(**inputs, decoder_input_ids=decoder_input_ids).logits
-        >>> logits.shape  # (bsz * num_codebooks, tgt_len, vocab_size)
-        torch.Size([8, 1, 2048])
+        >>> logits.shape  # (bsz * num_codebooks, prompt_len + tgt_len, vocab_size)
+        torch.Size([18, 10, 1088])
         ```"""
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 

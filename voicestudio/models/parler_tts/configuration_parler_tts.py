@@ -14,6 +14,8 @@
 # limitations under the License.
 """ Parler-TTS model configuration"""
 
+from typing import ClassVar
+
 from transformers import AutoConfig, logging
 from transformers.configuration_utils import PretrainedConfig
 
@@ -261,6 +263,11 @@ class ParlerTTSConfig(PretrainedConfig):
 
     model_type = "parler_tts"
     is_composition = True
+    sub_configs: ClassVar[dict[str, type[PretrainedConfig]]] = {
+        "text_encoder": AutoConfig,
+        "audio_encoder": AutoConfig,
+        "decoder": ParlerTTSDecoderConfig,
+    }
 
     has_no_defaults_at_init = True  # set flag to skip default instance creation
                                     # See: https://github.com/huggingface/transformers/blob/main/src/transformers/configuration_utils.py#L842
