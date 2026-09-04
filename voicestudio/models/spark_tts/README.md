@@ -66,8 +66,31 @@ waveform = processor.decode(generated, input_length=inputs["input_ids"].shape[-1
 ```
 
 `pitch` and `speed` take `very_low`, `low`, `moderate`, `high` or `very_high`; `gender` takes `female` or `male`.
-Passing `prompt_text`, the transcript of the reference clip, additionally seeds the prompt with the clip's own
-semantic tokens so that generation continues it.
+
+Passing `prompt_text`, the transcript of the reference clip, turns voice cloning into prompt continuation: the
+transcript goes in front of the text to speak inside `<|start_content|>`, the clip's own semantic tokens are appended
+after `<|start_global_token|>`, and the model continues the clip instead of starting from silence.
+
+```python
+inputs = processor(
+    text="Actions speak louder than words.",
+    reference_audio=reference,
+    sampling_rate=sampling_rate,
+    prompt_text="Mr. Quilter is the apostle of the middle classes, and we are glad to welcome his gospel. ",
+).to(model.device)
+```
+
+End `prompt_text` with a separator, as above. The two texts are concatenated verbatim, which is what upstream's
+`cli/SparkTTS.py` does, so a transcript ending in `gospel.` and a text starting with `Actions` meet inside one BPE
+token, `.Actions`. The model never saw that: SparkVox's `egs/speech_synthesis/spark-tts/scripts/prepare_train.py`
+puts a single utterance's transcript between the content markers and never concatenates a reference transcript, so
+the sentence-boundary tokens fused this way are out of distribution. Measured on
+`librispeech_1272-128104-0000.wav` with that transcript, `"Actions speak louder than words."` is 0 of 8 seeds
+verbatim under `openai/whisper-large-v3-turbo` with the two joined directly, five seeds dropping the leading word and
+three collapsing into a filler syllable, one of them running 3000 tokens into the `max_new_tokens` ceiling. The same
+sentence with one space added to the end of `prompt_text` is 8 of 8. How badly it fails depends on which fused token
+comes out: `.The` is common enough that the same clip and the same reference transcript give 7 of 8 verbatim with no
+separator at all.
 
 BiCodec is usable on its own through [`SparkTTSBiCodecModel`](../spark_tts_bicodec), which is what
 `processor.audio_tokenizer` holds:

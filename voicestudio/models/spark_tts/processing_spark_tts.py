@@ -261,8 +261,11 @@ class SparkTTSProcessor(ProcessorMixin):
                 Clip whose voice is cloned. Mutually exclusive with `gender`/`pitch`/`speed`, unless `output_labels`
                 is set, in which case the attribute layout needs it as the clip the target codes come from.
             prompt_text (`str`, *optional*):
-                Transcript of `reference_audio`. When given, the reference clip's own semantic tokens are appended to
-                the prompt so that generation continues it rather than starting from silence.
+                Transcript of `reference_audio`. When given, it is concatenated in front of `text` with no separator
+                and the reference clip's own semantic tokens are appended to the prompt, so that generation continues
+                the clip rather than starting from silence. Since the join is verbatim, a `prompt_text` that does not
+                end in whitespace merges its last character with the first word of `text` into a single token, which
+                the model was never trained on and frequently fails to speak.
             gender (`str`, *optional*):
                 One of `"female"` or `"male"`.
             pitch (`str`, *optional*):
