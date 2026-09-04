@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 import torch
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 from safetensors.torch import load_file
 from transformers.utils import CONFIG_NAME
 from transformers.utils.hub import cached_file
@@ -247,6 +247,48 @@ def resolve_file(source: str, filename: str) -> str:
     return hf_hub_download(source, filename)
 
 
+def resolve_repository(source: str, checkpoint_name: str) -> str:
+    r"""
+    Args:
+        source (`str`):
+            Key of [`PUBLISHED_CHECKPOINTS`], key of [`DEFAULT_CHECKPOINTS`], or a repository id or local
+            directory holding the published tree.
+        checkpoint_name (`str`):
+            Key of [`PUBLISHED_CHECKPOINTS`] the checkpoint is published under.
+
+    Returns:
+        `str`: Repository id or local directory the checkpoint's weights are read out of, which is the one
+        [`PUBLISHED_CHECKPOINTS`] names when `source` names a checkpoint rather than a place to read it from.
+    """
+    if source in PUBLISHED_CHECKPOINTS or source in DEFAULT_CHECKPOINTS:
+        return PUBLISHED_CHECKPOINTS[checkpoint_name]["repo_id"]
+    return source
+
+
+def resolve_revision(source: str, filename: str) -> str:
+    r"""
+    Names the revision `filename` would be read out of, without reading it.
+
+    A repository is named by its snapshot directory, which carries the commit `source` resolved to and so covers
+    every file of it. Fetching that directory under a pattern nothing matches downloads nothing at all, which is
+    what keeps a load that the conversion cache already answers from touching the published weights.
+
+    Args:
+        source (`str`):
+            Repository id, or local directory holding `filename`.
+        filename (`str`):
+            Path of the file inside the repository or directory.
+
+    Returns:
+        `str`: Local path naming the revision, the file itself for a local directory and the repository's
+        snapshot directory otherwise.
+    """
+    path = Path(source) / filename
+    if path.is_file():
+        return str(path)
+    return snapshot_download(source, allow_patterns=[])
+
+
 def read_text_vocab_size(vocab_file: str) -> int:
     r"""
     Args:
@@ -401,10 +443,9 @@ def resolve_sources(source: str, subfolder: str | None = None, vocab_file: str |
     """
     checkpoint_name = resolve_checkpoint(source, subfolder)
     checkpoint = PUBLISHED_CHECKPOINTS[checkpoint_name]
-    repo_id = checkpoint["repo_id"] if source in PUBLISHED_CHECKPOINTS or source in DEFAULT_CHECKPOINTS else source
     return (
         checkpoint_name,
-        resolve_file(repo_id, checkpoint["weights_file"]),
+        resolve_file(resolve_repository(source, checkpoint_name), checkpoint["weights_file"]),
         vocab_file or resolve_file(checkpoint["vocab_repo_id"], checkpoint["vocab_file"]),
     )
 
@@ -499,14 +540,16 @@ def converted_checkpoint(
     Returns:
         `Path`: The directory holding the converted checkpoint.
     """
-    checkpoint_name, checkpoint_path, vocab_file = resolve_sources(source, subfolder, vocab_file)
-    mel_spec_type = PUBLISHED_CHECKPOINTS[checkpoint_name]["mel_spec_type"]
+    checkpoint_name = resolve_checkpoint(source, subfolder)
+    checkpoint = PUBLISHED_CHECKPOINTS[checkpoint_name]
+    vocab_file = vocab_file or resolve_file(checkpoint["vocab_repo_id"], checkpoint["vocab_file"])
+    mel_spec_type = checkpoint["mel_spec_type"]
     vocoder_source = vocoder or VOCODER_SOURCES[mel_spec_type][0]
     vocoder_config_file = resolve_file(vocoder_source, _VOCODER_CONFIG_FILES[mel_spec_type])
     parts = [
         checkpoint_name,
         str(dtype),
-        file_identity(checkpoint_path),
+        file_identity(resolve_revision(resolve_repository(source, checkpoint_name), checkpoint["weights_file"])),
         file_identity(vocab_file),
         source_identity(vocoder_source, vocoder_config_file),
     ]
@@ -605,6 +648,8 @@ __all__ = [
     "resolve_architecture",
     "resolve_checkpoint",
     "resolve_file",
+    "resolve_repository",
+    "resolve_revision",
     "resolve_sources",
     "write_checkpoint",
 ]

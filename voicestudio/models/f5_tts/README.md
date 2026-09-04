@@ -54,7 +54,10 @@ model = F5TTSForConditionalGeneration.from_pretrained(model_id, subfolder=subfol
 ```
 
 A first load converts the published layout into a directory under `HF_HOME`, keyed on the repository and the commit it
-resolved to, and later loads read that directory through the ordinary loading path instead of converting again.
+resolved to, and later loads read that directory through the ordinary loading path instead of converting again. Once
+the conversion is written, the weight files it read are dropped from the `huggingface_hub` cache, which covers the
+whole revision of each repository it named and so takes the other four checkpoints `SWivid/F5-TTS` publishes with it.
+The vocabulary file and the vocoder's configuration stay, and a cache hit resolves nothing beyond those two.
 
 `weight_conversion.convert` writes a checkpoint, its processor and its vocoder into a directory of the caller's
 choosing, which both classes also load and which reaches the hub for nothing:
