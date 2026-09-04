@@ -288,7 +288,16 @@ bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts
 conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
 `Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
 
-One item left open:
+Two items left open:
+
+- **Spark-TTS prompt continuation collapses on one sentence.** "Actions speak louder than words."
+  through the continuation layout is 0 of 8 seeds verbatim under `whisper-large-v3-turbo`: five drop
+  the leading word, and three collapse outright into a filler syllable, one of them running 60
+  seconds of audio into the `max_new_tokens` ceiling. The same sentence is verbatim in both the
+  voice cloning and attribute creation layouts, and the other two sentences are verbatim in all
+  three, so this is a property of that layout rather than of loading or of the conversion cache.
+  `f0370b00` recorded it as a single draw at WER 0.200, which understates it.
+
 
 - **Qwen3-TTS audio tokenizer reports `encoder.upsample.conv.weight` MISSING.** The key is real but
   the weight is not: `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`'s `speech_tokenizer/model.safetensors`
@@ -443,6 +452,21 @@ directly, which is what their READMEs document, and a dispatcher that second-gue
 `AutoConfig` adds a code path that runs only when transformers has already given up. Models whose
 published repository does carry a `transformers` config, which is most of them, work through the
 Auto classes as usual.
+
+## A calibration that is a single draw is not a calibration
+
+Three of the models here sample at generation time, so a recorded transcript from one seed is a
+point in a spread rather than a property to reproduce. PromptTTS++ was recorded at WER 0.222 and
+0.286; re-run over eight seeds it scatters from 0.000 to 0.667 under wav2vec2 while
+`whisper-large-v3-turbo` hears fifteen of sixteen clips correctly, so the model is healthy and the
+two recorded numbers were never reproducible as stated.
+
+The transcriber matters as much as the seed. wav2vec2 heard VoxInstruct's 1.6 second clip as
+`FIRE A HOLE PLATOON MAJOR`, which reads as a failure until `whisper-large-v3-turbo` returns the
+same clip verbatim, and the folder README had already recorded the wav2vec2 string. A number without
+its transcriber named is not a result.
+
+Where a model samples, record a seed sweep and name the transcriber, not one draw.
 
 ## Decided: GAN discriminators stay unimplemented
 
