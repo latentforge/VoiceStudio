@@ -30,6 +30,8 @@ processor.audio_tokenizer.to(model.device)
 The published repo is three independently saved models in three subfolders plus two YAML files, none of which
 `from_pretrained` can read on its own, so a first load converts it into a directory under `HF_HOME`, keyed on the
 repository and the commit it resolved to. Later loads of the same checkpoint find that conversion and reuse it.
+Once it is written, the three models it read are dropped from the `huggingface_hub` cache; the four configuration
+files that name the revision stay, and a later load resolves those and nothing else.
 `weight_conversion.convert` is the same conversion under a name that takes an explicit output directory.
 
 Passing `reference_audio` clones the voice of that clip by prefixing its global tokens to the prompt:

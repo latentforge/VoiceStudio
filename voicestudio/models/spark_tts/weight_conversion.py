@@ -68,20 +68,20 @@ _TOKENIZER_FILES = (
     "vocab.json",
 )
 
-# The files `convert` reads, and the ones whose presence together identify a repository as a published Spark-TTS
-# checkpoint rather than a converted one. The published repo also carries figures and logos under `src/`, which
-# nothing here reads.
+# The files `convert` reads. The published repo also carries figures and logos under `src/`, which nothing here
+# reads.
 _PUBLISHED_PATTERNS = ("config.yaml", "BiCodec/*", "LLM/*", "wav2vec2-large-xlsr-53/*")
 
 # Directory of `convert`'s output that BiCodec is written to, which is what `SparkTTSProcessor` reads it back from.
 AUDIO_TOKENIZER_SUBFOLDER = "audio_tokenizer"
 
+# The configuration files of the published layout, whose presence together is what tells it apart from a directory
+# `convert` wrote and whose snapshot names the revision the conversion is keyed on. They are the whole of what a
+# load has to resolve before the cache answers it, so none of them is large.
 _PUBLISHED_FILES = (
     "config.yaml",
     "BiCodec/config.yaml",
-    "BiCodec/model.safetensors",
     "LLM/config.json",
-    "LLM/model.safetensors",
     "wav2vec2-large-xlsr-53/config.json",
 )
 
@@ -338,7 +338,9 @@ def convert_published_checkpoint(pretrained_model_name_or_path, **kwargs):
     of the same checkpoint when one is already there.
 
     The conversion is cached on the checkpoint's resolved revision and written into place with a single rename, so
-    a second process reading the cache never sees a half written directory.
+    a second process reading the cache never sees a half written directory. Only the configuration files of
+    [`_PUBLISHED_FILES`] are fetched to name that revision, and the three models are fetched inside the conversion,
+    so a checkpoint the cache already holds is never downloaded again.
 
     Args:
         pretrained_model_name_or_path (`str` or `os.PathLike`):
@@ -352,23 +354,26 @@ def convert_published_checkpoint(pretrained_model_name_or_path, **kwargs):
         repository nor in the published Spark-TTS layout, in which case its caller's own load error is the one
         worth reporting.
     """
-    if os.path.isdir(pretrained_model_name_or_path):
-        source = Path(pretrained_model_name_or_path)
-    else:
-        download_kwargs = {key: value for key, value in kwargs.items() if key in ("revision", "token", "cache_dir")}
-        try:
-            source = Path(
-                snapshot_download(
-                    pretrained_model_name_or_path, allow_patterns=list(_PUBLISHED_PATTERNS), **download_kwargs
-                )
-            )
-        except (HFValidationError, RepositoryNotFoundError):
-            return None
+    download_kwargs = {key: value for key, value in kwargs.items() if key in ("revision", "token", "cache_dir")}
+
+    def resolve(patterns):
+        if os.path.isdir(pretrained_model_name_or_path):
+            return Path(pretrained_model_name_or_path)
+        return Path(
+            snapshot_download(pretrained_model_name_or_path, allow_patterns=list(patterns), **download_kwargs)
+        )
+
+    try:
+        source = resolve(_PUBLISHED_FILES)
+    except (HFValidationError, RepositoryNotFoundError):
+        return None
 
     if not all((source / name).is_file() for name in _PUBLISHED_FILES):
         return None
 
-    target = cached_conversion("spark_tts", [file_identity(source)], lambda staging: convert(source, staging))
+    target = cached_conversion(
+        "spark_tts", [file_identity(source)], lambda staging: convert(resolve(_PUBLISHED_PATTERNS), staging)
+    )
     retarget_audio_tokenizer(target)
     return str(target)
 
