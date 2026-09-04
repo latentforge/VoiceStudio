@@ -255,7 +255,8 @@ def write_checkpoint(
     r"""
     Reads a published Parler-TTS checkpoint and writes what [`ParlerTTSForConditionalGeneration.from_pretrained`]
     reads into `directory`, with the codec rewritten into [`DacModel`]'s weight layout under the same
-    `audio_encoder` prefix.
+    `audio_encoder` prefix. The codec is also saved standalone under `directory`'s `audio_encoder` subfolder, for
+    [`ParlerTTSProcessor`] to read with an ordinary [`DacModel.from_pretrained`].
 
     The text encoder and the decoder are copied over a tensor at a time and written out in shards, so a
     checkpoint too large to hold twice is never held once.
@@ -275,12 +276,14 @@ def write_checkpoint(
     if config is None:
         config = read_config(source, subfolder=subfolder, **kwargs)
 
+    target = Path(directory)
     weight_files = resolve_weight_files(source, subfolder=subfolder, **kwargs)
     with CheckpointWriter(directory) as writer:
         dac_model = build_dac_model(config.audio_encoder, read_dac_state_dict(weight_files))
         writer.update({_AUDIO_ENCODER_PREFIX + key: value for key, value in dac_model.state_dict().items()})
         # The codec is written out and dropped before the rest is read, so the two are never resident together.
         writer.flush()
+        dac_model.save_pretrained(target / AUDIO_TOKENIZER_SUBFOLDER)
         del dac_model
 
         for path in weight_files:
@@ -289,7 +292,6 @@ def write_checkpoint(
                     if not key.startswith(_AUDIO_ENCODER_PREFIX):
                         writer.add(key, handle.get_tensor(key))
 
-    target = Path(directory)
     config.save_pretrained(target)
     for name in _COPIED_FILES:
         copied = resolve_file(source, name, subfolder=subfolder, **kwargs)
@@ -329,26 +331,6 @@ def converted_checkpoint(
     )
 
 
-def build_audio_tokenizer(source, subfolder: str | None = None, **kwargs) -> DacModel:
-    r"""
-    Reads the codec of a published Parler-TTS checkpoint on its own, for [`ParlerTTSProcessor`] to decode with.
-
-    Args:
-        source (`str` or `os.PathLike`):
-            Repository id or local directory holding the published checkpoint.
-        subfolder (`str`, *optional*):
-            Directory inside `source` the checkpoint sits in.
-        kwargs (`dict`, *optional*):
-            Keyword arguments of [`resolve_file`].
-
-    Returns:
-        [`DacModel`]: The codec, in evaluation mode.
-    """
-    config = read_config(source, subfolder=subfolder, **kwargs)
-    weight_files = resolve_weight_files(source, subfolder=subfolder, **kwargs)
-    return build_dac_model(config.audio_encoder, read_dac_state_dict(weight_files)).eval()
-
-
 def convert(checkpoint_path, output_dir):
     """
     Writes a published Parler-TTS checkpoint into a directory of its own, which
@@ -367,12 +349,10 @@ def convert(checkpoint_path, output_dir):
     """
     target = Path(output_dir)
     write_checkpoint(checkpoint_path, target)
-    build_audio_tokenizer(checkpoint_path).save_pretrained(target / AUDIO_TOKENIZER_SUBFOLDER)
     return str(target)
 
 
 __all__ = [
-    "build_audio_tokenizer",
     "build_dac_model",
     "convert",
     "converted_checkpoint",

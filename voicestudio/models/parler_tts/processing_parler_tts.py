@@ -82,17 +82,20 @@ class ParlerTTSProcessor(ProcessorMixin):
             [`ParlerTTSProcessor`]: The loaded processor. Its `audio_tokenizer` is `None` when the checkpoint
             bundles none, in which case [`~ParlerTTSProcessor.decode`] is unavailable.
         """
-        from .weight_conversion import build_audio_tokenizer, is_published_layout
+        from .weight_conversion import converted_checkpoint, is_published_layout
 
         processor = super().from_pretrained(pretrained_model_name_or_path, **kwargs)
         if getattr(processor, "audio_tokenizer", None) is not None:
             return processor
 
-        if is_published_layout(pretrained_model_name_or_path, **kwargs):
-            processor.audio_tokenizer = build_audio_tokenizer(pretrained_model_name_or_path, **kwargs)
-            return processor
-
         from transformers import DacModel
+
+        if is_published_layout(pretrained_model_name_or_path, **kwargs):
+            # `converted_checkpoint` is keyed on `config.json` alone, so a directory already cached for
+            # `ParlerTTSForConditionalGeneration` is returned here without touching the published weight files.
+            directory = converted_checkpoint(pretrained_model_name_or_path, **kwargs)
+            processor.audio_tokenizer = DacModel.from_pretrained(directory, subfolder=AUDIO_TOKENIZER_SUBFOLDER)
+            return processor
 
         try:
             processor.audio_tokenizer = DacModel.from_pretrained(

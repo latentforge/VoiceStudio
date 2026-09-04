@@ -48,7 +48,8 @@ Three things about that path are load-bearing:
   so no separate `.decode()` call is needed in the flow above.
 - `ParlerTTSProcessor` still carries its own `audio_tokenizer`, for decoding DAC codes obtained some other way
   than `generate`. It is read out of the published checkpoint's own weights, or out of the `audio_encoder`
-  subfolder of a directory `weight_conversion.convert` wrote.
+  subfolder of a converted directory, the same one `ParlerTTSForConditionalGeneration.from_pretrained` writes
+  and caches, so loading the processor after the model touches no published weight file again.
 
 `ParlerTTSForConditionalGeneration` also accepts raw target audio for training, through `input_values` rather
 than through the processor: the model encodes it into codes with its own `audio_encoder` to derive
@@ -58,7 +59,9 @@ itself, sharing one checkpoint with `text_encoder` and `decoder`, rather than mo
 entirely.
 
 A first load converts the published layout into a directory under `HF_HOME`, keyed on the repository and the commit it
-resolved to, and later loads read that directory through the ordinary loading path instead of converting again.
+resolved to, and later loads read that directory through the ordinary loading path instead of converting again. The
+key comes from `config.json` alone, so a cache hit resolves nothing beyond that file; once the conversion is
+written, the checkpoint's safetensors shards are dropped from the `huggingface_hub` cache.
 
 `weight_conversion.convert` writes that same conversion to a directory of the caller's choosing, for a checkpoint
 that is shipped elsewhere or kept outside the cache. It also saves the codec standalone under an `audio_encoder`
