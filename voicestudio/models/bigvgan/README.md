@@ -181,8 +181,8 @@ buffer coming back as uninitialised memory under meta-device initialisation.
 
 Copy synthesis through that direct load, on a LibriSpeech validation clip resampled to 24 kHz and normalised the
 way the extractor normalises it, gives a log mel L1 of 0.0913 against the 0.0887 calibration point, at a
-reconstruction to reference RMS ratio of 0.98. Re-randomising `conv_post` at the model's own initializer range
-takes it to 1.59 and re-randomising `resblocks[0]` to 0.83.
+reconstruction to reference RMS ratio of 0.98. Re-randomising `conv_post` at the model's own `initializer_range`
+of 0.01 takes it to 0.702 and re-randomising `resblocks[0]` to 1.121.
 
 The migrated model was checked against NVIDIA's own `bigvgan.BigVGAN`, run from the same weights on the same mel
 spectrogram, in float32 on the CPU. On a 5.3 second clip the two waveforms agree to a maximum absolute difference
@@ -239,10 +239,12 @@ the resampling filters the model rebuilds from its configuration, with zero left
 
 Copy synthesis of the F5-TTS demo reference clip (`basic_ref_en.wav`, 5.33 seconds) reproduces its own log mel
 spectrogram to an L1 of 0.0887 and an SNR of 5.70 dB against the loudness normalized reference waveform, against
-the 0.0886 the f5_tts path measured in `d35f867f`. As a negative control, re-randomizing `conv_post` alone
-collapses that to an L1 of 3.13 and an SNR of -15.5 dB, and re-randomizing every convolution of `resblocks[0]`
-collapses it to 4.35 and -16.9 dB, confirming the metric actually responds to a broken conversion rather than
-passing regardless of what the weights are. wav2vec2 transcribes the copy synthesized clip as SOME CALL ME
+the 0.0886 the f5_tts path measured in `d35f867f`. As a negative control, re-randomizing `conv_post` alone from a
+unit normal collapses that to an L1 of 3.13 and an SNR of -15.5 dB, and re-randomizing every convolution of
+`resblocks[0]` the same way collapses it to 4.35 and -16.9 dB, confirming the metric actually responds to a
+broken conversion rather than passing regardless of what the weights are; over seeds 0 to 5 the same draw gives
+`conv_post` 2.97 to 3.59 at SNR -12.6 to -16.9 dB and `resblocks[0]` 4.26 to 4.36 at SNR -16.87 to -16.93 dB, and
+both recorded figures sit inside those ranges. wav2vec2 transcribes the copy synthesized clip as SOME CALL ME
 NATURE OTHERS CALL ME MOTHER NATURE, word for word against the source recording.
 
 Both consumers were re-checked against the current state of this folder rather than assumed from the commits
