@@ -196,9 +196,13 @@ weights all 80 parameters receive a nonzero gradient from `loss.backward()`. Aga
 clip the loss is 5.72 on that clip's own waveform, 113.69 on the same clip shifted half a second and 160.15 on
 noise of the same standard deviation, so the objective is reading the waveform it is handed.
 
-Copy synthesis of that clip through the mel checkpoint transcribes back under wav2vec2 as SOME CALL ME NATURE
-OTHERS CALL ME MOTHER NATURE, word for word with the transcription of the original recording. Through the EnCodec
-checkpoint at 6 kbps it transcribes the same, as does the EnCodec decoder on the same codes.
+Copy synthesis of that clip through the mel checkpoint gives a log mel L1 of 0.13700 against 3.193 for
+same-energy noise, and `facebook/wav2vec2-base-960h` transcribes it back as SOME CALL ME NATURE OTHERS CALL ME
+MOTHER NATURE, word for word with the transcription of the original recording. Through the EnCodec checkpoint at
+6 kbps, 8 codebooks, `bandwidth_id=2`, it gives a log mel L1 of 0.5685 against 3.190 for the same noise control,
+and transcribes the same. That figure does not reach the mel checkpoint's, and the shortfall is not the vocoder:
+running `facebook/encodec_24khz`'s own decoder on the identical codes gives 0.6345, worse than Vocos, so what
+separates 0.5685 from 0.13700 is what 6 kbps codes discard rather than anything Vocos loses on top of them.
 
 Checkpoint search, per CLAUDE.md section 2.3: the Hugging Face hub holds `charactr/vocos-mel-24khz` and
 `charactr/vocos-encodec-24khz`, which are the two the upstream README points at, and `charactr/vocos-encodec-24khz`
