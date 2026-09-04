@@ -89,8 +89,12 @@ inputs = processor(text="The quick brown fox jumps over the lazy dog.", audio=re
 `use_max_style=False` samples a mixture component instead of taking the most probable one. Both only apply to the
 style prompt path.
 
-A first load converts the published layout into a directory under `HF_HOME`, keyed on the repository and the commit it
-resolved to, and later loads read that directory through the ordinary loading path instead of converting again.
+A first load converts the published layout into a directory under `HF_HOME`, keyed on the Space and the commit it
+resolved to, and later loads read that directory through the ordinary loading path instead of converting again. Both
+networks come out of the same Space and are converted in one pass, the acoustic model at the root of that directory
+and the vocoder in its `vocoder` subdirectory, so asking for either one converts both. Once it is written, the Space's
+two checkpoint files are dropped from the `huggingface_hub` cache; the mel spectrogram statistics stay, and a cache
+hit reads nothing else.
 
 `weight_conversion.convert` writes that same conversion to a directory of the caller's choosing, for a checkpoint
 that is shipped elsewhere or kept outside the cache. The acoustic model, the tokenizers and the feature extractor

@@ -29,6 +29,10 @@ DEFAULT_STATS_FILE = "pretrained_model/checkpoint/stats.yaml"
 
 PROMPT_ENCODER_ID = "bert-base-uncased"
 
+# Directory of a converted checkpoint the vocoder is written to, which is where [`PromptTTSPPBigVGan`] reads it
+# back from.
+VOCODER_SUBFOLDER = "vocoder"
+
 _ENCODER_RENAMES = {
     "norm_ff_macaron": "ff_macaron_layer_norm",
     "norm_mha": "self_attn_layer_norm",
@@ -396,9 +400,12 @@ def converted_checkpoint(
     source=DEFAULT_REPO_ID, rel_pos_type: str = "legacy", dtype: torch.dtype = torch.float32
 ) -> Path:
     r"""
-    Returns a directory holding the converted form of the released acoustic model, which
-    [`~PreTrainedModel.from_pretrained`] reads the ordinary way, converting it the first time it is asked for
-    and reusing that conversion afterwards.
+    Returns a directory holding the converted form of the released acoustic model, with the released vocoder in
+    its [`VOCODER_SUBFOLDER`] subdirectory, which [`~PreTrainedModel.from_pretrained`] reads the ordinary way,
+    converting them the first time either is asked for and reusing that conversion afterwards.
+
+    Both networks come out of one Space and are converted in one pass, since the pass drops the Space's
+    checkpoints from the `huggingface_hub` cache once it has read them.
 
     Args:
         source (`str` or `os.PathLike`, *optional*, defaults to [`DEFAULT_REPO_ID`]):
@@ -411,19 +418,24 @@ def converted_checkpoint(
     Returns:
         `Path`: The directory holding the converted checkpoint.
     """
-    parts = [str(source), rel_pos_type, str(dtype), file_identity(resolve_file(source, DEFAULT_MODEL_FILE))]
-    return cached_conversion(
-        "prompt_tts_pp",
-        parts,
-        lambda directory: write_checkpoint(source, directory, rel_pos_type=rel_pos_type, dtype=dtype),
-    )
+    # A downloaded file is named by the revision every file of the Space shares, so the smallest of them names
+    # the two checkpoints as well and both are read inside the conversion. A local copy is named by the file
+    # itself and downloads nothing, so there it is the checkpoint that is named.
+    identity_file = DEFAULT_MODEL_FILE if Path(source).is_dir() else DEFAULT_STATS_FILE
+    parts = [str(source), rel_pos_type, str(dtype), file_identity(resolve_file(source, identity_file))]
+
+    def write(directory) -> None:
+        write_checkpoint(source, directory, rel_pos_type=rel_pos_type, dtype=dtype)
+        write_vocoder_checkpoint(source, Path(directory) / VOCODER_SUBFOLDER, dtype=dtype)
+
+    return cached_conversion("prompt_tts_pp", parts, write)
 
 
 def converted_vocoder_checkpoint(source=DEFAULT_REPO_ID, dtype: torch.dtype = torch.float32) -> Path:
     r"""
     Returns a directory holding the converted form of the released f0 aware vocoder, which
-    [`~PreTrainedModel.from_pretrained`] reads the ordinary way, converting it the first time it is asked for
-    and reusing that conversion afterwards.
+    [`~PreTrainedModel.from_pretrained`] reads the ordinary way. It is the [`VOCODER_SUBFOLDER`] subdirectory of
+    the conversion [`converted_checkpoint`] holds, which covers both released networks.
 
     Args:
         source (`str` or `os.PathLike`, *optional*, defaults to [`DEFAULT_REPO_ID`]):
@@ -432,12 +444,9 @@ def converted_vocoder_checkpoint(source=DEFAULT_REPO_ID, dtype: torch.dtype = to
             Dtype the converted weights are cast to.
 
     Returns:
-        `Path`: The directory holding the converted checkpoint.
+        `Path`: The directory holding the converted vocoder.
     """
-    parts = [str(source), str(dtype), file_identity(resolve_file(source, DEFAULT_VOCODER_FILE))]
-    return cached_conversion(
-        "prompt_tts_pp_vocoder", parts, lambda directory: write_vocoder_checkpoint(source, directory, dtype=dtype)
-    )
+    return converted_checkpoint(source, dtype=dtype) / VOCODER_SUBFOLDER
 
 
 def convert(
@@ -465,7 +474,7 @@ def convert(
     """
     output_path = Path(output_dir)
     write_checkpoint(source, output_path, rel_pos_type=rel_pos_type, dtype=dtype)
-    write_vocoder_checkpoint(source, output_path / "vocoder", dtype=dtype)
+    write_vocoder_checkpoint(source, output_path / VOCODER_SUBFOLDER, dtype=dtype)
     build_processor(source).save_pretrained(output_path)
 
 
@@ -474,6 +483,7 @@ __all__ = [
     "DEFAULT_REPO_ID",
     "DEFAULT_STATS_FILE",
     "DEFAULT_VOCODER_FILE",
+    "VOCODER_SUBFOLDER",
     "build_config",
     "build_model_files",
     "build_processor",
