@@ -227,7 +227,7 @@ pretrained checkpoint yet; see "Runtime-verified" for that.
 | Parler-TTS | Yes | Yes | Yes | DAC conversion coverage confirmed: all 301 source `audio_encoder.model.*` tensors are consumed with zero reported unused, including 54 of 54 `in_proj`/`out_proj` keys, which `convert_dac_checkpoint`'s `apply_weight_norm` and its single `quantizer.quantizers.*` wildcard cover without special casing. Round trip 11.46 dB against the 8.82 dB baseline, and re-randomising just those 36 projection tensors collapses it to -1.10 dB, which calibrates the check against the failure mode it was looking for. `992d149c` replaced the vendored `descript-audio-codec` with native `DacModel`. `b58b94cf` added the missing `ParlerTTSProcessor` and declared `sub_configs`, without which transformers 5 skipped the decoder during dtype resolution and half-precision loads crashed. Transcribes verbatim in float16 and float32. |
 | PromptTTS++ (`prompt_tts_pp`) | Yes | Yes | Yes | `6fabba05`. The section 2.7 gap is closed: MDN, GST reference encoder and `GaussianDiffusion` decoder are all implemented and no FastSpeech2Conformer path remains. The checkpoint is bundled in the Space `line-corporation/promptttspp`, which the section 2.3 search confirmed is the only source. wav2vec2 WER 0.222 and 0.286. The BERT freeze not surviving `from_pretrained` was fixed and verified by parameter count. |
 | Qwen3-TTS | Yes | Yes | Yes | Import relays plus a task-dispatching processor. `af7968ea` fixed voice design running in streaming mode: 17 of 17 prompts now transcribe verbatim. `encoder.upsample.conv.weight` reports MISSING, which is inert and upstream; see the open item above. |
-| Spark-TTS | Yes | Yes | Yes | `c0be998c`. WER 0.000 across voice cloning, attribute creation and prompt continuation. `freeze_semantic_model` never called `.eval()`, so dropout, layerdrop and SpecAugment kept running in the frozen feature source and step-0 loss was irreproducible; fixed. |
+| Spark-TTS | Yes | Yes | Yes | `c0be998c`. WER 0.000 under `whisper-large-v3-turbo` across voice cloning and attribute creation, and on two of three sentences under prompt continuation; the third loses its leading word to a fused token, see above. `freeze_semantic_model` never called `.eval()`, so dropout, layerdrop and SpecAugment kept running in the frozen feature source and step-0 loss was irreproducible; fixed. |
 | Spark-TTS BiCodec (`spark_tts_bicodec`) | Yes | Yes | Yes | `b2e78da3` split it into its own folder, following `higgs_audio_v2_tokenizer`. Round trip transcribes identically to the source clip. Objective taken from SparkVox's `loss_lambdas`, not the inference repo. |
 | VoxInstruct | Yes | Yes | Yes | `75800c0e`. Both stages transcribe verbatim. Teacher forcing gives ar_loss 2.48 and nar_loss 3.50 against 8.25 and 8.09 for shuffled targets, and gradients land only on the LoRA adapters, both decoders and the drawn residual head. `cf5b12bf` wired in the native `VocosModel` from `voicestudio/models/vocos/`, which closed that gap: `generate` takes `vocoder="vocos"` by default, matching upstream's `infer.sh`, with `"encodec"` as the alternative. |
 | BigVGAN | Yes | Yes, independently | n/a (NVIDIA source traced, no upstream tree was vendored) | `687502ad`. Its own model folder rather than a subclass of Qwen2.5-Omni's copy, which would have made the general case depend on one consumer. Re-verified from scratch on a remote GPU after the status row was found to rest on the migration commit's own prose: clean load with all 783 source tensors accounted for, 565 consumed and 218 resampling filters rebuilt from config, copy synthesis log mel L1 0.0887 against the 0.0886 calibration point in `d35f867f`, collapsing to 3.13 and 4.35 under negative controls on `conv_post` and `resblocks[0]`, and both consumers reloading clean and transcribing verbatim (`f2041f4c`). `1abdcdc4` reparents PromptTTS++'s BigVGAN, AMP block and Snake classes onto it, the first sibling inheritance in the repo, and `d35f867f` pairs `F5TTS_Base_bigvgan` with it: the old pairing shipped Vocos, which transcribed word for word while running 37 times too quiet at a copy-synthesis log mel distance of 3.895 against 0.0886. |
@@ -288,16 +288,7 @@ bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts
 conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
 `Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
 
-Two items left open:
-
-- **Spark-TTS prompt continuation collapses on one sentence.** "Actions speak louder than words."
-  through the continuation layout is 0 of 8 seeds verbatim under `whisper-large-v3-turbo`: five drop
-  the leading word, and three collapse outright into a filler syllable, one of them running 60
-  seconds of audio into the `max_new_tokens` ceiling. The same sentence is verbatim in both the
-  voice cloning and attribute creation layouts, and the other two sentences are verbatim in all
-  three, so this is a property of that layout rather than of loading or of the conversion cache.
-  `f0370b00` recorded it as a single draw at WER 0.200, which understates it.
-
+One item left open:
 
 - **Qwen3-TTS audio tokenizer reports `encoder.upsample.conv.weight` MISSING.** The key is real but
   the weight is not: `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`'s `speech_tokenizer/model.safetensors`
@@ -452,6 +443,26 @@ directly, which is what their READMEs document, and a dispatcher that second-gue
 `AutoConfig` adds a code path that runs only when transformers has already given up. Models whose
 published repository does carry a `transformers` config, which is most of them, work through the
 Auto classes as usual.
+
+## Explained: Spark-TTS continuation loses a leading word at a fused token
+
+`SparkTTSProcessor` joins the reference transcript and the text to speak as `prompt_text + text`
+with no separator inside `<|start_content|>`, and the prompt it builds is token for token identical
+to upstream `cli/SparkTTS.py::process_prompt` on the same codes, for every sentence and both
+`add_special_tokens` settings. With a reference transcript ending `...his gospel.`, the seam becomes
+one BPE token: `gospel.` plus `Actions` tokenizes as `Ġgospel`, `.Actions`, id 72044, so the first
+word of the text is not a token of its own and that is the word that goes missing.
+
+Measured over eight seeds under `whisper-large-v3-turbo`: no separator 0 of 8, one space added to
+`prompt_text` 8 of 8. SparkVox's own `prepare_train.py` puts a single utterance's transcript between
+the content markers and never concatenates a reference transcript, so continuation is inference only
+and these fused sentence-boundary tokens are out of distribution. Copy synthesis of the reference
+through BiCodec transcribes verbatim, so the semantic prefix is sound and the failure is on the text
+side.
+
+Behaviour was left alone because upstream shares it, and the folder README now shows a continuation
+example whose `prompt_text` ends in a separator. One caveat: upstream was compared by token ids
+rather than executed, since running it needs `einops` and `einx`, which H11 forbids installing.
 
 ## A calibration that is a single draw is not a calibration
 
