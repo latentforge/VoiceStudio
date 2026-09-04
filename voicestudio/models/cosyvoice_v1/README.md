@@ -60,10 +60,9 @@ it resolved to, and the `WeightRenaming` rules registered in `modeling_cosyvoice
 upstream's module names into this model's as that directory loads. Later loads reuse it, and resolve
 nothing but the `cosyvoice.yaml` that names the revision. The processor takes the same repository id
 and picks up the speech tokenizer, the speaker encoder and, where the release ships one, the speaker
-table. Once the merge is written, the three `.pt` files are dropped from the `huggingface_hub` cache,
-and so is the speech tokenizer graph beside them, which the next processor built on that repository
-fetches again. Build the model before the processor: a processor built first holds the path of a
-graph the merge removes, and reading its `speech_tokenizer` then raises `FileNotFoundError`.
+table. Once the merge is written, the three `.pt` files are dropped from the `huggingface_hub` cache.
+Nothing else is: the speech tokenizer graph the processor reads sits in the same directory and stays
+there, so the model and the processor can be built in either order.
 
 ## Training
 
