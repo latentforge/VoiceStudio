@@ -406,8 +406,20 @@ preserves a model's own `generation_config_class`.
 
 A successful conversion reclaims the source it converted from, through
 `huggingface_hub`'s own cache API, so a model is stored once rather than twice. That is safe because
-a cache hit resolves only the small discriminator file the folder already reads and the key comes
-from the snapshot path, `models--owner--repo@commit`, rather than from any file's bytes.
+a cache hit resolves only a small file of the same revision and the key comes from the snapshot
+path, `models--owner--repo@commit`, rather than from any file's bytes. Getting there took a pass per
+folder, since most of them resolved their weights before consulting the cache and so re-downloaded
+on every hit what the previous conversion had just reclaimed. CosyVoice v2's entry went from
+3,549,561,596 bytes on a hit to 7,991, and its second load from 84.67 seconds to 2.19.
+
+Reclamation covers only what the conversion actually fetched, not the whole revision, which
+`3086274a` narrowed it to by listing the hub cache before and after the write and taking the
+difference. The broad rule deleted files the conversion never opened: CosyVoice's
+`speech_tokenizer_v1.onnx` is read by the processor and not by the conversion, so a processor built
+before the model and used after it raised `FileNotFoundError`. A file already resident when a
+conversion starts is exactly the file some earlier caller may hold a path to, and those now always
+stay. The consequence is that a large file a processor fetches but no conversion reads now
+persists.
 
 `CACHE_VERSION` was removed with it. Versioning made sense for a derived copy sitting beside an
 original; it does not for the only copy, and a constant somebody has to remember to bump is not
