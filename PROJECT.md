@@ -410,7 +410,10 @@ a cache hit resolves only a small file of the same revision and the key comes fr
 path, `models--owner--repo@commit`, rather than from any file's bytes. Getting there took a pass per
 folder, since most of them resolved their weights before consulting the cache and so re-downloaded
 on every hit what the previous conversion had just reclaimed. CosyVoice v2's entry went from
-3,549,561,596 bytes on a hit to 7,991, and its second load from 84.67 seconds to 2.19.
+3,549,561,596 bytes on a hit to 7,991, and its second load from 84.67 seconds to 2.19. Parler-TTS was
+the last, and the odd one: its `converted_checkpoint` was already keyed on `config.json`, and the
+re-download came from `ParlerTTSProcessor.from_pretrained` rebuilding the codec from the raw shards
+instead of reading the conversion the model had already cached. Both now share one entry.
 
 Reclamation covers only what the conversion actually fetched, not the whole revision, which
 `3086274a` narrowed it to by listing the hub cache before and after the write and taking the
