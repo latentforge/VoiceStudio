@@ -13,6 +13,12 @@ PUBLISHED_CHECKPOINTS = ("FunAudioLLM/CosyVoice2-0.5B",)
 # the three network files.
 TEXT_MODEL_SUBDIR = "CosyVoice-BlankEN"
 
+# The recipe every released v2 directory ships and the text model configuration [`build_config`] reads. Their
+# presence tells a released directory apart from one the conversion wrote, and their snapshot names the revision
+# the conversion is keyed on. They are the whole of what a load resolves before the cache answers it, so the
+# three networks are fetched inside the conversion.
+RELEASED_CONFIG_FILES = ("cosyvoice2.yaml", f"{TEXT_MODEL_SUBDIR}/config.json")
+
 SPEECH_TOKENIZER_FILE = "speech_tokenizer_v2.onnx"
 
 
@@ -38,6 +44,7 @@ def build_config(directory: "str | Path", **overrides) -> CosyVoiceV2Config:
 
 __all__ = [
     "PUBLISHED_CHECKPOINTS",
+    "RELEASED_CONFIG_FILES",
     "SPEECH_TOKENIZER_FILE",
     "TEXT_MODEL_SUBDIR",
     "build_config",

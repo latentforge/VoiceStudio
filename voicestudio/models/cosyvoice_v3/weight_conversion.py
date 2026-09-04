@@ -10,6 +10,10 @@ from .configuration_cosyvoice_v3 import CosyVoiceV3Config
 
 PUBLISHED_CHECKPOINTS = ("FunAudioLLM/Fun-CosyVoice3-0.5B-2512",)
 
+# The recipe every released v3 directory ships and the text model configuration [`build_config`] reads, which
+# name the revision the conversion is keyed on the way v2's do.
+RELEASED_CONFIG_FILES = ("cosyvoice3.yaml", f"{TEXT_MODEL_SUBDIR}/config.json")
+
 SPEECH_TOKENIZER_FILE = "speech_tokenizer_v3.onnx"
 
 
@@ -32,6 +36,7 @@ def build_config(directory: "str | Path", **overrides) -> CosyVoiceV3Config:
 
 __all__ = [
     "PUBLISHED_CHECKPOINTS",
+    "RELEASED_CONFIG_FILES",
     "SPEECH_TOKENIZER_FILE",
     "build_config",
 ]

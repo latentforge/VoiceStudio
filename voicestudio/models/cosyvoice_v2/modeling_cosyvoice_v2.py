@@ -50,10 +50,10 @@ from ..cosyvoice_v1.modeling_cosyvoice_v1 import (
     build_attention_bias,
     make_pad_mask,
 )
-from ..cosyvoice_v1.weight_conversion import CHECKPOINT_FILES, resolve_checkpoint
+from ..cosyvoice_v1.weight_conversion import resolve_checkpoint
 from .configuration_cosyvoice_v2 import CosyVoiceV2Config
 from .generation_cosyvoice_v2 import CosyVoiceV2GenerationMixin
-from .weight_conversion import TEXT_MODEL_SUBDIR, build_config
+from .weight_conversion import RELEASED_CONFIG_FILES, build_config
 
 
 IGNORE_ID = -1
@@ -1384,8 +1384,8 @@ class CosyVoiceV2PreTrainedModel(CosyVoiceV1PreTrainedModel):
     @classmethod
     def _released_checkpoint(cls, source, **kwargs) -> "tuple[CosyVoiceV2Config, Path] | None":
         r"""
-        Locates a released CosyVoice v2 directory, whose Qwen2 sub directory is fetched alongside the
-        three network files because the configuration is built from it.
+        Locates a released CosyVoice v2 directory, fetching the recipe and the text model configuration that
+        name its revision rather than the three networks, which the conversion fetches for itself.
 
         Args:
             source (`str` or `os.PathLike`, *optional*):
@@ -1394,12 +1394,10 @@ class CosyVoiceV2PreTrainedModel(CosyVoiceV1PreTrainedModel):
                 Fields of `weight_conversion.DOWNLOAD_KWARGS` selecting a revision and a cache.
 
         Returns:
-            `tuple[CosyVoiceV2Config, Path]` or `None`: The configuration and the local directory
-            holding the released files, or `None` when `source` holds no released checkpoint.
+            `tuple[CosyVoiceV2Config, Path]` or `None`: The configuration and the local directory naming the
+            revision the released files are read from, or `None` when `source` holds no released checkpoint.
         """
-        directory = resolve_checkpoint(
-            source, tuple(CHECKPOINT_FILES.values()), (f"{TEXT_MODEL_SUBDIR}/*",), **kwargs
-        )
+        directory = resolve_checkpoint(source, RELEASED_CONFIG_FILES, **kwargs)
         if directory is None:
             return None
         return build_config(directory), directory

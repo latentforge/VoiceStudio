@@ -50,8 +50,10 @@ The released directory holds one `.pt` file per network rather than a single che
 directly: it merges the three files under the name of the submodule each belongs to into a directory
 under `HF_HOME`, keyed on the repository and the commit it resolved to, and the `WeightRenaming` rules
 registered in `modeling_cosyvoice_v2.py` turn upstream's module names into this model's as that
-directory loads. Later loads reuse it. The processor takes the same repository id and picks up the
-text tokenizer, the speech tokenizer and the speaker encoder.
+directory loads. Later loads reuse it, and resolve nothing but the `cosyvoice2.yaml` and the
+`CosyVoice-BlankEN/config.json` that name the revision. Once the merge is written, the three `.pt`
+files are dropped from the `huggingface_hub` cache. The processor takes the same repository id and
+picks up the text tokenizer, the speech tokenizer and the speaker encoder.
 
 ## Training
 
