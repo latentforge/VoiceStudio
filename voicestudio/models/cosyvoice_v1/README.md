@@ -57,9 +57,13 @@ The released directories hold one `.pt` file per network rather than a single ch
 `from_pretrained` reads that layout directly: it merges the three files under the name of the
 submodule each belongs to into a directory under `HF_HOME`, keyed on the repository and the commit
 it resolved to, and the `WeightRenaming` rules registered in `modeling_cosyvoice_v1.py` turn
-upstream's module names into this model's as that directory loads. Later loads reuse it. The
-processor takes the same repository id and picks up the speech tokenizer, the speaker encoder and,
-where the release ships one, the speaker table.
+upstream's module names into this model's as that directory loads. Later loads reuse it, and resolve
+nothing but the `cosyvoice.yaml` that names the revision. The processor takes the same repository id
+and picks up the speech tokenizer, the speaker encoder and, where the release ships one, the speaker
+table. Once the merge is written, the three `.pt` files are dropped from the `huggingface_hub` cache,
+and so is the speech tokenizer graph beside them, which the next processor built on that repository
+fetches again. Build the model before the processor: a processor built first holds the path of a
+graph the merge removes, and reading its `speech_tokenizer` then raises `FileNotFoundError`.
 
 ## Training
 

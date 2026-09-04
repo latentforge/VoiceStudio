@@ -38,7 +38,7 @@ from transformers.utils import auto_docstring
 from ..bigvgan.modeling_bigvgan import dynamic_range_compression, mel_spectrogram
 from .configuration_cosyvoice_v1 import CosyVoiceV1Config
 from .generation_cosyvoice_v1 import CosyVoiceV1GenerationMixin
-from .weight_conversion import CHECKPOINT_FILES, build_config, converted_checkpoint, resolve_checkpoint
+from .weight_conversion import RELEASED_CONFIG_FILE, build_config, converted_checkpoint, resolve_checkpoint
 
 
 IGNORE_ID = -1
@@ -2673,7 +2673,8 @@ class CosyVoiceV1PreTrainedModel(PreTrainedModel):
     @classmethod
     def _released_checkpoint(cls, source, **kwargs) -> "tuple[CosyVoiceV1Config, Path] | None":
         r"""
-        Locates a released CosyVoice v1 directory.
+        Locates a released CosyVoice v1 directory, fetching the recipe that names its revision rather than the
+        three networks, which the conversion fetches for itself.
 
         Args:
             source (`str` or `os.PathLike`, *optional*):
@@ -2682,10 +2683,10 @@ class CosyVoiceV1PreTrainedModel(PreTrainedModel):
                 Fields of `weight_conversion.DOWNLOAD_KWARGS` selecting a revision and a cache.
 
         Returns:
-            `tuple[CosyVoiceV1Config, Path]` or `None`: The configuration and the local directory holding
-            the released files, or `None` when `source` holds no released checkpoint.
+            `tuple[CosyVoiceV1Config, Path]` or `None`: The configuration and the local directory naming the
+            revision the released files are read from, or `None` when `source` holds no released checkpoint.
         """
-        directory = resolve_checkpoint(source, tuple(CHECKPOINT_FILES.values()), **kwargs)
+        directory = resolve_checkpoint(source, (RELEASED_CONFIG_FILE,), **kwargs)
         if directory is None:
             return None
         return build_config(directory), directory
@@ -2712,7 +2713,8 @@ class CosyVoiceV1PreTrainedModel(PreTrainedModel):
             if released is None:
                 raise
         config, directory = released
-        return super().from_pretrained(converted_checkpoint(directory, config), *model_args, **kwargs)
+        converted = converted_checkpoint(pretrained_model_name_or_path, directory, config, download_kwargs=kwargs)
+        return super().from_pretrained(converted, *model_args, **kwargs)
 
     def _init_weights(self, module):
         std = self.config.initializer_range

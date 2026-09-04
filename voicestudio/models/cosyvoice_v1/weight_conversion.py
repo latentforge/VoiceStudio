@@ -20,6 +20,11 @@ PUBLISHED_CHECKPOINTS = (
     "FunAudioLLM/CosyVoice-300M-Instruct",
 )
 
+# The recipe every released v1 directory ships, whose presence tells a released directory apart from one
+# [`write_checkpoint`] wrote and whose snapshot names the revision the conversion is keyed on. It is the whole of
+# what a load resolves before the cache answers it, so the three networks are fetched inside the conversion.
+RELEASED_CONFIG_FILE = "cosyvoice.yaml"
+
 # The three files of a released directory, one per network, keyed by the submodule that holds them.
 # Their key namespaces overlap, `spk_embed_affine_layer` sits in `llm.pt` and in `flow.pt` alike, so
 # the merge has to prefix them apart before any rename rule sees a key.
@@ -364,27 +369,37 @@ def write_checkpoint(directory: "str | Path", output_dir, config) -> None:
     config.save_pretrained(output_dir)
 
 
-def converted_checkpoint(directory: "str | Path", config) -> Path:
+def converted_checkpoint(source: "str | Path", directory: "str | Path", config, download_kwargs=None) -> Path:
     r"""
     Returns a directory holding the converted form of a released CosyVoice directory, which
     [`~PreTrainedModel.from_pretrained`] reads the ordinary way, converting it the first time it is asked for
     and reusing that conversion afterwards.
 
+    `directory` names the revision the conversion is keyed on and need hold no more than
+    [`RELEASED_CONFIG_FILE`]: [`CHECKPOINT_FILES`] are fetched from `source` inside the conversion, so a
+    checkpoint the cache already holds is never downloaded again.
+
     Args:
+        source (`str` or `os.PathLike`):
+            Repository id or local directory the released files are read from.
         directory (`str` or `os.PathLike`):
-            Local directory holding [`CHECKPOINT_FILES`].
+            Local directory naming the revision `source` resolved to.
         config ([`~transformers.PreTrainedConfig`]):
             Configuration of the released checkpoint, whose `model_type` also groups the conversion in the
             cache, since the three released versions share a file layout.
+        download_kwargs (`dict`, *optional*):
+            Keyword arguments [`resolve_checkpoint`] takes, of which the fields of [`DOWNLOAD_KWARGS`]
+            select a revision and a cache.
 
     Returns:
         `Path`: The directory holding the converted checkpoint.
     """
-    return cached_conversion(
-        config.model_type,
-        [file_identity(directory)],
-        lambda output_dir: write_checkpoint(directory, output_dir, config),
-    )
+
+    def write(output_dir) -> None:
+        released = resolve_checkpoint(source, tuple(CHECKPOINT_FILES.values()), **(download_kwargs or {}))
+        write_checkpoint(released or directory, output_dir, config)
+
+    return cached_conversion(config.model_type, [file_identity(directory)], write)
 
 
 def build_config(directory: "str | Path", **overrides) -> CosyVoiceV1Config:
@@ -411,6 +426,7 @@ __all__ = [
     "DOWNLOAD_KWARGS",
     "ONNX_TENSOR_DTYPES",
     "PUBLISHED_CHECKPOINTS",
+    "RELEASED_CONFIG_FILE",
     "SPEAKER_ENCODER_REPO",
     "SPEAKER_ENCODER_WEIGHTS",
     "SPEAKER_INFO_FILE",
