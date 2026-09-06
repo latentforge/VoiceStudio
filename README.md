@@ -69,7 +69,7 @@ Extras, selected with `uv sync --extra <name>` or all at once with `uv sync --al
 | `audio` | `torchaudio`, `torchcodec`, `librosa`, `soundfile` | reading and writing waveforms, which every processor here does |
 | `omni` | `pillow`, `torchvision` | Chroma, whose processor subclasses `Qwen2_5OmniProcessor` |
 | `train` | `accelerate`, `wandb`, `matplotlib`, `notebook`, `ipywidgets`, `tqdm` | training runs and notebooks |
-| `eval` | `pyworld`, `jiwer` | f0 extraction for CosyVoice's vocoder objective, and the word error rate check used to verify a model |
+| `eval` | `jiwer` | The word error rate check used to verify a model |
 | `web` | `fastapi` | the web front end |
 
 Flash attention and the other fused kernels come through `transformers[kernels]`, which the base

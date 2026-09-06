@@ -216,7 +216,7 @@ Upstream pins more than forty packages. What each turned into:
 | `tiktoken` | Removed. `get_encoding` only used it to read a `base64 rank` file and to hold the ranks, so `CosyVoiceV1TikTokenConverter` subclasses transformers' own `TikTokenConverter` and reads the file with `base64` from the standard library. |
 | `openai-whisper` | Replaced by `WhisperTokenizer` for text and `WhisperFeatureExtractor` for the speech tokenizer's mel. `whisper.tokenizer.Tokenizer`, which upstream's `get_tokenizer` returns, is `CosyVoiceV1Tokenizer`. |
 | `inflect` | Removed. Upstream calls one method of it, `number_to_words`, to read an English digit run out; `number_to_words` in `processing_cosyvoice_v1.py` is that reading, inlined. See below. |
-| `pyworld` | Lazily imported. See below. |
+| `pyworld` | Removed. Its `harvest`, `stonemask` and `dio` estimators are ported into `processing_cosyvoice_v1.py`. See below. |
 | `wetext` | Lazily imported, and not declared. It is the text normalizer upstream's own front end reaches for, and no part of it is math that could be inlined; see "The text normalizer". |
 | `ttsfrd` | Not reachable. See "Not carried over from upstream". |
 | `onnxruntime` | Removed. See below. |
@@ -246,15 +246,24 @@ the module it was traced inside, so the module path and the operator together sa
 initializer is. All 96 of v1's initializers map to exactly one parameter each and load with
 `strict=True`.
 
-Two are imported lazily rather than depended on, and neither was added to `pyproject.toml`.
-`CosyVoiceV1Processor.compute_f0` needs `pyworld`, because the target of the vocoder objective's f0
-term is the WORLD harvest contour and no other estimator produces the same numbers; substituting one
-would change the objective silently. `pyproject.toml` already declares `pyworld>=0.3.5` under the
-`eval` extra, so this adds nothing new, but the base install does not carry it. It raises with an
-explanation naming what is missing and what to do instead.
+`pyworld` was the other one, and it is gone too. The target of the vocoder objective's f0 term is
+the WORLD harvest contour, and no other estimator produces the same numbers, so substituting one
+would have changed the objective silently. Instead the three estimators `compute_f0` uses are ported
+into `processing_cosyvoice_v1.py` from `mmorise/World`'s `harvest.cpp`, `stonemask.cpp` and
+`dio.cpp`. `fft.cpp` is not ported; `numpy.fft` stands in for it. The two IIR filters WORLD applies
+outside its transform, the third-order decimation filter and the second-order zero-lag Butterworth
+the contour is smoothed with, are recursions of a few lines each.
 
-`normalize_text` reaches for `wetext` the same way, and this one does not raise: it falls back to the
-behaviour measured in "The text normalizer" below and warns once instead. See that section.
+Two pieces of upstream behaviour are reproduced rather than corrected, because correcting either
+would move the contour: the mean f0 in `ExtendSub` is not reset between voiced sections and so
+accumulates across them, and `MakeSortedOrder` compares against the element a swap displaced, which
+leaves it not finishing the sort. WORLD is under the BSD 3-Clause licence, which asks that the
+notice be retained in source redistributions, so `processing_cosyvoice_v1.py` carries it beside the
+Apache header.
+
+One dependency is still imported lazily rather than depended on, and it was not added to
+`pyproject.toml`. `normalize_text` reaches for `wetext`, and this one does not raise: it falls back
+to the behaviour measured in "The text normalizer" below and warns once instead. See that section.
 
 The English digit reading is not one of them. `CosyVoiceV1Processor.normalize_text` reads a digit run
 out through `CosyVoiceV1NumberSpeller`, whose `number_to_words` is the inlined reading, so nothing has
@@ -346,12 +355,24 @@ of them under `hift` and none under `llm` or `flow`.
 
 **`compute_f0` against upstream's own extraction.** `CosyVoiceV1Processor.compute_f0` on the same
 recording is bit identical to running upstream's `cosyvoice/dataset/processor.py` lines directly,
-`pyworld.harvest` at a frame period of 11.61 ms, `pyworld.stonemask`, and a linear interpolation
-onto the 1184 mel frames: `torch.equal` on the float32 cast is `True` and the largest absolute
-difference is 0.0. The contour is 995 voiced frames out of 1184 at a mean voiced f0 of 148.57 Hz.
-The interpolation has to stay in the double precision `pyworld` returns to get that: doing it in
-float32 moves a voicing boundary onto the neighbouring frame and costs 6.6e-03 Hz at the largest
-step.
+harvest at a frame period of 11.61 ms, stonemask, and a linear interpolation onto the 1184 mel
+frames: `torch.equal` on the float32 cast is `True` and the largest absolute difference is 0.0. The
+contour is 995 voiced frames out of 1184 at a mean voiced f0 of 148.57 Hz. The interpolation has to
+stay in the double precision the estimator returns to get that: doing it in float32 moves a voicing
+boundary onto the neighbouring frame and costs 6.6e-03 Hz at the largest step.
+
+**The ported estimators against `pyworld` 0.3.5.** `_harvest`, `_stonemask` and `_dio` were measured
+against `pyworld` 0.3.5, installed in a throwaway virtual environment that is not the project venv,
+at a frame period of 11.61 ms on six recordings: WORLD's own `test/vaiueo2d.wav`, 0.79 s of speech
+at 22050 Hz, and five synthetic signals whose noise is drawn from `np.random.default_rng(20260907)`,
+covering a steady male-range contour, a female-range contour carrying a silent gap and a span
+attenuated to two percent, an amplitude-modulated rising contour with a hard onset, white noise at
+0.05, and near silence at 1e-06. Voiced and unvoiced frames agree on every frame of all six. The
+float32 contour `compute_f0` returns is bit identical on all six, `np.array_equal` `True` with a
+largest absolute difference of 0.0. In double precision the largest relative difference is 5.2e-15
+for harvest, 4.1e-16 for stonemask and 2.5e-15 for dio, which is last-bit disagreement between
+numpy's pocketfft and WORLD's Ooura transform. On a 3.0 s signal harvest takes 1.20 s against
+`pyworld`'s 0.57 s, stonemask 0.024 s against 0.006 s, and dio 0.050 s against 0.030 s.
 
 **The mel term against matcha's own function.** Upstream measures it with
 `matcha.utils.audio.mel_spectrogram`, which is not vendored here. Reimplemented from Matcha's
@@ -735,9 +756,9 @@ Nothing outside this folder was touched. What is worth knowing about the rest of
 - `voicestudio/models/__init__.py` already carries `from .cosyvoice_v1 import *`.
 - `pyproject.toml` still declares an `onnx` extra holding `onnxruntime`, `onnxruntime-gpu` and
   `onnx`. Nothing in these three folders imports any of them any more, and no other model folder
-  does either, so that extra and its entry in `all` can go. `pyworld` is already declared under the
-  `eval` extra; `tiktoken` and `ttsfrd` are deliberately absent and every path that would want one
-  imports it lazily and raises with an explanation.
+  does either, so that extra and its entry in `all` can go. `pyworld` is no longer needed by any
+  folder and its entry in the `eval` extra can go with it; `tiktoken` and `ttsfrd` are deliberately
+  absent and every path that would want one imports it lazily and raises with an explanation.
 - `voicestudio/models/cosyvoice_v2/` inherits `CosyVoiceV1HiFTGenerator`, so it inherits
   `compute_loss` and `mel_loss` too. It now also sets the constants its own recipe uses, `n_fft`
   1920, hop 480 and window 1920 at 24 kHz, where `CosyVoiceV1Config` defaults to 1024, 256 and 1024.

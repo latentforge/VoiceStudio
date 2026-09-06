@@ -54,7 +54,7 @@ uv sync --all-extras
 | Extra | 설치 패키지 | 용도 |
 |---|---|---|
 | `train` | `accelerate`, `wandb`, `matplotlib`, `notebook`, `ipywidgets` | 학습 실행 및 노트북 환경 |
-| `eval` | `pyworld`, `jiwer` | CosyVoice의 보코더 목적함수를 위한 f0 추출, 그리고 모델 검증에 사용되는 단어 오류율(WER) 측정 |
+| `eval` | `jiwer` | 모델 검증에 사용되는 단어 오류율(WER) 측정 |
 | `kernels` | `transformers[kernels]` | flash attention 및 기타 fused 커널 |
 | `omni` | `pillow`, `torchvision` | 프로세서가 `Qwen2_5OmniProcessor`를 상속하는 Chroma 모델 |
 | `native` | `torchnative` | 온디바이스 추론 |

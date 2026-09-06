@@ -251,9 +251,9 @@ Three things outside this folder are still needed and were deliberately not touc
   described above, and the weights are bundled in the Space. The row needs replacing, along with the gaps listed
   above.
 - `pyproject.toml`'s `eval` extra can drop `pysptk`, which nothing in the repository imports now that the
-  vendored tree is gone. `pyworld` has to stay for `cosyvoice_v1`, `matplotlib` for
-  `voicestudio/utils/audio_utils.py`, and `torchvision` for the `omni` extra, none of which this folder ever
-  reached.
+  vendored tree is gone. It can drop `pyworld` too, now that `cosyvoice_v1` carries its own port of the
+  WORLD estimators. `matplotlib` has to stay for `voicestudio/utils/audio_utils.py` and `torchvision` for the
+  `omni` extra, neither of which this folder ever reached.
 
 No new dependency is required. The migration drops `hydra-core`, `omegaconf`, `scipy`, `gradio`, `matplotlib`,
 `pandas`, `pyworld`, `nnmnkwii`, `pysptk`, `tensorboard`, `joblib` and `faster_whisper` from what this model

@@ -726,6 +726,65 @@ sos token, because v3 moved eos to 6562. So upstream's floor masks the wrong tok
 early eos, while `generation_cosyvoice_v2.py::_decode` masks the real one. On seed 1 upstream stopped at 10
 tokens, silent, where this repository produced 116 tokens of correct speech.
 
+## Settled: `pyworld` is gone, and the f0 target did not move
+
+`CosyVoiceV1Processor.compute_f0` was the last caller of `pyworld`. It imported it lazily and raised
+when it was missing, so the base install never carried it, but the vocoder objective's f0 term had no
+target without it. The three estimators it used, `harvest`, `stonemask` and `dio`, are now ported into
+`processing_cosyvoice_v1.py` from `mmorise/World`'s `harvest.cpp`, `stonemask.cpp` and `dio.cpp`,
+about a thousand lines of numpy. `fft.cpp` is not ported; `numpy.fft` stands in for it. No dependency
+was added: scipy is not used, and the two IIR filters WORLD applies outside its transform are
+recursions of a few lines each.
+
+Two pieces of upstream behaviour are reproduced rather than corrected, and both would have moved the
+contour if they had been tidied. The mean f0 in `ExtendSub` is not reset between voiced sections, so
+it accumulates across them. `MakeSortedOrder` reads as an insertion sort but compares against the
+element a swap displaced, so it does not finish sorting; `np.argsort` in its place is a different
+ordering.
+
+Measured against `pyworld` 0.3.5 in a throwaway virtual environment that is not the project venv, at
+a frame period of 11.61 ms, on WORLD's own `test/vaiueo2d.wav` and five synthetic signals whose noise
+comes from `np.random.default_rng(20260907)`. Voiced and unvoiced frames agree on every frame of all
+six. The float32 contour `compute_f0` returns is bit identical on all six, `np.array_equal` `True`
+at a largest absolute difference of 0.0. In double precision the largest relative difference is
+5.2e-15 for harvest, 4.1e-16 for stonemask and 2.5e-15 for dio. Harvest costs 1.20 s on a 3.0 s
+signal against `pyworld`'s 0.57 s.
+
+The route to that agreement is worth recording, because the first version of the port was wrong in a
+way that every cheap check passed. Candidates sharing an FFT size were batched into one array padded
+to the longest analysis window, and the differentiated window is built from a centred difference, so
+the first padding column of a short row took a non-zero value and was multiplied by a real sample.
+The contour still looked correct, voicing still agreed with `pyworld` on every frame, and the
+relative error sat at 1e-05, which is easy to read as transform-library round-off and was in fact
+argued to be exactly that. Grouping by the exact window length instead removed it and left last-bit
+agreement, and made harvest a third faster as a side effect. A number that looks like round-off is
+worth one attempt at explaining where it comes from.
+
+A torch and torchaudio implementation was measured rather than assumed, and it is not worth taking.
+Swapping the IIR recursion for `torchaudio.functional.lfilter` keeps the float32 output bit identical
+but makes the six-signal run slightly slower, 4.94 s against 4.79 s, because the recursion is entered
+four times per call and the tensor setup costs more than the loop saves. Rewriting the refinement
+batch in torch is worse on both counts: 5.54 s against 5.40 s, and the largest double-precision
+difference against `pyworld` rises from 1e-12 to 1e-03, which breaks float32 bit identity on two of
+the six signals. In isolation torch is faster on both pieces, 3 to 4 times on a batched double
+precision `rfft` and 6 to 14 times on the window arithmetic, but those measurements used batches of
+40000 to 80000 rows while the real batches hold a few hundred, since candidates are grouped by exact
+window length. Per-call dispatch dominates at that size. The exactness half of this is structural
+rather than a tuning problem: torch's `rfft` is a different implementation and is not bit identical
+to numpy's, and harvest decides frames with an argmax over scores and a `score < 2.5` threshold, so a
+last-bit change tips a frame by 1e-03 Hz.
+
+WORLD is under the BSD 3-Clause licence, whose first condition asks that the notice be retained in
+source redistributions. `processing_cosyvoice_v1.py` therefore carries it beside the Apache header,
+which is also the file's first licence header of any kind; the CosyVoice notice it should already
+have had is in the same block. The repository stays Apache-2.0: BSD 3-Clause is not copyleft, and
+Apache-2.0 section 4(c) is the clause that requires carrying the upstream notice through.
+`transformers` does the same thing in `models/blip/modeling_blip_text.py`.
+
+Still open for a human: `pyproject.toml`'s `eval` extra no longer needs `pyworld`, and the root
+`README.md` and `docs/locales/README_ko.md` tables have had it dropped from the `eval` row. That
+extra is being edited concurrently, so the entry replacing it is not documented here.
+
 ## Sibling inheritance map
 
 Principle 1 asks for inheritance between models inside `voicestudio/models/`, not only from
