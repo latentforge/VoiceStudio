@@ -111,7 +111,7 @@ no public checkpoint at all).
 | parler-tts/parler-tts-mini-v1 | Text-to-Speech | |
 | parler-tts/parler-tts-mini-v1.1 | Text-to-Speech | |
 | parler-tts/parler-tts-large-v1 | Text-to-Speech | |
-| Promptttspp | **Agents space** | This is a Gradio Space (demo UI), not a standard downloadable model repo. See `https://huggingface.co/spaces/line-corporation/promptttspp`. Real upstream code/weights: `https://github.com/line/promptttspp`, whose README also links Hugging Face pretrained models/demo. No plain `from_pretrained`-loadable checkpoint repo has been located yet; if one exists it is not this Space entry directly, and finding/verifying it is still open work. |
+| Promptttspp | **Agents space** | Settled: the Space is the checkpoint source and `voicestudio/models/prompt_tts_pp/` loads from it. `https://huggingface.co/spaces/line-corporation/promptttspp` is a Gradio Space rather than a model repo, so the weights sit in the Space repository itself; the section 2.3 search found no separate `from_pretrained`-loadable repo and confirmed this is the only one. Upstream code: `https://github.com/line/promptttspp`. Verified in `6fabba05` at wav2vec2 WER 0.222 and 0.286. |
 | Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign | Text-to-Speech | |
 | k2-fsa/OmniVoice | Text-to-Speech | |
 | bosonai/higgs-tts-3-4b | Text-to-Speech | |
