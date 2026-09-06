@@ -214,16 +214,38 @@ upstream ships without weights.
 
 ## Not carried over from upstream
 
-Recorded per CLAUDE.md section 2.6. None of these is resolved here.
+Recorded per CLAUDE.md section 2.6.
 
 - **The adversarial half of the training objective.** `forward(labels=...)` returns the mel reconstruction term
   only. `MultiPeriodDiscriminator`, `MultiResolutionDiscriminator`, `GeneratorLoss`, `DiscriminatorLoss` and
   `FeatureMatchingLoss` have no counterpart, so the four remaining terms of the generator loss and the whole
-  discriminator loss are missing, and with `pretrain_mel_steps: 0` in both released configs there is no phase of
+  discriminator loss are absent, and with `pretrain_mel_steps: 0` in both released configs there is no phase of
   upstream training that optimizes the reconstruction term alone. The two discriminators are training-only
-  modules that appear in no published checkpoint, and `transformers` ships no model that carries a discriminator
-  inside its model class, which is why they were left out, but that is a scope decision and it is open: a Vocos
-  trained through `forward` alone would not reproduce a released checkpoint.
+  modules that appear in no published checkpoint, and leaving them out follows the `transformers` convention on
+  GAN trained vocoders, measured over the 494 `modeling_*.py` files in the 510 model folders of `transformers`
+  5.16.1. `Discriminator` appears in two of those files, `electra/modeling_electra.py` and
+  `funnel/modeling_funnel.py`, and both are pretraining heads over token logits, `ElectraDiscriminatorPredictions`
+  and `FunnelDiscriminatorPredictions` under `FunnelForPreTraining`, not adversaries over a waveform.
+  `adversarial` appears in none of them. Every vocoder shipped takes a spectrogram or codes and returns a bare
+  tensor, and none takes `labels`:
+
+  | Class | `forward` signature |
+  |---|---|
+  | `SpeechT5HifiGan` | `(self, spectrogram, **kwargs) -> torch.FloatTensor` |
+  | `FastSpeech2ConformerHifiGan` | `(self, spectrogram, **kwargs) -> torch.FloatTensor` |
+  | `VitsHifiGan` | `(self, spectrogram, global_conditioning=None) -> torch.FloatTensor` |
+  | `SeamlessM4THifiGan`, `SeamlessM4Tv2HifiGan` | `(self, inputs_embeds) -> torch.FloatTensor` |
+  | `SeamlessM4TCodeHifiGan` | `(self, input_ids, spkr_id, lang_id, **kwargs) -> tuple[torch.Tensor]` |
+  | `SeamlessM4Tv2CodeHifiGan` | `(self, input_ids, speaker_id, lang_id, **kwargs) -> tuple[torch.Tensor]` |
+  | `Qwen2_5OmniToken2WavBigVGANModel` | `(self, mel_spectrogram, **kwargs)`, returning a clamped waveform |
+
+  VITS is the case that settles it, because upstream VITS is GAN trained end to end: `VitsModel.forward` declares
+  `labels` and its body opens with `raise NotImplementedError("Training of VITS is not supported yet.")`. The one
+  shipped speech synthesis model with a real objective, `FastSpeech2ConformerWithHifiGan`, sums L1 mel, duration,
+  pitch and energy in `FastSpeech2ConformerLoss` and carries no adversarial term, and its vocoder half takes no
+  labels. Against that convention, `VocosModel.forward(labels=...)` returning the mel reconstruction loss goes
+  beyond it rather than falling short of it. The consequence to know is that a Vocos trained through `forward`
+  alone optimizes the reconstruction term only and would not reproduce a released checkpoint.
 - **`VocosResNetBackbone`.** `configs/vocos-resnet.yaml` trains a HiFi-GAN style dilated residual backbone with
   weight normalization in place of the ConvNeXt one. No checkpoint was published for it and neither published
   checkpoint uses it.
@@ -288,7 +310,6 @@ Two things outside this folder are still needed and were deliberately not touche
 
 - `voicestudio/models/__init__.py` needs a `from .vocos import *` line, before the `f5_tts` and `vox_instruct`
   lines are reached, though `from ..vocos import ...` inside those two packages already imports it either way.
-- `PROJECT.md` needs a Vocos status entry carrying the gaps listed above, in particular the adversarial half of
-  the training objective.
+- `PROJECT.md` needs a Vocos status entry carrying the items listed above.
 
 Nothing in `pyproject.toml` or `uv.lock` changes.
