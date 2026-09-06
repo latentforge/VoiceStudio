@@ -49,8 +49,8 @@ picks up the text tokenizer, the speech tokenizer and the speaker encoder.
 ## The text frontend
 
 `CosyVoiceV3Processor.normalize_text` is upstream's `CosyVoiceFrontEnd.text_normalize`, and it runs
-before the tokenizer. Both branches open with the `wetext` text normalizer, which the `frontend`
-extra installs and which is skipped when it is absent; see "The text normalizer". A Chinese sentence
+before the tokenizer. Both branches open with the `wetext` text normalizer, which this project does
+not declare and which is skipped when it is not installed; see "The text normalizer". A Chinese sentence
 then loses the spaces that do not sit inside an embedded English word, has its corner marks spelled
 out, its brackets removed, its full stops and dashes replaced by their Chinese counterparts and a
 trailing run of commas turned into a full stop. Any other sentence has its remaining digit runs read
@@ -524,9 +524,11 @@ split as well, since upstream takes its v3 branch on the class name the adapter 
 ## The text normalizer
 
 `normalize_text` is v2's with v3's markup skip on top, and how it composes `wetext` with
-`number_to_words` is described in `voicestudio/models/cosyvoice_v1/README.md`. Two things are v3's
-own: the interaction with the inline markup, and the fact that v3's Chinese needs the normalizer far
-less than v1's and v2's do.
+`number_to_words` is described in `voicestudio/models/cosyvoice_v1/README.md`, along with the
+warning it raises when `wetext` is absent. `wetext` is a package the caller installs rather than one
+this project declares: `pyproject.toml` names it nowhere. Two things are v3's own: the interaction
+with the inline markup, and the fact that v3's Chinese needs the normalizer far less than v1's and
+v2's do.
 
 **The markup skip now covers both branches, and it has to.** `normalize_text` applies the normalizer
 span by span, leaving the spans that hold a token of the added vocabulary alone, which is a
@@ -541,9 +543,8 @@ emit this markup.
 
 **English**, zero shot from the 5.86 s LibriSpeech clip, three seeds, `facebook/wav2vec2-base-960h`,
 word error rate against the text each setting handed to the model. `off` is `text_frontend=False`,
-`today` is this repository without the `frontend` extra, `clvp` is `today` plus `EnglishNormalizer`
-from `transformers.models.clvp`, which was measured and rejected, and `wetext` is the extra
-installed.
+`today` is this repository without `wetext` installed, `clvp` is `today` plus `EnglishNormalizer`
+from `transformers.models.clvp`, which was measured and rejected, and `wetext` is it installed.
 
 | Case | off | today | clvp | wetext |
 |---|---|---|---|---|
@@ -598,7 +599,7 @@ a third way:
 | `电话号码是13800138000，房间号是302。` | 0.000 / 0.000 / 0.043 | 0.043 / 0.261 / 0.000 |
 | `今天天气很好，我们一起去公园散步吧。` | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 |
 
-**v3 is the outlier, and this is worth knowing before assuming the extra is needed.** Where v1 and
+**v3 is the outlier, and this is worth knowing before assuming the normalizer is needed.** Where v1 and
 v2 fall apart on an unnormalized Chinese date or phone number, v3 reads both back perfectly with no
 normalizer at all: all three seeds return `会议定在2025年3月8日下午3点30分开始` and
 `电话号码是13800138000，房间号是302`. Its units transcripts already say `五公里`, `三十分钟` and
@@ -733,11 +734,11 @@ Recorded per CLAUDE.md section 2.6.
   instance and a preference batch, so they do not fit inside a single `forward`. Still open, with the
   same note as v2 that upstream averages its log probabilities over the positions where the target
   **is** `IGNORE_ID`, which reads like a sign error.
-- **`ttsfrd`.** `wetext` is now reachable, as the `frontend` extra, and "The text normalizer" below
-  records what it does and does not fix. `ttsfrd`, which `CosyVoiceFrontEnd.__init__` tries first, is
-  not: it is a closed source Alibaba wheel whose rules ship as a separate `CosyVoice-ttsfrd` resource
-  pack, with no source release, so it cannot be traced under CLAUDE.md section 2.2 and cannot be
-  declared under section 9.1. Whether anything is left that only `ttsfrd` would fix cannot be
+- **`ttsfrd`.** `wetext` is now reachable, when the caller installs it, and "The text normalizer"
+  below records what it does and does not fix. `ttsfrd`, which `CosyVoiceFrontEnd.__init__` tries
+  first, is not reachable at all: it is a closed source Alibaba wheel whose rules ship as a separate
+  `CosyVoice-ttsfrd` resource pack, with no source release, so it cannot be traced under CLAUDE.md
+  section 2.2. Whether anything is left that only `ttsfrd` would fix cannot be
   measured without running it, and that is **still open**. One concrete candidate is on record: the
   `Dr. Smith works at the U.S. Dept. of Energy.` case below is not fixed by `wetext` either, because
   `Dept.` is not in its grammar.

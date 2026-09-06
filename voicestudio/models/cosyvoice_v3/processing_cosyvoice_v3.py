@@ -11,6 +11,7 @@ from ..cosyvoice_v1.processing_cosyvoice_v1 import (
     replace_blank,
     replace_corner_mark,
     split_paragraph,
+    warn_without_text_normalizer,
 )
 from ..cosyvoice_v2.processing_cosyvoice_v2 import (
     SPECIAL_TOKENS as V2_SPECIAL_TOKENS,
@@ -202,7 +203,9 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
             return self.tokenizer.encode(piece, add_special_tokens=False)
 
         if contains_chinese(text):
-            if self.chinese_normalizer is not None:
+            if self.chinese_normalizer is None:
+                warn_without_text_normalizer(text)
+            else:
                 text = rewrite_outside_markup(text, self.chinese_normalizer.normalize)
             text = text.replace("\n", "")
             text = replace_blank(text)
