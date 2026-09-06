@@ -383,7 +383,10 @@ clip, `I paid 1234 dollars in 2025 for 7 books.`, three seeds each, on the local
 | off | 1.111 / 1.000 / 0.889 | `I PAID TWONE HUNDRED AN D THIRTY FOUR DOLLARS INTWUNDRED INDE FY FOR SEVEN BOOKS` |
 
 With the front end on, all three seeds are word for word. With it off, no seed reads either number
-back and every one of them slurs the words around it.
+back and every one of them slurs the words around it. The front end runs on digit free text too, and
+leaves it alone: `The quick brown fox jumps over the lazy dog.` comes back from `normalize_text`
+unchanged and generates at WER 0.000 / 0.000 / 0.000 over the same three seeds and the same
+transcriber.
 
 **The interleaved decode against upstream's own `inference_bistream`.** Upstream's method was run
 unmodified on the same weights, through an adapter exposing this model's language model under the
@@ -444,7 +447,8 @@ Recorded per CLAUDE.md section 2.6.
 - **The text normalizer inside the text frontend.** The frontend itself is implemented:
   `CosyVoiceV2Processor` inherits `CosyVoiceV1Processor.normalize_text`, which is upstream's
   `CosyVoiceFrontEnd.text_normalize` with the sentence splitting of `split_paragraph` and the English
-  digit reading of `number_to_words`, so digits and multi sentence input behave the way upstream does.
+  digit reading of `number_to_words`, which is upstream's `inflect` call inlined, so digits and multi
+  sentence input behave the way upstream does.
   What is missing is the normalizer upstream runs before all of that, `ttsfrd` if the resource pack is
   installed, otherwise `wetext`, otherwise nothing. So the branch this reproduces exactly is upstream's
   own "no frontend is avaliable" path, and abbreviations, dates and currency are not expanded the way
