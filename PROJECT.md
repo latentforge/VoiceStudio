@@ -125,22 +125,6 @@ no public checkpoint at all).
 | SWivid/F5-TTS | Text-to-Speech | |
 | SparkAudio/Spark-TTS-0.5B | Text-to-Speech | |
 
-## Dependencies to remove
-
-- **https://github.com/latentforge/audiotools** — analyze what depends on it, remove the
-  dependency, then delete the repo.
-- **https://github.com/latentforge/vocos** — dependency was unused anywhere in this repo
-  (`F5TTSProcessor.decode` already took a generic vocoder callable), dropped. Repo not
-  yet deleted.
-- **https://github.com/latentforge/speechbrain** — this fork exists only to support a
-  newer torch version. Upstream speechbrain has caught up (v1.1.0 supports
-  `torch>=2.1.0` with no upper bound), and the dependency turned out to be unused
-  anywhere in this repo, so it was dropped entirely rather than switched to upstream.
-  Delete the fork.
-- **https://github.com/sarulab-speech/UTMOSv2** — decouple via the `evaluate` library
-  using https://huggingface.co/spaces/sarulab-speech/UTMOSv2/ as the reference
-  implementation. A new `voicestudio/metrics/` folder may be created if needed for this.
-
 ## Rules for the rewritten model code
 
 - Every model must be trainable with cross-entropy loss, matching the standard
@@ -149,7 +133,7 @@ no public checkpoint at all).
 - Follow `transformers` model file conventions strictly: `modeling_<model>.py`,
   `configuration_<model>.py`, standard class inheritance, etc. Do not create files that
   fall outside the `transformers` model layout.
-- Where a model already exists in `transformers` itself, only do an import relay — do
+- Where a model already exists in `transformers` itself, only do an import relay, and do
   not reimplement it.
 - Convert at load time, per CLAUDE.md section 9.2 and H17. A published repository id must load with no manual conversion call.
 - Comments follow `transformers` style: terse and technical, never narrated like a diary
@@ -164,7 +148,7 @@ no public checkpoint at all).
 ## Processor standard
 
 New models must use the tokenizer + audio_tokenizer processor pattern, i.e. all
-preprocessing goes through the model's `Processor` — no separate manual preprocessing
+preprocessing goes through the model's `Processor`, with no separate manual preprocessing
 step. For audio tokenizer models, follow the Qwen3-TTS and Higgs TTS 2 examples. For
 Parler, switch to the `dac` implementation already registered in `transformers` instead
 of vendoring DAC.
@@ -195,7 +179,7 @@ missing it:
   valid for that specific task.
 
 If the incoming processor is missing this behavior, subclass/extend it inside
-VoiceStudio to restore it — don't fork the whole processor.
+VoiceStudio to restore it rather than forking the whole processor.
 
 ## Packaging changes
 
@@ -621,9 +605,17 @@ producer, and upstream's own example writes it inline as a caller-supplied pronu
 are bit-identical and 0.999999 of its 642,283,136 parameters differ, at overall relative L2 0.657, with
 every embedding and head moved and `cos(a - base, b - base)` of 0.07 to 0.37 ruling out a small aligned RL
 delta. Nothing upstream loads it: `grep -rn "llm\.rl\|rl\.pt"` is empty and the only path is a hardcoded
-`llm.pt`. The model card's second eval row identifies it, and it is a trade rather than a strict
-improvement: CER 1.21 to 0.81, speaker similarity 78.0 to 77.4. Four things outside the folder would have
-to change to select it, so it is recorded rather than wired in.
+`llm.pt`.
+
+**Decided: the base checkpoint stays the default and the RL one is not wired in.** Both are intended
+releases, the roadmap listing "base model, rl model and its training/inference script", and the model
+card benchmarks both across six measures. The trade is systematic rather than noise, better on all three
+accuracy measures and worse on all three similarity measures: Chinese CER 1.21 to 0.81, English WER 2.24
+to 1.68, hard-set CER 6.71 to 5.44, against Chinese speaker similarity 78.0 to 77.4, English 71.8 to 69.5
+and hard-set 75.8 to 75.0. The largest single move is the 2.3 point drop in English speaker similarity,
+which matters most for the voice cloning this model is usually reached for. Upstream hardcodes `llm.pt`
+and its card recommends neither, so following the default is also following upstream. Nothing is
+implemented for the RL checkpoint; this entry is the record of why.
 
 ## Sibling inheritance map
 
