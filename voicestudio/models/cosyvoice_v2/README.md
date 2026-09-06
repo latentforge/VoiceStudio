@@ -45,6 +45,32 @@ mode, which is the only mode that needs no reference waveform.
 `token_offset` selects the mel frames that were not rendered yet, so the flow matching model carries
 no cache between chunks and only the vocoder does.
 
+Passing a generator of `input_ids` tensors instead of one tensor selects upstream's
+`inference_bistream`, the interleaved decode that reads text as it arrives and emits speech tokens
+between the groups, at the same `mix_ratio` `[5, 15]` the interleaved training layout uses. It is
+what upstream reaches for when the text comes from another language model rather than from a file,
+and it is the input side of streaming, orthogonal to `stream=True` on the output side.
+
+```python
+def stream():
+    for chunk in ["The quick ", "brown fox ", "jumps over ", "the lazy dog."]:
+        yield processor(text=chunk).input_ids
+
+waveform = model.generate(input_ids=stream(), speaker_embedding=speaker_embedding,
+                          prompt_input_ids=prompt.prompt_input_ids,
+                          prompt_speech_token_ids=prompt.prompt_speech_token_ids,
+                          prompt_speech_feat=prompt.speech_feat)
+```
+
+Switching on `isinstance(input_ids, GeneratorType)` is what `transformers` itself does for a streamed
+input: `nemotron_asr_streaming/generation_nemotron_asr_streaming.py` selects its streaming path with
+`isinstance(input_features, GeneratorType)` in both `_prepare_model_inputs` and `generate`, and
+`voxtral_realtime` does the same in four places. Those are the only two occurrences of
+`GeneratorType` in `transformers`, and both are input side. The `BaseStreamer` family in
+`generation/streamers.py` was rejected because it is an output side protocol, `put` and `end` called
+by `generate` as it produces tokens, with no input side counterpart; a `TextIteratorStreamer` driving
+this model is its consumer side, and reaches it as `(chunk for chunk in streamer)`.
+
 The released directory holds one `.pt` file per network rather than a single checkpoint, beside the
 `CosyVoice-BlankEN` directory the language model is built from. `from_pretrained` reads that layout
 directly: it merges the three files under the name of the submodule each belongs to into a directory
@@ -325,6 +351,27 @@ model together with the prompt mel spectrogram and the clip's transcript.
 
 Every word is there; the second splits `SEASHELLS`, a decoder edge rather than a missing word.
 
+**Streaming input text, generated and transcribed back.** The same 5.86 s LibriSpeech clip as the
+zero shot run above, three seeds, transcribed with `facebook/wav2vec2-base-960h`, against the
+sentence `The quick brown fox jumps over the lazy dog.` fed as the four chunks `The quick `,
+`brown fox `, `jumps over `, `the lazy dog.`:
+
+| Input | WER by seed | Heard back, seed 1 |
+|---|---|---|
+| the whole text at once | 0.000 / 0.000 / 0.000 | `THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG` |
+| a generator of the four chunks | 0.444 / 0.333 / 0.556 | `WELCOME HIS GOSPEL THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG` |
+
+Every seed of the streamed decode carries the whole sentence, preceded by the last three words of the
+prompt utterance; seeds 0 and 2 add a connectionist temporal classification merge, `GASPEL` and
+`DUG`, `QUITBROWN`. The prefix is the interleaved layout rather than a defect: the prompt transcript
+is part of the interleaved stream by construction, so the decode continues out of it, and the same
+run on v3 shows what happens when the prompt speech tokens are withheld and the transcript has
+nothing to stand in for it.
+
+The decode was also checked as a decode rather than only by its audio: from seed 0 it yields 135
+speech tokens with a maximum id of 6558 against a `speech_vocab_size` of 6561, so every fill token
+and the end of speech token were consumed inside the loop and none leaked into the output.
+
 ## Not carried over from upstream
 
 Recorded per CLAUDE.md section 2.6.
@@ -385,9 +432,6 @@ Recorded per CLAUDE.md section 2.6.
   22050 Hz, 256 hop geometry of v1. Only the 192 dimensional speaker embeddings transfer, since
   `campplus.onnx` is byte identical across v1, v2 and v3, and that is what upstream's sft mode needs
   and nothing more. Zero shot cloning from a reference clip needs no table.
-- **Streaming input text.** Upstream's `inference_bistream` accepts a text generator and interleaves
-  text and speech tokens using the same `mix_ratio` the bistream training layout uses. The training
-  layout is implemented, the inference path is not.
 - **The vendored upstream tree.** It is gone, removed in `86a9fa18` once v2 and v3 had landed and
   every file in it could be pointed at a counterpart or a category. Seven files stay in
   `voicestudio/models/cosyvoice_v1/`, each holding something no migration implemented, and the

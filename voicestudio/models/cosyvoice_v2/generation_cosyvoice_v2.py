@@ -1,6 +1,7 @@
 """Generation utilities for CosyVoice v2."""
 
-from typing import Generator, Optional
+from types import GeneratorType
+from typing import Generator, Iterator, Optional, Union
 
 import numpy as np
 import torch
@@ -24,10 +25,9 @@ class CosyVoiceV2GenerationMixin:
     stream_scale_factor = 2
     mel_cache_len = 8
 
-    @torch.inference_mode()
     def generate_speech_tokens(
         self,
-        input_ids: torch.Tensor,
+        input_ids: Union[torch.Tensor, Iterator[torch.Tensor]],
         prompt_input_ids: Optional[torch.Tensor] = None,
         prompt_speech_token_ids: Optional[torch.Tensor] = None,
         min_token_text_ratio: float = 2.0,
@@ -41,8 +41,12 @@ class CosyVoiceV2GenerationMixin:
         Samples speech tokens for one utterance and yields them one at a time.
 
         Args:
-            input_ids (`torch.Tensor` of shape `(1, text_length)`):
-                Text token ids of the sentence to synthesize.
+            input_ids (`torch.Tensor` of shape `(1, text_length)`, or a generator of such tensors):
+                Text token ids of the sentence to synthesize. A generator selects the interleaved
+                layout instead: the text is read as it arrives and speech tokens are decoded between
+                the groups, in the same `mix_ratio` proportion the interleaved training layout uses.
+                `min_token_text_ratio` and `max_token_text_ratio` are not used there, since the text
+                length is not known while decoding.
             prompt_input_ids (`torch.Tensor` of shape `(1, prompt_text_length)`, *optional*):
                 Text token ids of the prompt utterance, prepended to `input_ids`.
             prompt_speech_token_ids (`torch.Tensor` of shape `(1, prompt_speech_length)`, *optional*):
@@ -63,6 +67,56 @@ class CosyVoiceV2GenerationMixin:
         Yields:
             `int`: the next speech token id.
         """
+        if isinstance(input_ids, GeneratorType):
+            return self._decode_interleaved(
+                input_ids,
+                prompt_input_ids,
+                prompt_speech_token_ids,
+                top_p,
+                top_k,
+                window_size,
+                repetition_threshold,
+            )
+        return self._decode(
+            input_ids,
+            prompt_input_ids,
+            prompt_speech_token_ids,
+            min_token_text_ratio,
+            max_token_text_ratio,
+            top_p,
+            top_k,
+            window_size,
+            repetition_threshold,
+        )
+
+    def split_prompt_text(self, prompt_input_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Splits the prompt text of an interleaved decode into the part that opens the sequence and the
+        part that is interleaved with the speech tokens.
+
+        Args:
+            prompt_input_ids (`torch.Tensor` of shape `(1, prompt_text_length)`):
+                Text token ids of the prompt utterance.
+
+        Returns:
+            `tuple[torch.Tensor, torch.Tensor]`: the opening part, empty in v2, and the interleaved
+            part.
+        """
+        return prompt_input_ids[:, :0], prompt_input_ids
+
+    @torch.inference_mode()
+    def _decode(
+        self,
+        input_ids: torch.Tensor,
+        prompt_input_ids: Optional[torch.Tensor],
+        prompt_speech_token_ids: Optional[torch.Tensor],
+        min_token_text_ratio: float,
+        max_token_text_ratio: float,
+        top_p: float,
+        top_k: int,
+        window_size: int,
+        repetition_threshold: float,
+    ) -> Generator[int, None, None]:
         text_length = input_ids.shape[1]
         if prompt_input_ids is None:
             prompt_input_ids = input_ids.new_zeros(1, 0)
@@ -94,6 +148,92 @@ class CosyVoiceV2GenerationMixin:
                 break
             yield token_id
             decoded_tokens.append(token_id)
+            hidden_states = self.llm.speech_embedding.weight[token_id].reshape(1, 1, -1)
+
+    @torch.inference_mode()
+    def _decode_interleaved(
+        self,
+        input_ids: Iterator[torch.Tensor],
+        prompt_input_ids: Optional[torch.Tensor],
+        prompt_speech_token_ids: Optional[torch.Tensor],
+        top_p: float,
+        top_k: int,
+        window_size: int,
+        repetition_threshold: float,
+    ) -> Generator[int, None, None]:
+        text_ratio, speech_ratio = self.llm.mix_ratio
+        sos_embed = self.llm.llm_embedding.weight[self.llm.sos_index].reshape(1, 1, -1)
+        task_id_embed = self.llm.llm_embedding.weight[self.llm.task_id_index].reshape(1, 1, -1)
+
+        if prompt_input_ids is None:
+            prompt_input_ids = torch.zeros(1, 0, dtype=torch.int32, device=sos_embed.device)
+        opening_ids, interleaved_ids = self.split_prompt_text(prompt_input_ids)
+        hidden_states = torch.concat([sos_embed, self.llm.embed_text(opening_ids)], dim=1)
+        text_cache = self.llm.embed_text(interleaved_ids)
+
+        prompt_length = 0 if prompt_speech_token_ids is None else prompt_speech_token_ids.shape[1]
+        if prompt_length != 0:
+            prompt_embeds = self.llm.speech_embedding(prompt_speech_token_ids)
+        else:
+            prompt_embeds = sos_embed.new_zeros(1, 0, self.config.lm_hidden_size)
+        # The prompt speech tokens stand in for the speech tokens of the groups they fill, so the
+        # first fill token falls where the group they end in would have ended.
+        next_fill_index = (prompt_length // speech_ratio + 1) * speech_ratio - prompt_length
+
+        decoded_tokens: list[int] = []
+        past_key_values = None
+        for chunk in input_ids:
+            text_cache = torch.concat([text_cache, self.llm.embed_text(chunk)], dim=1)
+            while prompt_embeds.shape[1] != 0 and text_cache.shape[1] >= text_ratio:
+                hidden_states = torch.concat(
+                    [hidden_states, text_cache[:, :text_ratio], prompt_embeds[:, :speech_ratio]], dim=1
+                )
+                text_cache = text_cache[:, text_ratio:]
+                prompt_embeds = prompt_embeds[:, speech_ratio:]
+            if prompt_embeds.shape[1] != 0:
+                continue
+            opening = not decoded_tokens and hidden_states.shape[1] == 1
+            if opening or decoded_tokens[-1:] == [self.llm.fill_token_id]:
+                if text_cache.shape[1] < text_ratio:
+                    continue
+                group = text_cache[:, :text_ratio]
+                # A fill token closes a group, so the cache already holds everything before the one
+                # the model is being handed here.
+                hidden_states = torch.concat([hidden_states, group], dim=1) if opening else group
+                text_cache = text_cache[:, text_ratio:]
+            while True:
+                logits, past_key_values = self.llm(hidden_states, past_key_values=past_key_values, use_cache=True)
+                log_probs = logits[:, -1].log_softmax(dim=-1).squeeze(dim=0)
+                log_probs[self.llm.eos_token_id] = -float("inf")
+                if len(decoded_tokens) == next_fill_index:
+                    token_id = self.llm.fill_token_id
+                else:
+                    token_id = repetition_aware_sampling(
+                        log_probs, decoded_tokens, top_p, top_k, window_size, repetition_threshold
+                    )
+                if token_id == self.llm.fill_token_id:
+                    next_fill_index = len(decoded_tokens) + speech_ratio + 1
+                decoded_tokens.append(token_id)
+                if token_id >= self.llm.speech_vocab_size:
+                    if token_id == self.llm.fill_token_id:
+                        break
+                    raise ValueError(f"speech token {token_id} cannot close an interleaved group")
+                yield token_id
+                hidden_states = self.llm.speech_embedding.weight[token_id].reshape(1, 1, -1)
+
+        hidden_states = torch.concat([hidden_states, text_cache, task_id_embed], dim=1)
+        while True:
+            logits, past_key_values = self.llm(hidden_states, past_key_values=past_key_values, use_cache=True)
+            log_probs = logits[:, -1].log_softmax(dim=-1).squeeze(dim=0)
+            token_id = repetition_aware_sampling(
+                log_probs, decoded_tokens, top_p, top_k, window_size, repetition_threshold
+            )
+            decoded_tokens.append(token_id)
+            if token_id >= self.llm.speech_vocab_size:
+                if token_id == self.llm.eos_token_id:
+                    break
+                raise ValueError(f"speech token {token_id} cannot end an utterance")
+            yield token_id
             hidden_states = self.llm.speech_embedding.weight[token_id].reshape(1, 1, -1)
 
     def init_streaming_state(self) -> dict:
@@ -195,7 +335,7 @@ class CosyVoiceV2GenerationMixin:
 
     def generate(
         self,
-        input_ids: torch.Tensor,
+        input_ids: Union[torch.Tensor, Iterator[torch.Tensor]],
         speaker_embedding: torch.Tensor,
         prompt_input_ids: Optional[torch.Tensor] = None,
         prompt_speech_token_ids: Optional[torch.Tensor] = None,
@@ -210,8 +350,10 @@ class CosyVoiceV2GenerationMixin:
         Synthesizes one utterance.
 
         Args:
-            input_ids (`torch.Tensor` of shape `(1, text_length)`):
-                Text token ids of the sentence to synthesize.
+            input_ids (`torch.Tensor` of shape `(1, text_length)`, or a generator of such tensors):
+                Text token ids of the sentence to synthesize. A generator interleaves the text with
+                the speech tokens as it arrives, so synthesis can start before the sentence is
+                complete.
             speaker_embedding (`torch.Tensor` of shape `(1, speaker_embedding_dim)`):
                 Utterance level speaker embedding. It conditions the flow matching model only, since
                 the v2 language model does not read it.
@@ -265,7 +407,7 @@ class CosyVoiceV2GenerationMixin:
 
     def _speech_token_stream(
         self,
-        input_ids: torch.Tensor,
+        input_ids: Union[torch.Tensor, Iterator[torch.Tensor]],
         prompt_input_ids: Optional[torch.Tensor],
         prompt_speech_token_ids: Optional[torch.Tensor],
         source_speech_token_ids: Optional[torch.Tensor],
@@ -282,20 +424,20 @@ class CosyVoiceV2GenerationMixin:
 
     def _prompt_defaults(
         self,
-        input_ids: torch.Tensor,
+        device: torch.device,
         flow_prompt_speech_token_ids: Optional[torch.Tensor],
         prompt_speech_feat: Optional[torch.Tensor],
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if flow_prompt_speech_token_ids is None:
-            flow_prompt_speech_token_ids = input_ids.new_zeros(1, 0)
+            flow_prompt_speech_token_ids = torch.zeros(1, 0, dtype=torch.int32, device=device)
         if prompt_speech_feat is None:
-            prompt_speech_feat = torch.zeros(1, 0, self.config.flow_output_size, device=input_ids.device)
+            prompt_speech_feat = torch.zeros(1, 0, self.config.flow_output_size, device=device)
         return flow_prompt_speech_token_ids, prompt_speech_feat
 
     @torch.inference_mode()
     def _generate_single(
         self,
-        input_ids: torch.Tensor,
+        input_ids: Union[torch.Tensor, Iterator[torch.Tensor]],
         speaker_embedding: torch.Tensor,
         prompt_input_ids: Optional[torch.Tensor],
         prompt_speech_token_ids: Optional[torch.Tensor],
@@ -305,8 +447,9 @@ class CosyVoiceV2GenerationMixin:
         speed: float,
         **sampling_kwargs,
     ) -> torch.Tensor:
+        device = self.device
         flow_prompt_speech_token_ids, prompt_speech_feat = self._prompt_defaults(
-            input_ids, flow_prompt_speech_token_ids, prompt_speech_feat
+            device, flow_prompt_speech_token_ids, prompt_speech_feat
         )
         state = self.init_streaming_state()
         tokens = list(
@@ -315,7 +458,7 @@ class CosyVoiceV2GenerationMixin:
                 **sampling_kwargs,
             )
         )
-        speech_token_ids = torch.tensor([tokens], dtype=torch.int32, device=input_ids.device)
+        speech_token_ids = torch.tensor([tokens], dtype=torch.int32, device=device)
         return self.token2wav(
             speech_token_ids, flow_prompt_speech_token_ids, prompt_speech_feat, speaker_embedding, state,
             token_offset=0, stream=False, finalize=True, speed=speed,
@@ -324,7 +467,7 @@ class CosyVoiceV2GenerationMixin:
     @torch.inference_mode()
     def _generate_stream(
         self,
-        input_ids: torch.Tensor,
+        input_ids: Union[torch.Tensor, Iterator[torch.Tensor]],
         speaker_embedding: torch.Tensor,
         prompt_input_ids: Optional[torch.Tensor],
         prompt_speech_token_ids: Optional[torch.Tensor],
@@ -333,8 +476,9 @@ class CosyVoiceV2GenerationMixin:
         source_speech_token_ids: Optional[torch.Tensor],
         **sampling_kwargs,
     ) -> Generator[torch.Tensor, None, None]:
+        device = self.device
         flow_prompt_speech_token_ids, prompt_speech_feat = self._prompt_defaults(
-            input_ids, flow_prompt_speech_token_ids, prompt_speech_feat
+            device, flow_prompt_speech_token_ids, prompt_speech_feat
         )
         state = self.init_streaming_state()
         token_stream = self._speech_token_stream(
@@ -356,7 +500,7 @@ class CosyVoiceV2GenerationMixin:
                 if len(tokens) - token_offset < hop + lookahead:
                     break
                 chunk = torch.tensor(
-                    [tokens[: token_offset + hop + lookahead]], dtype=torch.int32, device=input_ids.device
+                    [tokens[: token_offset + hop + lookahead]], dtype=torch.int32, device=device
                 )
                 yield self.token2wav(
                     chunk, flow_prompt_speech_token_ids, prompt_speech_feat, speaker_embedding, state,
@@ -365,7 +509,7 @@ class CosyVoiceV2GenerationMixin:
                 token_offset += hop
                 token_hop_len = min(token_max_hop_len, token_hop_len * self.stream_scale_factor)
 
-        chunk = torch.tensor([tokens], dtype=torch.int32, device=input_ids.device)
+        chunk = torch.tensor([tokens], dtype=torch.int32, device=device)
         yield self.token2wav(
             chunk, flow_prompt_speech_token_ids, prompt_speech_feat, speaker_embedding, state,
             token_offset=token_offset, stream=False, finalize=True,
