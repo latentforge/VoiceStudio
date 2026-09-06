@@ -647,15 +647,18 @@ path `number_to_words` is never reached, sitting in the `else` of `contains_chin
 
 **Settled: `ttsfrd` stays unimplemented.** It is the closed-source Alibaba wheel whose rules ship as a
 separate `CosyVoice-ttsfrd` resource pack, and it was deliberately not touched even under the H11
-exception. Three measurements close it rather than one preference. What it alone would add is `Dept.`,
-absent from both `wetext`'s grammar and CLVP's table, since `Dr.` and `U.S.` are already read correctly
-unaided and dates, currency, units and phone numbers are what `wetext` took. And it would not fix the
-sentence that started this: on v3, `Dr. Smith works at the U.S. Dept. of Energy.` truncates to `OF ENERGY`
-on most seeds whatever the setting, which is a decode failure rather than a text one, so expanding the
-abbreviation would leave it as it is.
+exception. What it alone would add is `Dept.`, absent from both `wetext`'s grammar and CLVP's table,
+since `Dr.` and `U.S.` are already read correctly unaided and dates, currency, units and phone numbers are
+what `wetext` took. Against that, a closed wheel and a separate resource pack whose licence this project
+does not control. The residual it would close is one abbreviation on one sentence, measured at word error
+rate 0.200 across five seeds where the rest of the sentence reads correctly.
 
-That truncation is the residual worth knowing about, and it is untouched: nobody has looked at why v3
-drops that sentence, and it is a different problem from anything the text frontend can reach.
+A third reason was recorded here and has since been withdrawn. It said the sentence truncates to
+`OF ENERGY` whatever the setting, so expanding the abbreviation would change nothing. That truncation was
+an artefact of the verification harness rather than the model; see below. Under upstream's own prompt
+layout the sentence reads in full and `Dept.` is the only error left, which strengthens the case for
+`ttsfrd` slightly rather than weakening it. The decision does not turn on it and stands on the two
+reasons above.
 
 One correction to the record it replaces: the old entry said the frontend emits the ARPAbet and pinyin
 markup the 278 tokens exist for. Nothing in the open upstream source emits it. `ttsfrd` is its only
@@ -677,6 +680,48 @@ and hard-set 75.8 to 75.0. The largest single move is the 2.3 point drop in Engl
 which matters most for the voice cloning this model is usually reached for. Upstream hardcodes `llm.pt`
 and its card recommends neither, so following the default is also following upstream. Nothing is
 implemented for the RL checkpoint; this entry is the record of why.
+
+## The CosyVoice v3 truncation was the harness, and what that says about the harnesses
+
+`Dr. Smith works at the U.S. Dept. of Energy.` came back as `OF ENERGY` on most seeds and was recorded as
+an unexplained decode failure. It was neither the model nor this repository's code. The verification
+script passed `text="<|endofprompt|>" + sentence` **together with** a prompt transcript, so the model saw
+`[prompt transcript] [<|endofprompt|>] [target text]` and the whole reference transcript landed in the
+instruction slot. Upstream never builds that sequence: `example.py` puts the marker inside `prompt_text`
+ahead of the transcript, and `frontend_cross_lingual`, the mode where the marker leads the text, deletes
+`prompt_text` outright. The harness combined the two.
+
+Under upstream's placement every seed reads the sentence, word error rate 0.200 across five against
+1.000/0.200/0.800/0.800/0.800, at 3.2 to 4.0 seconds rather than 1.5 to 3.0. Ruled out along the way, each
+measured rather than argued: a `max_length` ceiling (300 against 37 to 120 tokens produced), v3's silence
+thinning (0 tokens dropped), the four full stops, the word `Dept`, the broad stop-token set (every decode
+terminated on the true eos, and P(eos) never exceeded 0.5), and v1 and v2, which have no such marker at
+all. Upstream's own `CosyVoice3LM.inference` on the same weights agrees token for token on 8 of 10
+seed and case pairs, reproducing `OF ENERGY`, so the behaviour is upstream's under that sequence.
+
+**The English frontend table was measured under the bad layout and has been replaced** (`c81f0cad`). The
+case for reaching `wetext` still holds and is smaller than recorded: currency 0.467/0.733/0.733 becomes
+0.267/0.400/0.200 without it, units 0.700/0.700/1.300 becomes 0.500/0.900/0.500. The `wetext` column could
+not be remeasured, since installing it to test is what H11 forbids, so it is labelled as old-layout in the
+table rather than compared silently across two harnesses. The direction is safe because the wrong sequence
+only ever hurt: every remeasured row improved or held. The Chinese rows are structurally immune, having
+been run in sft mode with a speaker vector and no reference waveform, so there is no transcript to
+misplace, and they were the stated justification anyway.
+
+**The wider lesson is about where the harnesses live.** `.cache/verify/scripts/` is gitignored, so the
+script that produced a table cited in three commits and in this file was never reviewed by anyone. An
+audit of the four CosyVoice harnesses found one more marker mistake, a `whole text` row in
+`run_cosyvoice_v3_bistream.py` running with two markers, benign because it scored 0.000 on every seed but
+not measuring the sequence it claims, and a real defect in
+`probe_cosyvoice_v3_bistream_reference.py`, whose adapter passes `attention_mask=masks[:, -1, :]`, length
+1 once the cache is populated, so the upstream side of that comparison ran against a truncated mask. The
+bistream agreement that script reports may have been measured through it.
+
+A second finding, recorded in the folder README as a deliberate deviation rather than settled here:
+upstream's `min_len` floor suppresses `weighted_scores[self.speech_token_size]`, which on v3 is 6561, the
+sos token, because v3 moved eos to 6562. So upstream's floor masks the wrong token and does not prevent an
+early eos, while `generation_cosyvoice_v2.py::_decode` masks the real one. On seed 1 upstream stopped at 10
+tokens, silent, where this repository produced 116 tokens of correct speech.
 
 ## Sibling inheritance map
 
