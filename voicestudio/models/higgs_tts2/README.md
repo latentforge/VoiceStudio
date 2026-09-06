@@ -8,12 +8,12 @@ Original model and code: [boson-ai/higgs-audio](https://github.com/boson-ai/higg
 ## Usage
 
 ```python
-from transformers import AutoModelForTextToWaveform, AutoProcessor
+from voicestudio.models.higgs_tts2 import HiggsTTS2ForConditionalGeneration, HiggsTTS2Processor
 
 model_id = "bosonai/higgs-tts-2-3b-base"
 
-processor = AutoProcessor.from_pretrained(model_id)
-model = AutoModelForTextToWaveform.from_pretrained(model_id)
+processor = HiggsTTS2Processor.from_pretrained(model_id)
+model = HiggsTTS2ForConditionalGeneration.from_pretrained(model_id)
 model.to("cuda")
 processor.audio_tokenizer.to(model.device)
 ```
@@ -50,3 +50,14 @@ Three arguments above are load-bearing:
 - `processor.audio_tokenizer.to(model.device)` puts the codec on the same device as the generated
   codes. `HiggsAudioV2Processor.decode` does not move them itself, so a CUDA-resident model with a
   CPU-resident audio tokenizer raises a device mismatch in the codec's first linear layer.
+
+The `Auto` classes reach the same two objects. The model ships in `transformers` itself, which the
+names above alias, so this route needs no registration from this repository and works without
+importing `voicestudio.models` first:
+
+```python
+from transformers import AutoModelForTextToWaveform, AutoProcessor
+
+processor = AutoProcessor.from_pretrained(model_id)
+model = AutoModelForTextToWaveform.from_pretrained(model_id)
+```
