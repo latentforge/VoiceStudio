@@ -1,7 +1,17 @@
 """Processor class for CosyVoice v3."""
 
-from typing import Optional
+import re
+from typing import Optional, Union
 
+from ..cosyvoice_v1.processing_cosyvoice_v1 import (
+    contains_chinese,
+    is_only_punctuation,
+    remove_bracket,
+    replace_blank,
+    replace_corner_mark,
+    spell_out_number,
+    split_paragraph,
+)
 from ..cosyvoice_v2.processing_cosyvoice_v2 import (
     SPECIAL_TOKENS as V2_SPECIAL_TOKENS,
     CosyVoiceV2FeatureExtractor,
@@ -12,8 +22,8 @@ from .weight_conversion import SPEECH_TOKENIZER_FILE
 
 
 # The tokens upstream's `CosyVoice3Tokenizer` adds to the Qwen2 tokenizer, in the order it adds
-# them: v2's tokens, then the end of system marker, the ARPAbet phoneme set and the pinyin syllable
-# set the v3 text frontend emits.
+# them: v2's tokens, then the end of system marker, the ARPAbet phoneme set and the pinyin initial
+# and final set, which a caller writes inline to override the pronunciation of a word.
 SPECIAL_TOKENS = V2_SPECIAL_TOKENS + [
     "<|endofsystem|>",
     "[AA]", "[AA0]", "[AA1]", "[AA2]", "[AE]", "[AE0]", "[AE1]", "[AE2]", "[AH]", "[AH0]", "[AH1]", "[AH2]",
@@ -39,6 +49,133 @@ SPECIAL_TOKENS = V2_SPECIAL_TOKENS + [
 ]
 
 
+# The added vocabulary as it is written inline, longest first so that no token is matched inside a
+# longer one.
+ADDED_TOKEN_PATTERN = re.compile(
+    "|".join(re.escape(token) for token in sorted(SPECIAL_TOKENS, key=len, reverse=True))
+)
+
+
+ENGLISH_UNITS = ("", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+
+ENGLISH_TEENS = (
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+    "nineteen",
+)
+
+ENGLISH_TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+
+ENGLISH_SCALES = (
+    "", " thousand", " million", " billion", " trillion", " quadrillion", " quintillion", " sextillion",
+    " septillion", " octillion", " nonillion", " decillion",
+)
+
+
+def spell_out_two_digits(tens: int, units: int) -> str:
+    """
+    Args:
+        tens (`int`):
+            Tens digit.
+        units (`int`):
+            Units digit.
+
+    Returns:
+        `str`: The two digits read out, hyphenated when both are nonzero and empty when both are
+        zero.
+    """
+    if tens == 1:
+        return ENGLISH_TEENS[units]
+    return ENGLISH_TENS[tens] + ("-" if tens and units else "") + ENGLISH_UNITS[units]
+
+
+def number_to_words(number: str) -> str:
+    """
+    Reads a run of decimal digits out in English, the way `inflect.engine().number_to_words` does at
+    its default settings: groups of three carrying a scale word and separated by commas, `and` after
+    a hundreds digit and before a trailing group that is a single word, tens and units hyphenated,
+    and leading zeros dropped.
+
+    Args:
+        number (`str`):
+            Run of decimal digits, with no sign, decimal point or group separator. A run of zeros
+            reads as `zero`.
+
+    Returns:
+        `str`: The reading.
+
+    Raises:
+        ValueError: If the run needs a scale word beyond `decillion`.
+    """
+    digits = number.lstrip("0")
+    if digits == "":
+        return "zero"
+    if int(digits) == 1:
+        return "one"
+    groups = []
+    while digits:
+        groups.append(int(digits[-3:]))
+        digits = digits[:-3]
+    if len(groups) > len(ENGLISH_SCALES):
+        raise ValueError(f"{number} is larger than the English scale words reach")
+    spelled = []
+    for index in range(len(groups) - 1, -1, -1):
+        hundreds, remainder = divmod(groups[index], 100)
+        if hundreds == 0 and remainder == 0:
+            continue
+        below_hundred = spell_out_two_digits(*divmod(remainder, 10))
+        if hundreds:
+            joiner = " and " if remainder else ""
+            spelled.append(f"{ENGLISH_UNITS[hundreds]} hundred{joiner}{below_hundred}{ENGLISH_SCALES[index]}")
+        else:
+            spelled.append(f"{below_hundred}{ENGLISH_SCALES[index]}")
+    words = ", ".join(spelled)
+    head, separator, tail = words.rpartition(", ")
+    if separator and " " not in tail:
+        words = f"{head} and {tail}"
+    return words
+
+
+class CosyVoiceV3NumberSpeller:
+    r"""
+    Constructs the engine [`~CosyVoiceV3Processor.normalize_text`] reads an English digit run out
+    with, exposing the one method of `inflect.engine` upstream's text front end calls.
+    """
+
+    def number_to_words(self, number: str) -> str:
+        """
+        Args:
+            number (`str`):
+                Run of decimal digits.
+
+        Returns:
+            `str`: The reading, from [`number_to_words`].
+        """
+        return number_to_words(number)
+
+
+def spell_out_number_outside_markup(text: str, number_speller) -> str:
+    """
+    Replaces every run of digits with its English reading, skipping the spans that hold a token of
+    the added vocabulary, whose stress digits belong to the token rather than to a number.
+
+    Args:
+        text (`str`):
+            Text to rewrite.
+        number_speller ([`CosyVoiceV3NumberSpeller`]):
+            Engine whose `number_to_words` reads a digit run out.
+
+    Returns:
+        `str`: The rewritten text.
+    """
+    spelled, position = [], 0
+    for match in ADDED_TOKEN_PATTERN.finditer(text):
+        spelled.append(spell_out_number(text[position : match.start()], number_speller))
+        spelled.append(match.group())
+        position = match.end()
+    spelled.append(spell_out_number(text[position:], number_speller))
+    return "".join(spelled)
+
+
 class CosyVoiceV3FeatureExtractor(CosyVoiceV2FeatureExtractor):
     r"""
     Constructs a CosyVoice v3 feature extractor, which is v2's unchanged: the flow matching model of
@@ -57,8 +194,9 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
     the speaker encoder into a single object.
 
     It differs from v2's in the tokenizer's added vocabulary, which gains the end of system marker
-    and the phoneme and pinyin sets the v3 text frontend emits, and in the speech tokenizer, which is
-    twice as deep and whose weights come out of `speech_tokenizer_v3.onnx`.
+    and the ARPAbet and pinyin sets a caller writes inline to override a pronunciation, in the text
+    front end, which reads a digit run out without disturbing that markup, and in the speech
+    tokenizer, which is twice as deep and whose weights come out of `speech_tokenizer_v3.onnx`.
 
     Args:
         feature_extractor ([`CosyVoiceV3FeatureExtractor`]):
@@ -97,5 +235,73 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
             tokenizer, tokens=SPECIAL_TOKENS if tokens is None else tokens
         )
 
+    @property
+    def inflect_parser(self) -> CosyVoiceV3NumberSpeller:
+        """
+        Returns:
+            [`CosyVoiceV3NumberSpeller`]: The engine that reads an English digit run out.
+        """
+        if self._inflect_parser is None:
+            self._inflect_parser = CosyVoiceV3NumberSpeller()
+        return self._inflect_parser
 
-__all__ = ["SPECIAL_TOKENS", "CosyVoiceV3FeatureExtractor", "CosyVoiceV3Processor"]
+    def normalize_text(
+        self, text: str, split: bool = True, text_frontend: bool = True
+    ) -> Union[str, list[str]]:
+        """
+        Rewrites a sentence the way upstream's text front end does, then optionally splits it into
+        the pieces upstream synthesizes one at a time.
+
+        A Chinese sentence loses the spaces that do not sit inside an embedded English word, has its
+        corner marks spelled out, its brackets removed, its full stops and dashes replaced by their
+        Chinese counterparts and a trailing run of commas turned into a full stop. Any other
+        sentence has its digit runs read out by [`number_to_words`], leaving the stress digits of
+        an ARPAbet token alone. Text carrying a `<|` `|>` marker is returned untouched. Neither
+        branch runs a text normalizer over numbers, dates or abbreviations, which is what upstream
+        reaches `ttsfrd` or `wetext` for.
+
+        Args:
+            text (`str`):
+                Text to rewrite.
+            split (`bool`, *optional*, defaults to `True`):
+                Whether the rewritten text is split into pieces.
+            text_frontend (`bool`, *optional*, defaults to `True`):
+                Whether the front end runs at all. Upstream turns it off to reproduce the samples of
+                its demonstration pages.
+
+        Returns:
+            `str` or `list[str]`: The rewritten text, or its pieces when `split` is set.
+        """
+        if text_frontend is False or ("<|" in text and "|>" in text) or text == "":
+            return [text] if split else text
+        text = text.strip()
+
+        def tokenize(piece: str) -> list[int]:
+            return self.tokenizer.encode(piece, add_special_tokens=False)
+
+        if contains_chinese(text):
+            text = text.replace("\n", "")
+            text = replace_blank(text)
+            text = replace_corner_mark(text)
+            text = text.replace(".", "\u3002")
+            text = text.replace(" - ", "\uff0c")
+            text = remove_bracket(text)
+            text = re.sub(r"[\uff0c,\u3001]+$", "\u3002", text)
+            pieces = split_paragraph(text, tokenize, "zh", token_max_n=80, token_min_n=60, merge_len=20)
+        else:
+            text = spell_out_number_outside_markup(text, self.inflect_parser)
+            pieces = split_paragraph(text, tokenize, "en", token_max_n=80, token_min_n=60, merge_len=20)
+        pieces = [piece for piece in pieces if not is_only_punctuation(piece)]
+        return pieces if split else text
+
+
+__all__ = [
+    "ADDED_TOKEN_PATTERN",
+    "SPECIAL_TOKENS",
+    "CosyVoiceV3FeatureExtractor",
+    "CosyVoiceV3NumberSpeller",
+    "CosyVoiceV3Processor",
+    "number_to_words",
+    "spell_out_number_outside_markup",
+    "spell_out_two_digits",
+]
