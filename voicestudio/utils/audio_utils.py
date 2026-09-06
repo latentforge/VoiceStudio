@@ -1,10 +1,13 @@
 import torch
 import torchaudio
 
-_MAX_POINTS = 11025
 
-
-def show_waveform(audio_path: str | None, waveform: torch.Tensor | None = None, sr: int = 48000):
+def show_waveform(
+    audio_path: str | None,
+    waveform: torch.Tensor | None = None,
+    sr: int = 48000,
+    max_points: int = 11025
+):
     try:
         import matplotlib.pyplot as plt
         from IPython.display import Audio
@@ -19,8 +22,8 @@ def show_waveform(audio_path: str | None, waveform: torch.Tensor | None = None, 
         raise ValueError("Either audio_path or waveform must be provided.")
 
     samples = waveform[0].detach().cpu()
-    # Non-overlapping max envelope, so a long clip draws at most _MAX_POINTS bands
-    hop = max(1, samples.shape[-1] // _MAX_POINTS)
+    # Non-overlapping max envelope, so a long clip draws at most max_points bands
+    hop = max(1, samples.shape[-1] // max_points)
     envelope = samples[: samples.shape[-1] // hop * hop].abs().reshape(-1, hop).amax(dim=1)
     times = torch.arange(envelope.shape[0], dtype=torch.float32) * hop / sr
 
