@@ -170,6 +170,7 @@ Everything v1 removed stays removed. What v2 adds on top, and what each turned i
 | `transformers.Qwen2ForCausalLM` inside `Qwen2Encoder` | Native `Qwen2Model`, already in `transformers-tts`. |
 | `diffusers`, `matcha-tts`, `einops`, `omegaconf`, `hyperpyyaml`, `torchdiffeq` | Removed the same way v1 removed them. |
 | `onnxruntime` | Removed. See below. |
+| `wetext` | Kept, as the `frontend` extra rather than a core dependency, on the same terms as v1. See "The text normalizer". |
 
 `onnxruntime` was the last one, and it is gone. CosyVoice v2's speech tokenizer
 (`speech_tokenizer_v2.onnx`, 496 MB) and speaker encoder (`campplus.onnx`, 28 MB) are both PyTorch
@@ -396,6 +397,53 @@ yielding one text token at a time and again from one yielding five. The one libr
 adapter absorbs is that upstream reads the cache length as `cache[0][0].size(2)`, the tuple layout
 `transformers` carried before 5.0.
 
+## The text normalizer
+
+`normalize_text` is v1's, and how it composes `wetext` with `number_to_words` is described in
+`voicestudio/models/cosyvoice_v1/README.md`. What is v2's is the measurement, and v2 is the model
+where the Chinese half matters most.
+
+English, zero shot from the 5.86 s LibriSpeech clip, three seeds, `facebook/wav2vec2-base-960h`,
+word error rate against the text each setting handed to the model. `today` is this repository
+without the `frontend` extra, `clvp` is `today` plus `EnglishNormalizer` from
+`transformers.models.clvp`, which was measured and rejected, and `wetext` is the extra installed.
+
+| Case | off | today | clvp | wetext |
+|---|---|---|---|---|
+| `I paid 1234 dollars in 2025 for 7 books.` | 1.333 / 1.333 / 1.333 | 0.000 / 0.000 / 0.053 | 0.000 / 0.000 / 0.053 | 0.000 / 0.077 / 0.000 |
+| `Dr. Smith works at the U.S. Dept. of Energy.` | not run | 0.600 / 0.200 / 0.200 | 0.100 / 0.100 / 0.400 | 0.333 / 0.333 / 0.333 |
+| `The book costs $1,234.50 and weighs 2.5 kilograms.` | not run | 0.200 / 0.133 / 0.267 | 0.053 / 0.105 / 0.105 | 0.111 / 0.056 / 0.056 |
+| `The St. Louis Co. Ltd. shipped 5 ft. of cable.` | not run | 0.400 / 0.500 / 0.400 | 0.000 / 0.000 / 0.100 | 0.100 / 0.100 / 0.100 |
+| `The quick brown fox jumps over the lazy dog.` | not run | 0.000 / 0.000 / 0.000 | not run | not run |
+
+The digits row settles the CLVP question on its own: `clvp` and `today` are **identical seed for
+seed**, because CLVP touches nothing in that sentence, and the same identity holds on v3. Where CLVP
+does move, on the units row, it moves to the wrong word: its transcripts all read `FIVE FORT`, and
+`wetext`'s all read `FIVE FEET`, for the same `5 ft.` The abbreviation row is a negative result for
+all three, and the transcripts say why: the model already reads `Dr.` as `DOCTOR` and `U.S.` as
+`U S` unaided, and `Dept.` comes back as `DEPPOT`, `DEPPL` or `DEPO` under every setting, because
+`Dept.` is in none of the three tables.
+
+Chinese, upstream's sft mode with the `中文女` speaker vector from `FunAudioLLM/CosyVoice-300M-SFT`,
+no reference waveform, three seeds, `openai/whisper-large-v3-turbo`, character error rate against
+the original sentence rather than each setting's own text:
+
+| Case | today | wetext |
+|---|---|---|
+| `会议定在2025年3月8日下午3点30分开始。` | 0.545 / 0.545 / 1.000 | 0.000 / 0.045 / 0.182 |
+| `这本书卖1234.50元，比原价便宜25%。` | 0.444 / 2.056 / 0.722 | 0.000 / 0.000 / 0.000 |
+| `他跑了5公里，用了30分钟，体重是65kg。` | 0.105 / 1.000 / 0.263 | 0.632 / 0.105 / 0.158 |
+| `电话号码是13800138000，房间号是302。` | 0.522 / 0.609 / 0.391 | 0.000 / 0.000 / 0.087 |
+| `今天天气很好，我们一起去公园散步吧。` | 0.000 / 0.188 / 0.000 | 0.000 / 0.188 / 0.000 |
+
+This is the strongest evidence in either language and it is not close. Without the normalizer the
+date reads back as `会议定在疫情意识五年三个支指下午三点三十分开始` on two seeds and collapses to
+the single character `好` on the third; the phone number reads back as
+`电话号码是严氏3%声诞严1,3%临谦`; the currency sentence runs away for 2.056. With it, three of the
+four rows are at or near zero. The digit free control is **identical seed for seed** on both
+settings, which is what rules out the normalizer having changed anything else. v3 behaves quite
+differently here and its README says how.
+
 ## Not carried over from upstream
 
 Recorded per CLAUDE.md section 2.6.
@@ -444,16 +492,11 @@ Recorded per CLAUDE.md section 2.6.
   added to the ordinary cross entropy on the chosen half. Note also that upstream averages those log
   probabilities over the positions where the target **is** `IGNORE_ID` rather than where it is not,
   which reads like a sign error in upstream and is recorded here rather than corrected.
-- **The text normalizer inside the text frontend.** The frontend itself is implemented:
-  `CosyVoiceV2Processor` inherits `CosyVoiceV1Processor.normalize_text`, which is upstream's
-  `CosyVoiceFrontEnd.text_normalize` with the sentence splitting of `split_paragraph` and the English
-  digit reading of `number_to_words`, which is upstream's `inflect` call inlined, so digits and multi
-  sentence input behave the way upstream does.
-  What is missing is the normalizer upstream runs before all of that, `ttsfrd` if the resource pack is
-  installed, otherwise `wetext`, otherwise nothing. So the branch this reproduces exactly is upstream's
-  own "no frontend is avaliable" path, and abbreviations, dates and currency are not expanded the way
-  an installed normalizer would expand them. `processor(text=..., normalize=True)` applies the
-  rewriting; the processor tokenizes the text as given when it is not asked to.
+- **`ttsfrd`.** `CosyVoiceV2Processor` inherits `CosyVoiceV1Processor.normalize_text`, which now
+  reaches `wetext` when the `frontend` extra is installed and reproduces upstream's third branch when
+  it is not; see "The text normalizer" below. `ttsfrd`, which upstream tries first, is still out of
+  reach and the reasons are in `voicestudio/models/cosyvoice_v1/README.md`. Whether anything is left
+  that only `ttsfrd` would fix is unmeasured, because it cannot be run, and that is **still open**.
 - **A speaker table.** The released v2 directory ships no `spk2info.pt`, ModelScope's
   `iic/CosyVoice2-0.5B` ships none, and the one mirror that does, `lucyknada/CosyVoice2-0.5B`, turns
   out to hold a **v1** table. Its seven speakers top out at speech token id 4085 against v2's 6561
