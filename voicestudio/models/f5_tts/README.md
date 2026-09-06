@@ -93,6 +93,25 @@ waveform = processor.batch_decode(
 sf.write("output.wav", waveform, processor.feature_extractor.sampling_rate)
 ```
 
+`batch_decode` returns a float array whose peak is not bounded to 1.0, and `sf.write` writes a `.wav` as
+`PCM_16` unless it is told otherwise, so the line above clips whatever runs past full scale. Over five seeds per
+checkpoint on the demo text the peak lands between 1.00 and 1.92, with between 0.0005 and 0.085 percent of
+samples over 1.0. The level follows `guidance_scale`: on `F5TTS_Base` the peak is 0.90 to 0.95 at 0.0, 1.14 to
+1.27 at 1.0, 1.47 to 1.92 at the upstream default 2.0, and 1.80 to 2.36 at 3.0. Keep the array intact with an
+explicit subtype, or scale by the peak to write 16 bits without the clip:
+
+```python
+sf.write("output.wav", waveform, processor.feature_extractor.sampling_rate, subtype="FLOAT")
+sf.write("output.wav", waveform / max(abs(waveform).max(), 1.0), processor.feature_extractor.sampling_rate)
+```
+
+Upstream writes the same array the same way. `src/f5_tts/infer/infer_cli.py` calls
+`sf.write(f.name, final_wave, final_sample_rate)` with no subtype, `api.py` and `infer_gradio.py` call it
+identically, `speech_edit.py` and `eval/eval_infer_batch.py` reach 16 bits through `torchaudio.save`, and
+`socket_server.py` casts to `np.int16` after multiplying by 32767, which wraps past full scale rather than
+clipping. `infer_batch_process` applies no peak normalization before any of them, so this is upstream
+behaviour rather than something the migration introduced.
+
 Long text is split into chunks the reference clip can carry, and the chunk waveforms are cross faded back together
 by `batch_decode`:
 
@@ -258,7 +277,34 @@ Generating the upstream demo text in the upstream demo reference voice, at 32 st
 SILENT SPECTATOR WATCHING SPECIES EVOLVE EMPIRES RISE AND FALL BUT ALWAYS REMEMBER I AM MIGHTY AND ENDURING, word
 for word, from all five checkpoints loaded straight off the hub. That path runs the tokenizer, the feature
 extractor, the sampler and the composed vocoder end to end, at 16.6 seconds of speech and an RMS between 0.129
-and 0.160.
+and 0.181 over five seeds per checkpoint. A single draw per checkpoint reaches only 0.160 and so understates the
+top of that band, which makes the width of it a five seed measurement rather than a five checkpoint one.
+
+Level is a property of the family and not of one checkpoint. Over those same seeds the peak of the returned float
+array is:
+
+| Checkpoint | Peak | Crest factor | Samples over 1.0 |
+|---|---|---|---|
+| `F5TTS_v1_Base` | 1.018 to 1.356 | 6.6 to 9.2 | 0.0005 to 0.026 percent |
+| `F5TTS_v1_Base_no_zero_init` | 1.044 to 1.267 | 8.0 to 9.4 | 0.0015 to 0.0073 percent |
+| `F5TTS_Base` | 1.384 to 1.925 | 8.0 to 10.8 | 0.012 to 0.085 percent |
+| `E2TTS_Base` | 0.999 to 1.150 | 7.7 to 8.8 | 0 to 0.0093 percent |
+| `F5TTS_Base_bigvgan` | 1.0000 | 6.1 to 7.1 | 0 |
+
+Nineteen of the twenty draws on the Vocos path pass 1.0, `E2TTS_Base` at seed 4 being the one that does not.
+`F5TTS_Base_bigvgan` reads as the exception and is not one: `nvidia/bigvgan_v2_24khz_100band_256x` sets
+`use_tanh_at_final` to false, so `BigVGANModel` ends on `torch.clamp(hidden_states, min=-1.0, max=1.0)` and 2 to
+30 samples of each draw sit at exactly 1.0. That pairing clips inside the vocoder instead of at the write, and
+its peak of 1.0000 is the clamp rather than headroom.
+
+The level is set in the spectrogram, before the vocoder. Copy synthesis of the demo reference clip through
+`VocosModel` returns it at a peak of 0.8292 and an RMS of 0.1278 against the clip's own 0.8479 and 0.1289, so the
+vocoder passes level through rather than adding any, while the generated spectrograms carry a maximum frame
+energy of 1664 to 3658 against that clip's 1082. Classifier free guidance is what puts them there: at
+`guidance_scale=0.0` the maximum frame energy is 976 to 1100, which is the reference clip's own, and no draw
+reaches full scale. The peak also sits deep in the utterance, between 0.27 and 0.93 of the way through, and the
+first 50 milliseconds peak at 0.007 to 0.045, so the reference frame cut in `batch_decode` leaves no transient
+behind.
 
 For `F5TTS_Base_bigvgan` the transcript is not enough on its own. Vocoding its generated spectrogram with
 `VocosModel` instead of the `BigVGANModel` the checkpoint calls for transcribes word for word too. The level and
