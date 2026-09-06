@@ -213,7 +213,7 @@ Upstream pins more than forty packages. What each turned into:
 | `regex` | Removed. Its one call site is `is_only_punctuation`, whose `^[\p{P}\p{S}]*$` is `unicodedata.category(character)[0] in "PS"`. The two agree on all 149251 assigned code points. |
 | `tiktoken` | Removed. `get_encoding` only used it to read a `base64 rank` file and to hold the ranks, so `CosyVoiceV1TikTokenConverter` subclasses transformers' own `TikTokenConverter` and reads the file with `base64` from the standard library. |
 | `openai-whisper` | Replaced by `WhisperTokenizer` for text and `WhisperFeatureExtractor` for the speech tokenizer's mel. `whisper.tokenizer.Tokenizer`, which upstream's `get_tokenizer` returns, is `CosyVoiceV1Tokenizer`. |
-| `inflect` | Lazily imported. See below. |
+| the English number reading package upstream pins at 7.3.1 | Removed. Upstream calls one method of it, `number_to_words`, to read an English digit run out; `number_to_words` in `processing_cosyvoice_v1.py` is that reading, inlined. See below. |
 | `pyworld` | Lazily imported. See below. |
 | `wetext`, `ttsfrd` | Text normalizers. See "Not carried over from upstream". |
 | `onnxruntime` | Removed. See below. |
@@ -243,15 +243,18 @@ the module it was traced inside, so the module path and the operator together sa
 initializer is. All 96 of v1's initializers map to exactly one parameter each and load with
 `strict=True`.
 
-Two more are imported lazily rather than depended on, the same way, and neither was added to
-`pyproject.toml`. `CosyVoiceV1Processor.compute_f0` needs `pyworld`, because the target of the
-vocoder objective's f0 term is the WORLD harvest contour and no other estimator produces the same
-numbers; substituting one would change the objective silently. `pyproject.toml` already declares
-`pyworld>=0.3.5` under the `eval` extra, so this adds nothing new, but the base install does not
-carry it. `CosyVoiceV1Processor.normalize_text` needs `inflect`, and only for an English string
-that holds a digit: `spell_out_number` never touches the parser otherwise, so the import is taken
-only when a digit run is present. Both raise with an explanation naming what is missing and what to
-do instead.
+One is imported lazily rather than depended on, and it was not added to `pyproject.toml`.
+`CosyVoiceV1Processor.compute_f0` needs `pyworld`, because the target of the vocoder objective's f0
+term is the WORLD harvest contour and no other estimator produces the same numbers; substituting one
+would change the objective silently. `pyproject.toml` already declares `pyworld>=0.3.5` under the
+`eval` extra, so this adds nothing new, but the base install does not carry it. It raises with an
+explanation naming what is missing and what to do instead.
+
+The English digit reading is not one of them. `CosyVoiceV1Processor.normalize_text` reads a digit run
+out through `CosyVoiceV1NumberSpeller`, whose `number_to_words` is the inlined reading, so nothing has
+to be installed for the English branch of the text front end. v2 and v3 inherit the same path, v3
+through its own `spell_out_number_outside_markup`, which skips the spans holding a token of its added
+vocabulary.
 
 ## Verification
 
@@ -420,8 +423,30 @@ allowed_special="all")`. The generation above exercises the second one indirectl
 repository's history and executed side by side, on eleven strings covering both language branches,
 the empty string, an SSML marker, a punctuation only string and a paragraph long enough to split.
 All eleven agree exactly. `is_only_punctuation`, which drops the `regex` dependency, agrees with
-upstream's `^[\p{P}\p{S}]*$` on all 149251 assigned Unicode code points. The English digit branch
-was not run, because it needs `inflect`.
+upstream's `^[\p{P}\p{S}]*$` on all 149251 assigned Unicode code points.
+
+**The English digit reading, against the package upstream pins.** `number_to_words` was compared
+with the English number reading package upstream's `requirements.txt` pins, at its pinned version
+7.3.1, over 41,821 digit strings: every integer from 0 to 10,000, every 97th from 10,000 to
+1,000,000, 20,000 strings of 1 to 33 digits drawn from `random.Random(0)`, every one of the numbers
+0 to 79 carrying 1 to 20 leading zeros, and the runs of 1 to 13 zeros. **Zero mismatches.** A
+further 1,600 strings of 34 to 41 digits, 200 per length from `random.Random(1)`, put the two on the
+same side of the largest scale word in every case: 600 agree on a reading and 1,000 raise on both
+sides, the oracle with `NumOutOfRangeError` and `number_to_words` with `ValueError`. The oracle was
+unpacked into a scratch directory; it is not installed, not imported by this repository and not
+declared anywhere.
+
+**The English digit reading, generated and transcribed back.** Zero shot from the 5.86 s LibriSpeech
+clip above, `I paid 1234 dollars in 2025 for 7 books.`, three seeds each, on the local GPU, transcribed
+with `facebook/wav2vec2-base-960h`, word error rate against the text handed to the model:
+
+| Frontend | WER by seed | Heard back, seed 1 |
+|---|---|---|
+| on | 0.053 / 0.053 / 0.105 | `I PAID ONE THOUSAND TWO HUNDRED AND THIRTY FOUR DOLLARS IN TWO THOUSAND TWENTY FIVE FOR SEVEN BOOKS` |
+| off | 0.778 / 0.667 / 0.889 | `I PAID TWELVE THIRTY FOUR DOLLARS IN EAST IBEAKS FOR SEVEN BOOKS` |
+
+With the front end on, every seed reads all three numbers back and the errors are single words. With
+it off, every seed reads `1234` as `TWELVE THIRTY FOUR` and no seed recovers `2025`.
 
 ## Not carried over from upstream
 
@@ -476,7 +501,7 @@ Recorded per CLAUDE.md section 2.6.
   before the rewriting and sentence splitting that this does implement. So the branch this
   reproduces exactly is upstream's own "no frontend is avaliable" path, and numbers, dates and
   abbreviations are not expanded the way an installed normalizer would expand them. English digit
-  runs are spelled out with `inflect` as upstream does.
+  runs are spelled out by `number_to_words`, which reads them the way the package upstream pins does.
 - **`ttsfrd`.** Upstream ships it as a wheel in `FunAudioLLM/CosyVoice-ttsfrd` with a 339 MB
   resource pack. It is not on PyPI and has no source release.
 - **Streaming input text.** Upstream's `inference_bistream` accepts a text generator and
@@ -591,8 +616,8 @@ Nothing outside this folder was touched. What is worth knowing about the rest of
 - `pyproject.toml` still declares an `onnx` extra holding `onnxruntime`, `onnxruntime-gpu` and
   `onnx`. Nothing in these three folders imports any of them any more, and no other model folder
   does either, so that extra and its entry in `all` can go. `pyworld` is already declared under the
-  `eval` extra; `inflect`, `tiktoken` and `ttsfrd` are deliberately absent and every path that would
-  want one imports it lazily and raises with an explanation.
+  `eval` extra; `tiktoken` and `ttsfrd` are deliberately absent and every path that would want one
+  imports it lazily and raises with an explanation.
 - `voicestudio/models/cosyvoice_v2/` inherits `CosyVoiceV1HiFTGenerator`, so it inherits
   `compute_loss` and `mel_loss` too. It now also sets the constants its own recipe uses, `n_fft`
   1920, hop 480 and window 1920 at 24 kHz, where `CosyVoiceV1Config` defaults to 1024, 256 and 1024.

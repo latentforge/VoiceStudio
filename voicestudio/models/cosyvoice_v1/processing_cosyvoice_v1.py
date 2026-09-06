@@ -37,6 +37,20 @@ CHINESE_PUNCTUATION = ["\u3002", "\uff1f", "\uff01", "\uff1b", "\uff1a", "\u3001
 
 ENGLISH_PUNCTUATION = [".", "?", "!", ";", ":"]
 
+ENGLISH_UNITS = ("", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+
+ENGLISH_TEENS = (
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+    "nineteen",
+)
+
+ENGLISH_TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+
+ENGLISH_SCALES = (
+    "", " thousand", " million", " billion", " trillion", " quadrillion", " quintillion", " sextillion",
+    " septillion", " octillion", " nonillion", " decillion",
+)
+
 
 def contains_chinese(text: str) -> bool:
     """
@@ -110,14 +124,95 @@ def replace_blank(text: str) -> str:
     return "".join(characters)
 
 
-def spell_out_number(text: str, inflect_parser) -> str:
+def spell_out_two_digits(tens: int, units: int) -> str:
+    """
+    Args:
+        tens (`int`):
+            Tens digit.
+        units (`int`):
+            Units digit.
+
+    Returns:
+        `str`: The two digits read out, hyphenated when both are nonzero and empty when both are
+        zero.
+    """
+    if tens == 1:
+        return ENGLISH_TEENS[units]
+    return ENGLISH_TENS[tens] + ("-" if tens and units else "") + ENGLISH_UNITS[units]
+
+
+def number_to_words(number: str) -> str:
+    """
+    Reads a run of decimal digits out in English: groups of three carrying a scale word and
+    separated by commas, `and` after a hundreds digit and before a trailing group that is a single
+    word, tens and units hyphenated, and leading zeros dropped.
+
+    Args:
+        number (`str`):
+            Run of decimal digits, with no sign, decimal point or group separator. A run of zeros
+            reads as `zero`.
+
+    Returns:
+        `str`: The reading.
+
+    Raises:
+        ValueError: If the run needs a scale word beyond `decillion`.
+    """
+    digits = number.lstrip("0")
+    if digits == "":
+        return "zero"
+    if int(digits) == 1:
+        return "one"
+    groups = []
+    while digits:
+        groups.append(int(digits[-3:]))
+        digits = digits[:-3]
+    if len(groups) > len(ENGLISH_SCALES):
+        raise ValueError(f"{number} is larger than the English scale words reach")
+    spelled = []
+    for index in range(len(groups) - 1, -1, -1):
+        hundreds, remainder = divmod(groups[index], 100)
+        if hundreds == 0 and remainder == 0:
+            continue
+        below_hundred = spell_out_two_digits(*divmod(remainder, 10))
+        if hundreds:
+            joiner = " and " if remainder else ""
+            spelled.append(f"{ENGLISH_UNITS[hundreds]} hundred{joiner}{below_hundred}{ENGLISH_SCALES[index]}")
+        else:
+            spelled.append(f"{below_hundred}{ENGLISH_SCALES[index]}")
+    words = ", ".join(spelled)
+    head, separator, tail = words.rpartition(", ")
+    if separator and " " not in tail:
+        words = f"{head} and {tail}"
+    return words
+
+
+class CosyVoiceV1NumberSpeller:
+    r"""
+    Constructs the engine [`~CosyVoiceV1Processor.normalize_text`] reads an English digit run out
+    with.
+    """
+
+    def number_to_words(self, number: str) -> str:
+        """
+        Args:
+            number (`str`):
+                Run of decimal digits.
+
+        Returns:
+            `str`: The reading, from [`number_to_words`].
+        """
+        return number_to_words(number)
+
+
+def spell_out_number(text: str, number_speller) -> str:
     """
     Replaces every run of digits with its English reading.
 
     Args:
         text (`str`):
             Text to rewrite.
-        inflect_parser (`inflect.engine`):
+        number_speller ([`CosyVoiceV1NumberSpeller`]):
             Engine whose `number_to_words` reads a digit run out.
 
     Returns:
@@ -131,11 +226,11 @@ def spell_out_number(text: str, inflect_parser) -> str:
                 start = index
             continue
         if start is not None:
-            spelled.append(inflect_parser.number_to_words(text[start:index]))
+            spelled.append(number_speller.number_to_words(text[start:index]))
             start = None
         spelled.append(character)
     if start is not None and start < len(text):
-        spelled.append(inflect_parser.number_to_words(text[start:]))
+        spelled.append(number_speller.number_to_words(text[start:]))
     return "".join(spelled)
 
 
@@ -394,7 +489,7 @@ class CosyVoiceV1Processor(ProcessorMixin):
         self._speech_tokenizer = None
         self._speaker_encoder = None
         self._speaker_info = None
-        self._inflect_parser = None
+        self._number_speller = None
 
     @classmethod
     def _released_processor(cls, directory: "str | Path") -> "CosyVoiceV1Processor":
@@ -461,25 +556,14 @@ class CosyVoiceV1Processor(ProcessorMixin):
         return cls._released_processor(directory)
 
     @property
-    def inflect_parser(self):
+    def number_speller(self) -> CosyVoiceV1NumberSpeller:
         """
         Returns:
-            `inflect.engine`: The engine that reads an English digit run out.
-
-        Raises:
-            ImportError: If `inflect` is not installed.
+            [`CosyVoiceV1NumberSpeller`]: The engine that reads an English digit run out.
         """
-        if self._inflect_parser is None:
-            try:
-                import inflect
-            except ImportError as error:
-                raise ImportError(
-                    "reading the digits of an English sentence out is upstream's own text front end, "
-                    "which does it with `inflect`. This package does not depend on it. Remove the "
-                    "digits, pass the text already spelled out, or install `inflect` yourself."
-                ) from error
-            self._inflect_parser = inflect.engine()
-        return self._inflect_parser
+        if self._number_speller is None:
+            self._number_speller = CosyVoiceV1NumberSpeller()
+        return self._number_speller
 
     @property
     def speech_token_feature_extractor(self):
@@ -644,7 +728,7 @@ class CosyVoiceV1Processor(ProcessorMixin):
         A Chinese sentence loses the spaces that do not sit inside an embedded English word, has its
         corner marks spelled out, its brackets removed, its full stops and dashes replaced by their
         Chinese counterparts and a trailing run of commas turned into a full stop. Any other sentence
-        has its digit runs read out with `inflect`. Text carrying a `<|` `|>` marker is returned
+        has its digit runs read out by [`number_to_words`]. Text carrying a `<|` `|>` marker is returned
         untouched. Neither branch runs a text normalizer over numbers, dates or abbreviations, which is
         what upstream reaches `ttsfrd` or `wetext` for.
 
@@ -674,8 +758,7 @@ class CosyVoiceV1Processor(ProcessorMixin):
             text = re.sub(r"[\uff0c,\u3001]+$", "\u3002", text)
             pieces = split_paragraph(text, tokenize, "zh", token_max_n=80, token_min_n=60, merge_len=20)
         else:
-            if any(character.isdigit() for character in text):
-                text = spell_out_number(text, self.inflect_parser)
+            text = spell_out_number(text, self.number_speller)
             pieces = split_paragraph(text, tokenize, "en", token_max_n=80, token_min_n=60, merge_len=20)
         pieces = [piece for piece in pieces if not is_only_punctuation(piece)]
         return pieces if split else text
@@ -796,12 +879,15 @@ class CosyVoiceV1Processor(ProcessorMixin):
 
 __all__ = [
     "CosyVoiceV1FeatureExtractor",
+    "CosyVoiceV1NumberSpeller",
     "CosyVoiceV1Processor",
     "contains_chinese",
     "is_only_punctuation",
+    "number_to_words",
     "remove_bracket",
     "replace_blank",
     "replace_corner_mark",
     "spell_out_number",
+    "spell_out_two_digits",
     "split_paragraph",
 ]
