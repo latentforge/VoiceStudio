@@ -257,18 +257,40 @@ vocoder, and both CMUdict test prompts transcribe verbatim.
 
 ## Not carried over from upstream
 
-Recorded per CLAUDE.md section 2.6. None of these is resolved here.
+Recorded per CLAUDE.md section 2.6.
 
 - **The adversarial half of the training objective.** `forward(labels=...)` returns the mel reconstruction term
   only. `MultiPeriodDiscriminator`, `MultiResolutionDiscriminator`, `MultiBandDiscriminator`,
   `MultiScaleSubbandCQTDiscriminator`, `CombinedDiscriminator`, `feature_loss`, `discriminator_loss` and
   `generator_loss` have no counterpart, so four of the five terms of the generator loss and the whole
-  discriminator loss are missing, and with `--freeze_step` defaulting to 0 there is no phase of upstream training
-  that optimizes the reconstruction term alone. This is the same gap `voicestudio/models/vocos` has and it is
-  still open there, but one of the reasons recorded for it does not hold here: BigVGAN's discriminators are not
-  absent from the published checkpoints. Every `nvidia/bigvgan*` repository ships a
-  `bigvgan_discriminator_optimizer.pt`, so weights to verify them against do exist. A BigVGAN trained through
-  `forward` alone would not reproduce a released checkpoint. This is a scope decision and it needs a human.
+  discriminator loss are absent, and with `--freeze_step` defaulting to 0 there is no phase of upstream training
+  that optimizes the reconstruction term alone. This follows the `transformers` convention on GAN trained
+  vocoders, measured over the 494 `modeling_*.py` files in the 510 model folders of `transformers` 5.16.1.
+  `Discriminator` appears in two of those files, `electra/modeling_electra.py` and `funnel/modeling_funnel.py`,
+  and both are pretraining heads over token logits, `ElectraDiscriminatorPredictions` and
+  `FunnelDiscriminatorPredictions` under `FunnelForPreTraining`, not adversaries over a waveform. `adversarial`
+  appears in none of them. Every vocoder shipped takes a spectrogram or codes and returns a bare tensor, and none
+  takes `labels`:
+
+  | Class | `forward` signature |
+  |---|---|
+  | `SpeechT5HifiGan` | `(self, spectrogram, **kwargs) -> torch.FloatTensor` |
+  | `FastSpeech2ConformerHifiGan` | `(self, spectrogram, **kwargs) -> torch.FloatTensor` |
+  | `VitsHifiGan` | `(self, spectrogram, global_conditioning=None) -> torch.FloatTensor` |
+  | `SeamlessM4THifiGan`, `SeamlessM4Tv2HifiGan` | `(self, inputs_embeds) -> torch.FloatTensor` |
+  | `SeamlessM4TCodeHifiGan` | `(self, input_ids, spkr_id, lang_id, **kwargs) -> tuple[torch.Tensor]` |
+  | `SeamlessM4Tv2CodeHifiGan` | `(self, input_ids, speaker_id, lang_id, **kwargs) -> tuple[torch.Tensor]` |
+  | `Qwen2_5OmniToken2WavBigVGANModel` | `(self, mel_spectrogram, **kwargs)`, returning a clamped waveform |
+
+  VITS is the case that settles it, because upstream VITS is GAN trained end to end: `VitsModel.forward` declares
+  `labels` and its body opens with `raise NotImplementedError("Training of VITS is not supported yet.")`. The one
+  shipped speech synthesis model with a real objective, `FastSpeech2ConformerWithHifiGan`, sums L1 mel, duration,
+  pitch and energy in `FastSpeech2ConformerLoss` and carries no adversarial term, and its vocoder half takes no
+  labels. Against that convention, `BigVGANModel.forward(labels=...)` returning the mel reconstruction loss goes
+  beyond it rather than falling short of it. The consequence to know is that a BigVGAN trained through `forward`
+  alone optimizes the reconstruction term only and would not reproduce a released checkpoint. Weights to check a
+  discriminator against do exist for this model, unlike for Vocos: every `nvidia/bigvgan*` repository ships a
+  `bigvgan_discriminator_optimizer.pt` next to `bigvgan_generator.pt`.
 - **The fused CUDA kernel of the anti aliased activation.** `alias_free_activation/cuda/` is a hand written
   `anti_alias_activation_cuda.cu` that fuses the upsample, the snake nonlinearity and the downsample into one
   kernel, loaded through `torch.utils.cpp_extension.load` when the configuration sets `use_cuda_kernel`. It is
@@ -332,16 +354,12 @@ written into the layout this repository uses.
 
 ## Repository integration
 
-Three things outside this folder are still needed and were deliberately not touched:
+Two things outside this folder are still needed and were deliberately not touched:
 
 - `voicestudio/models/__init__.py` needs a `from .bigvgan import *` line, before the `f5_tts` and
   `prompt_tts_pp` lines are reached, though `from ..bigvgan import ...` inside those two packages already imports
   it either way.
-- `PROJECT.md` needs a BigVGAN status entry carrying the gaps listed above, in particular the adversarial half of
-  the training objective, and its "Sibling inheritance map" entry for `PromptTTSPPBigVGan` can move from
-  "actionable once `voicestudio/models/bigvgan/` exists" to done.
-- `PROJECT.md`'s Vocos open item says the discriminators "are training-only modules absent from every published
-  checkpoint". That reason does not hold for BigVGAN, whose repositories all publish
-  `bigvgan_discriminator_optimizer.pt`.
+- `PROJECT.md` needs a BigVGAN status entry carrying the items listed above, and its "Sibling inheritance map"
+  entry for `PromptTTSPPBigVGan` can move from "actionable once `voicestudio/models/bigvgan/` exists" to done.
 
 Nothing in `pyproject.toml` or `uv.lock` changes.
