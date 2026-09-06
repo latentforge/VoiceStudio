@@ -217,10 +217,8 @@ item recorded against a model.
 
 Areas where help is most useful:
 
-- The items `PROJECT.md` records as open. The two needing a decision rather than code are CosyVoice
-  v3's text normalizer, where upstream's `ttsfrd` and `wetext` are a closed wheel and a compiled
-  grammar rather than inlinable logic, and its second released `llm.rl.pt` checkpoint, which trades
-  character error rate for speaker similarity and has no way to be selected yet.
+- The open items `PROJECT.md` records against each model, which name what is missing and what has
+  already been measured about it.
 - Inference performance. Nothing here has been tuned for it, and the route is the `transformers` one,
   a static cache and a compiled graph selected through `GenerationConfig`, rather than a per-model
   capture. `PROJECT.md` has the detail.
