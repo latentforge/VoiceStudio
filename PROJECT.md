@@ -226,7 +226,7 @@ pretrained checkpoint yet; see "Runtime-verified" for that.
 | Higgs TTS 3 | Yes | Yes | Yes | `dfeb00d3` after the prompt-format and delay-pattern fix in `b4b18e5b`. Both prompts transcribe verbatim. 528 unexpected keys, all the bundled codec copy, logged as open. |
 | Parler-TTS | Yes | Yes | Yes | DAC conversion coverage confirmed: all 301 source `audio_encoder.model.*` tensors are consumed with zero reported unused, including 54 of 54 `in_proj`/`out_proj` keys, which `convert_dac_checkpoint`'s `apply_weight_norm` and its single `quantizer.quantizers.*` wildcard cover without special casing. Round trip 11.46 dB against the 8.82 dB baseline, and re-randomising just those 36 projection tensors collapses it to -1.10 dB, which calibrates the check against the failure mode it was looking for. `992d149c` replaced the vendored `descript-audio-codec` with native `DacModel`. `b58b94cf` added the missing `ParlerTTSProcessor` and declared `sub_configs`, without which transformers 5 skipped the decoder during dtype resolution and half-precision loads crashed. Transcribes verbatim in float16 and float32. |
 | PromptTTS++ (`prompt_tts_pp`) | Yes | Yes | Yes | `6fabba05`. The section 2.7 gap is closed: MDN, GST reference encoder and `GaussianDiffusion` decoder are all implemented and no FastSpeech2Conformer path remains. The checkpoint is bundled in the Space `line-corporation/promptttspp`, which the section 2.3 search confirmed is the only source. wav2vec2 WER 0.222 and 0.286. The BERT freeze not surviving `from_pretrained` was fixed and verified by parameter count. |
-| Qwen3-TTS | Yes | Yes | Yes | Import relays plus a task-dispatching processor. `af7968ea` fixed voice design running in streaming mode: 17 of 17 prompts now transcribe verbatim. `encoder.upsample.conv.weight` reports MISSING, which is inert and upstream; see the open item above. |
+| Qwen3-TTS | Yes | Yes | Yes | Import relays plus a task-dispatching processor. `af7968ea` fixed voice design running in streaming mode: 17 of 17 prompts now transcribe verbatim. `encoder.upsample.conv.weight` used to report MISSING; the backport closed it, and a fresh conversion loads at 0 MISSING and 0 UNEXPECTED. See above. |
 | Spark-TTS | Yes | Yes | Yes | `c0be998c`. WER 0.000 under `whisper-large-v3-turbo` across voice cloning and attribute creation, and on two of three sentences under prompt continuation before `82893e09`, whose third lost its leading word to a fused token; all three are verbatim after it, see above. `freeze_semantic_model` never called `.eval()`, so dropout, layerdrop and SpecAugment kept running in the frozen feature source and step-0 loss was irreproducible; fixed. |
 | Spark-TTS BiCodec (`spark_tts_bicodec`) | Yes | Yes | Yes | `b2e78da3` split it into its own folder, following `higgs_audio_v2_tokenizer`. Round trip transcribes identically to the source clip. Objective taken from SparkVox's `loss_lambdas`, not the inference repo. |
 | VoxInstruct | Yes | Yes | Yes | `75800c0e`. Both stages transcribe verbatim. Teacher forcing gives ar_loss 2.48 and nar_loss 3.50 against 8.25 and 8.09 for shuffled targets, and gradients land only on the LoRA adapters, both decoders and the drawn residual head. `cf5b12bf` wired in the native `VocosModel` from `voicestudio/models/vocos/`, which closed that gap: `generate` takes `vocoder="vocos"` by default, matching upstream's `infer.sh`, with `"encodec"` as the alternative. |
@@ -288,7 +288,7 @@ bookkeeping tensors, which is the EMA-only mapping the branch flagged; higgs_tts
 conversion mapping, tokenizer-only fallback and missing-`preprocessor_config` tolerance all landed;
 `Qwen3TTSConfig.get_text_config()` delegating to `talker_config` is in transformers-tts 5.16.0.dev0.
 
-One item left open:
+One item, now closed:
 
 - **Qwen3-TTS audio tokenizer reports `encoder.upsample.conv.weight` MISSING.** The key is real but
   the weight is not: `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`'s `speech_tokenizer/model.safetensors`
@@ -307,8 +307,16 @@ One item left open:
   forbids, nor editing the modular file, which is already right, is the fix. The generator collapsed
   two identical looking `self.upsample = None` statements that had different positions: `MimiModel.__init__`
   nulls it before conditionally building it, and the modular subclass nulls it again afterwards. Inlining
-  the parent merged the two, so the second null landed before the build. That belongs upstream in
-  transformers-tts, either in the generator or as a modular form that survives inlining.
+  the parent merged the two, so the second null landed before the build.
+
+  **Closed by the backport in `voicestudio/backport/`.** The generated file now clears the module with
+  `setattr(self, "upsample", None)` rather than a plain assignment, which the modular converter does not
+  fold into the parent's earlier null, so the module is gone rather than rebuilt unweighted. Measured on
+  `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`: `encoder.upsample` is `None`, the load reports 0 MISSING and 0
+  UNEXPECTED, and the parameter count is unchanged at 145,293,281. The stale conversion cache had to be
+  deleted to see it. The cache was written before the backport, when the module still existed, so
+  `save_pretrained` had written its randomly initialised weight into the converted directory: 513 tensors
+  against the source's 496. A fresh conversion writes 512 and carries no `encoder.upsample.*` at all.
 Nothing was salvageable for generation defaults. The branch's `PROJECT.md` records no
 `temperature`, `top_k`, `top_p`, `guidance`, `do_sample` or `max_new_tokens` value for any
 checkpoint, which follows from its verification standard: a plausible waveform RMS passes even when
@@ -552,6 +560,70 @@ Vocos and CosyVoice discriminators appear in no published checkpoint, but BigVGA
 BigVGAN discriminator against do exist.
 
 The folder READMEs name every dropped class.
+
+## Settled: the remaining scope decisions
+
+Taken together with the GAN discriminator decision above, these close the scope items the folder
+READMEs had been carrying as needing a human. None of them is open any more.
+
+**Direct preference optimization, CosyVoice v2 and v3: not implemented, closed.** `Qwen2LM.forward_dpo`
+and `DPOLoss` need a second model instance held as a frozen reference and a batch carrying a rejected
+sequence beside the chosen one, so they do not fit inside a single `forward`. Two things settle it
+rather than one. No released CosyVoice checkpoint is preference tuned, so there is nothing to run it
+against. And upstream averages its log probabilities over the positions where the target **is**
+`IGNORE_ID`, which reads as a sign error, so the reference implementation is not one to copy.
+
+**Vocos ResNet backbone and IMDCT heads: out of scope, closed, and there is nothing to leave behind.**
+`configs/vocos-resnet.yaml` trains a HiFi-GAN style dilated residual backbone in place of the ConvNeXt
+one, and `configs/vocos-imdct.yaml` a head predicting modified discrete cosine transform coefficients
+instead of STFT coefficients. Neither has a published checkpoint. This is a boundary of what
+`VocosModel` is rather than an omission from it: `VocosConfig` exposes one switch, `feature_extractor_type`,
+both of whose values are implemented, and it raises on anything else. No backbone or head switch exists,
+so there is no dead setting and no path that silently misbehaves. Should a checkpoint for either appear
+later, its config would load through `PreTrainedConfig.from_dict` and then fail loudly on weight shapes
+rather than quietly producing the wrong model.
+
+**Dia2 loss term weights: unknowable, and the exposure is named.** The section 2.3 search is recorded in
+`voicestudio/models/dia2/README.md` and came up empty everywhere: the 36 blobs and full 19 commit history
+of the `nari-labs/dia2` tree hold no trainer, loss module, collator or eval script; both checkpoint repos
+carry no `training_args.bin`, optimizer state, `trainer_state.json` or scheduler at any revision, their
+safetensors headers no `__metadata__`, and their `config.json` no loss field at any revision; the Space
+bundles the same inference package; arXiv, Hugging Face papers, Zenodo and the nari-labs blog return
+nothing, and two open requests for a fine-tune recipe have no reply.
+
+What that leaves is not the identity of the three terms, which the checkpoint and the decode loop fix. It
+is how loudly each counts, and the sibling models here do not agree. Dia2 computes the depth term as one
+pooled cross-entropy over all 31 remaining codebooks, which is `CsmForConditionalGeneration`'s convention
+and matches the lineage Dia2 already follows down to CSM's frame-dropping hook.
+`HiggsAudioV2ForConditionalGeneration` instead sums one mean per codebook, which on 31 codebooks makes the
+acoustic term roughly 31 times heavier. That factor of 31 is the whole exposure: it would not crash, would
+not produce a NaN and would not show in a gradient norm, and would surface only as a fine-tune that drifts
+in audio detail or loses word timing. So the equal-weight sum is a defensible inherited-lineage choice, not
+a fact about Dia2, and the README says so rather than calling it upstream's objective.
+
+## Open: two items that need a decision, not code
+
+**CosyVoice v3's text normalizer.** Everything else of the v3 text frontend landed in `a8ee1b30` and
+`59f59ae7`: the English number reading is inlined and checked against upstream's pinned `inflect` over
+41,821 digit strings with zero mismatches, markup spans are protected from the digit scan (all 45 markup
+tokens carrying a digit are destroyed without it), and all 278 added vocabulary tokens are now reachable.
+What is blocked is the normalizer proper. `ttsfrd` is a closed-source Alibaba wheel with a separate
+resource pack and `wetext` is a compiled OpenFST grammar; both are rule sets rather than the small piece of
+math section 9.1 allows inlining. Measured cost: `Dr. Smith works at the U.S. Dept. of Energy.` reads
+identically waveform for waveform with the frontend on and off. Recorded open under H11.
+
+One correction to the record it replaces: the old entry said the frontend emits the ARPAbet and pinyin
+markup the 278 tokens exist for. Nothing in the open upstream source emits it. `ttsfrd` is its only
+producer, and upstream's own example writes it inline as a caller-supplied pronunciation hotfix.
+
+**CosyVoice v3's `llm.rl.pt`.** A second full checkpoint, not a delta: 293 tensors whose key set is exactly
+`llm.pt`'s, no optimizer state or metadata, loading cleanly into a stock `Qwen2ForCausalLM`. Zero tensors
+are bit-identical and 0.999999 of its 642,283,136 parameters differ, at overall relative L2 0.657, with
+every embedding and head moved and `cos(a - base, b - base)` of 0.07 to 0.37 ruling out a small aligned RL
+delta. Nothing upstream loads it: `grep -rn "llm\.rl\|rl\.pt"` is empty and the only path is a hardcoded
+`llm.pt`. The model card's second eval row identifies it, and it is a trade rather than a strict
+improvement: CER 1.21 to 0.81, speaker similarity 78.0 to 77.4. Four things outside the folder would have
+to change to select it, so it is recorded rather than wired in.
 
 ## Sibling inheritance map
 
