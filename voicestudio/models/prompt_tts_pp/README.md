@@ -60,7 +60,7 @@ inputs = processor(
 with torch.no_grad():
     outputs = model(**inputs, style_noise_scale=0.5)
     spectrogram, f0 = processor.postprocess(outputs)
-    waveform = vocoder(spectrogram, f0)
+    waveform = vocoder(spectrogram, f0).audio_values
 
 sf.write("output.wav", waveform.squeeze(0).numpy(), processor.feature_extractor.sampling_rate)
 ```
@@ -149,6 +149,43 @@ Upstream freezes every parameter of the BERT prompt encoder except the attention
 applies. Nothing else is frozen. The upstream trainer optimizes the rest with AdamW under a Noam schedule (4000
 warmup steps) and clips gradients at a global norm of 1.0.
 
+The vocoder trains through its own `forward`: pass the log mel spectrogram as `input_features`, the frame level
+fundamental frequency as `f0`, and the ground truth waveform as `labels`. The returned `loss` is the mel
+spectrogram reconstruction term,
+
+`mel_loss_coeff` * L1( log mel(generated), log mel(ground truth) )
+
+measured over a single resolution, the analysis `PromptTTSPPFeatureExtractor` produces the input spectrogram
+with: a 512 point transform, a 480 sample Hann window, a 240 sample hop, 80 Slaney scaled and Slaney normalized
+filters between 63 Hz and 12 kHz, on centered frames, clamped at 1e-5 and compressed by the natural logarithm.
+`PromptTTSPPBigVGan.mel_loss_resolutions` reproduces `PromptTTSPPFeatureExtractor.mel_spectrogram` to zero
+absolute difference, so the term is measured on the same spectrogram the vocoder consumes.
+
+Upstream publishes no vocoder training code. `promptttspp/` ships the generator alone
+(`promptttspp/vocoders/bigvgan_f0.py`) and its Hydra configuration
+(`egs/proposed/bin/conf/vocoder/bigvgan_f0.yaml`) holds constructor arguments only; the trainer under
+`promptttspp/trainers/` and the recipe under `egs/` cover the acoustic model, and the Space adds nothing but
+checkpoints. The recipe is instead read off the released checkpoint itself
+(`pretrained_model/checkpoint/bigvgan_f0_full/last.ckpt`), which carries `discriminator` alongside `generator`,
+with `mpd` and `mrd` submodules, and `optimizer_g` and `optimizer_d` AdamW states at a learning rate of 2e-4,
+betas of `(0.8, 0.99)` and a weight decay of 0.01. A multi period plus multi resolution discriminator pair is
+BigVGAN's, not HiFi-GAN's multi period plus multi scale one, which places the vocoder on BigVGAN's own objective:
+an adversarial term, a feature matching term weighted by 2, and this reconstruction term weighted by 45.
+`mel_loss_coeff` therefore defaults to 45.0, which is BigVGAN's value and not a number PromptTTS++ publishes.
+
+The term separates. Over the two prompts above at seeds 0 to 3, the released checkpoint vocoding its own
+generated spectrogram and f0 gives a loss of exactly 0.0 against its own output, 0.116 to 0.168 against a second
+pass whose harmonic source redraws its phases and noise, 141.7 to 160.0 against that same output with its samples
+randomly permuted, and 103.6 to 111.8 against the other prompt's waveform truncated to the shorter of the two.
+The permutation is one draw of `torch.randperm` over the sample axis, seeded at 0, and the matched pair is exact
+only because `torch.manual_seed` is set identically before both passes: `PromptTTSPPSourceModule` samples, so
+back to back calls otherwise land on the redrawn figure rather than on zero.
+
+Whisper `openai/whisper-large-v3-turbo` transcribes the eight generations at word error rates of 0.000, 0.000,
+0.111, 0.000 for "The quick brown fox jumps over the lazy dog." and 0.000, 0.143, 0.000, 0.000 for "This is a
+text to speech demo.", seeds 0 to 3 in order. The style mixture density network and the 100 step diffusion
+decoder both sample, so the spread is the model's, not the vocoder's.
+
 
 ## Not carried over from upstream
 
@@ -195,12 +232,11 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
   the f0 aware variant is built out of them, but the variant itself is not: the released vocoder checkpoint is
   the f0 aware one. `voicestudio/models/bigvgan` is that variant for NVIDIA's own configurations, but it is not
   a drop in replacement for this one, whose transposed convolution padding differs.
-- **The vocoder's own training objective.** `PromptTTSPPBigVGan.forward` returns a waveform, not a loss, exactly
-  as before this folder inherited `BigVGANModel`. Upstream trains the vocoder in a separate stage under its own
-  BigVGAN derived generative adversarial objective, which was not traced here, so `PromptTTSPPBigVGanConfig`
-  deliberately carries none of `BigVGANConfig`'s `mel_loss_*` fields and the inherited
-  `BigVGANModel.mel_loss` and `mel_loss_resolutions` therefore raise `AttributeError` if called. The acoustic
-  model's own `forward(labels=...)` is unaffected. Wiring a real objective into the vocoder is open work.
+- **The vocoder's adversarial terms.** The released vocoder was trained against a multi period and a multi
+  resolution discriminator, so its full objective also carries a least squares adversarial term and a feature
+  matching term. Both need the discriminator, which `transformers` vocoders do not carry, so neither is
+  implemented; `PromptTTSPPBigVGan.forward` returns the reconstruction term alone. See the vocoder section of
+  **Training** for what the discriminator evidence is and what it leaves undetermined.
 
 
 ## Repository integration

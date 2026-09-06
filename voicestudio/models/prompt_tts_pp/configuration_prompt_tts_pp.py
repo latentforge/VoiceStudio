@@ -443,6 +443,18 @@ class PromptTTSPPBigVGanConfig(PreTrainedConfig):
             Whether the waveform is bounded by a hyperbolic tangent. `False` clamps it to `[-1, 1]` instead.
         use_bias_at_final (`bool`, *optional*, defaults to `True`):
             Whether the output convolution has a bias.
+        n_fft (`int`, *optional*, defaults to 512):
+            Size of the Fourier transform of the mel spectrogram the reconstruction loss is measured over.
+        win_length (`int`, *optional*, defaults to 480):
+            Width in waveform samples of one analysis window of that spectrogram.
+        mel_fmin (`float`, *optional*, defaults to 63.0):
+            Lowest frequency, in Hz, of its filterbank.
+        mel_fmax (`float`, *optional*, defaults to 12000.0):
+            Highest frequency, in Hz, of its filterbank. `None` means half the sampling rate.
+        mel_loss_coeff (`float`, *optional*, defaults to 45.0):
+            Weight the reconstruction loss is scaled by.
+        mel_loss_clamp_eps (`float`, *optional*, defaults to 1e-05):
+            Smallest value the mel spectrogram is clamped to before the logarithm.
         initializer_range (`float`, *optional*, defaults to 0.02):
             Standard deviation of the truncated normal initializer of the convolution weights.
 
@@ -480,6 +492,12 @@ class PromptTTSPPBigVGanConfig(PreTrainedConfig):
         snake_logscale: bool = True,
         use_tanh_at_final: bool = True,
         use_bias_at_final: bool = True,
+        n_fft: int = 512,
+        win_length: int = 480,
+        mel_fmin: float = 63.0,
+        mel_fmax: float | None = 12000.0,
+        mel_loss_coeff: float = 45.0,
+        mel_loss_clamp_eps: float = 1e-5,
         initializer_range: float = 0.02,
         **kwargs,
     ):
@@ -521,6 +539,12 @@ class PromptTTSPPBigVGanConfig(PreTrainedConfig):
         self.snake_logscale = snake_logscale
         self.use_tanh_at_final = use_tanh_at_final
         self.use_bias_at_final = use_bias_at_final
+        self.n_fft = n_fft
+        self.win_length = win_length
+        self.mel_fmin = mel_fmin
+        self.mel_fmax = mel_fmax
+        self.mel_loss_coeff = mel_loss_coeff
+        self.mel_loss_clamp_eps = mel_loss_clamp_eps
         self.initializer_range = initializer_range
 
         super().__init__(**kwargs)

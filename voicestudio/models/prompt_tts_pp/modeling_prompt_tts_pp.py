@@ -31,7 +31,15 @@ from transformers.models.fastspeech2_conformer.modeling_fastspeech2_conformer im
 )
 from transformers.utils import auto_docstring, logging
 
-from ..bigvgan import BigVGANAmpBlock, BigVGANAmpLayer, BigVGANModel, BigVGANSnakeActivation
+from ..bigvgan import (
+    BigVGANAmpBlock,
+    BigVGANAmpLayer,
+    BigVGANModel,
+    BigVGANOutput,
+    BigVGANSnakeActivation,
+    dynamic_range_compression,
+    mel_spectrogram,
+)
 from .configuration_prompt_tts_pp import PromptTTSPPBigVGanConfig, PromptTTSPPConfig
 
 
@@ -2217,7 +2225,6 @@ class PromptTTSPPSourceModule(nn.Module):
 class PromptTTSPPBigVGan(BigVGANModel):
     config: PromptTTSPPBigVGanConfig
     base_model_prefix = "vocoder"
-    main_input_name = "spectrogram"
     supports_gradient_checkpointing = False
     amp_block_class = PromptTTSPPAmpBlock
     snake_activation_class = PromptTTSPPSnakeActivation
@@ -2300,28 +2307,84 @@ class PromptTTSPPBigVGan(BigVGANModel):
             output_padding=rate % 2,
         )
 
-    @auto_docstring
-    def forward(self, spectrogram: torch.FloatTensor, f0: torch.FloatTensor) -> torch.FloatTensor:
+    def mel_loss_resolutions(self) -> list[dict]:
         r"""
-        spectrogram (`torch.FloatTensor` of shape `(batch_size, model_in_dim, num_frames)`):
-            Log mel spectrogram on the scale the vocoder was trained on, that is the model's prediction after
-            [`~PromptTTSPPFeatureExtractor.denormalize`].
-        f0 (`torch.FloatTensor` of shape `(batch_size, 1, num_frames)`):
-            Fundamental frequency in Hz of each frame, zero on the unvoiced ones.
+        Returns:
+            `list[dict]`: The [`mel_spectrogram`] keyword arguments of the single resolution the reconstruction
+            loss is measured over, which is the analysis [`PromptTTSPPFeatureExtractor`] produces the input
+            spectrogram with.
+        """
+        return [
+            {
+                "sampling_rate": self.config.sampling_rate,
+                "n_fft": self.config.n_fft,
+                "hop_length": self.hop_length,
+                "win_length": self.config.win_length,
+                "num_mel_bins": self.config.model_in_dim,
+                "fmin": self.config.mel_fmin,
+                "fmax": self.config.mel_fmax,
+                "centered": True,
+            }
+        ]
+
+    def mel_loss(self, audio_values: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        r"""
+        Measures the distance between the log mel spectrograms of the generated and the ground truth waveform.
+
+        Args:
+            audio_values (`torch.FloatTensor` of shape `(batch_size, num_samples)`):
+                Generated waveform.
+            labels (`torch.FloatTensor` of shape `(batch_size, num_samples)`):
+                Ground truth waveform.
 
         Returns:
-            `torch.FloatTensor` of shape `(batch_size, num_samples)`: The waveform.
+            `torch.Tensor`: The distance, weighted by `config.mel_loss_coeff`.
+        """
+        resolution = self.mel_loss_resolutions()[0]
+        clip_value = self.config.mel_loss_clamp_eps
+        return self.config.mel_loss_coeff * F.l1_loss(
+            dynamic_range_compression(mel_spectrogram(audio_values, **resolution), clip_value),
+            dynamic_range_compression(mel_spectrogram(labels, **resolution), clip_value),
+        )
+
+    @auto_docstring
+    def forward(
+        self,
+        input_features: torch.FloatTensor,
+        f0: torch.FloatTensor,
+        labels: torch.FloatTensor | None = None,
+    ) -> BigVGANOutput:
+        r"""
+        Args:
+            input_features (`torch.FloatTensor` of shape `(batch_size, model_in_dim, num_frames)`):
+                Log mel spectrogram on the scale the vocoder was trained on, that is the model's prediction after
+                [`~PromptTTSPPFeatureExtractor.denormalize`].
+            f0 (`torch.FloatTensor` of shape `(batch_size, 1, num_frames)`):
+                Fundamental frequency in Hz of each frame, zero on the unvoiced ones.
+            labels (`torch.FloatTensor` of shape `(batch_size, num_samples)`, *optional*):
+                Ground truth waveform. Given, the mel spectrogram reconstruction loss against it is returned.
+
+        Returns:
+            [`BigVGANOutput`]
         """
         excitation = F.interpolate(f0, scale_factor=float(self.hop_length), mode="nearest").transpose(-1, -2)
         excitation = self.source(excitation).transpose(-1, -2)
 
-        hidden_states = self.conv_pre(spectrogram)
+        hidden_states = self.conv_pre(input_features)
         for upsample, noise_conv, blocks in zip(self.upsampler, self.noise_convs, self.resblocks):
             hidden_states = upsample(hidden_states) + noise_conv(excitation)
             hidden_states = sum(block(hidden_states) for block in blocks) / self.num_kernels
 
         hidden_states = self.post_activation(hidden_states)
-        return torch.tanh(self.conv_post(hidden_states)).squeeze(1)
+        audio_values = torch.tanh(self.conv_post(hidden_states)).squeeze(1)
+
+        loss = None
+        if labels is not None:
+            # The stack emits a whole number of hops, which the ground truth clip need not be a multiple of.
+            num_samples = min(audio_values.shape[-1], labels.shape[-1])
+            loss = self.mel_loss(audio_values[..., :num_samples], labels[..., :num_samples])
+
+        return BigVGANOutput(loss=loss, audio_values=audio_values)
 
 
 __all__ = [
