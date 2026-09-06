@@ -95,7 +95,7 @@ class BreezeTTSProcessor(ProcessorMixin):
     def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
         r"""
         Loads the processor of a Breeze TTS 2 checkpoint, together with the audio tokenizer bundled in its
-        `audio_tokenizer` subfolder.
+        `audio_tokenizer` subfolder, which is a Qwen3-TTS-Tokenizer-12Hz in the layout that model publishes.
 
         Args:
             pretrained_model_name_or_path (`str` or `os.PathLike`):
@@ -109,13 +109,11 @@ class BreezeTTSProcessor(ProcessorMixin):
         """
         processor = super().from_pretrained(pretrained_model_name_or_path, **kwargs)
         if getattr(processor, "audio_tokenizer", None) is None:
-            from transformers.models.qwen3_tts_tokenizer_multi_codebook import (
-                Qwen3TTSTokenizerMultiCodebookModel,
-            )
+            from ..qwen3_tts.processing_qwen3_tts import load_audio_tokenizer
 
             try:
-                processor.audio_tokenizer = Qwen3TTSTokenizerMultiCodebookModel.from_pretrained(
-                    pretrained_model_name_or_path, subfolder=AUDIO_TOKENIZER_SUBFOLDER
+                processor.audio_tokenizer = load_audio_tokenizer(
+                    pretrained_model_name_or_path, AUDIO_TOKENIZER_SUBFOLDER
                 )
             except OSError:
                 logger.warning_once(
