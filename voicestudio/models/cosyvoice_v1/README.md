@@ -213,7 +213,7 @@ Upstream pins more than forty packages. What each turned into:
 | `regex` | Removed. Its one call site is `is_only_punctuation`, whose `^[\p{P}\p{S}]*$` is `unicodedata.category(character)[0] in "PS"`. The two agree on all 149251 assigned code points. |
 | `tiktoken` | Removed. `get_encoding` only used it to read a `base64 rank` file and to hold the ranks, so `CosyVoiceV1TikTokenConverter` subclasses transformers' own `TikTokenConverter` and reads the file with `base64` from the standard library. |
 | `openai-whisper` | Replaced by `WhisperTokenizer` for text and `WhisperFeatureExtractor` for the speech tokenizer's mel. `whisper.tokenizer.Tokenizer`, which upstream's `get_tokenizer` returns, is `CosyVoiceV1Tokenizer`. |
-| the English number reading package upstream pins at 7.3.1 | Removed. Upstream calls one method of it, `number_to_words`, to read an English digit run out; `number_to_words` in `processing_cosyvoice_v1.py` is that reading, inlined. See below. |
+| `inflect` | Removed. Upstream calls one method of it, `number_to_words`, to read an English digit run out; `number_to_words` in `processing_cosyvoice_v1.py` is that reading, inlined. See below. |
 | `pyworld` | Lazily imported. See below. |
 | `wetext`, `ttsfrd` | Text normalizers. See "Not carried over from upstream". |
 | `onnxruntime` | Removed. See below. |
@@ -425,16 +425,16 @@ the empty string, an SSML marker, a punctuation only string and a paragraph long
 All eleven agree exactly. `is_only_punctuation`, which drops the `regex` dependency, agrees with
 upstream's `^[\p{P}\p{S}]*$` on all 149251 assigned Unicode code points.
 
-**The English digit reading, against the package upstream pins.** `number_to_words` was compared
-with the English number reading package upstream's `requirements.txt` pins, at its pinned version
-7.3.1, over 41,821 digit strings: every integer from 0 to 10,000, every 97th from 10,000 to
-1,000,000, 20,000 strings of 1 to 33 digits drawn from `random.Random(0)`, every one of the numbers
-0 to 79 carrying 1 to 20 leading zeros, and the runs of 1 to 13 zeros. **Zero mismatches.** A
-further 1,600 strings of 34 to 41 digits, 200 per length from `random.Random(1)`, put the two on the
-same side of the largest scale word in every case: 600 agree on a reading and 1,000 raise on both
-sides, the oracle with `NumOutOfRangeError` and `number_to_words` with `ValueError`. The oracle was
-unpacked into a scratch directory; it is not installed, not imported by this repository and not
-declared anywhere.
+**The English digit reading, against `inflect`.** `number_to_words` was compared with
+`inflect` 7.3.1, the version upstream's `requirements.txt` pins, over 41,821 digit strings: every
+integer from 0 to 10,000, every 97th from 10,000 to 1,000,000, 20,000 strings of 1 to 33 digits
+drawn from `random.Random(0)` a digit at a time over a length drawn the same way, every one of the
+numbers 0 to 79 carrying 1 to 20 leading zeros, and the runs of 1 to 13 zeros. **Zero mismatches.**
+A further 1,600 strings of 34 to 41 digits, 200 per length from `random.Random(1)`, put the two on
+the same side of the largest scale word in every case: 600 agree on a reading and 1,000 raise on
+both sides, `inflect` with `NumOutOfRangeError` and `number_to_words` with `ValueError`. `inflect`
+was unpacked into a scratch directory as an oracle; it is not installed, not imported by this
+repository and not declared anywhere.
 
 **The English digit reading, generated and transcribed back.** Zero shot from the 5.86 s LibriSpeech
 clip above, `I paid 1234 dollars in 2025 for 7 books.`, three seeds each, on the local GPU, transcribed
@@ -447,6 +447,14 @@ with `facebook/wav2vec2-base-960h`, word error rate against the text handed to t
 
 With the front end on, every seed reads all three numbers back and the errors are single words. With
 it off, every seed reads `1234` as `TWELVE THIRTY FOUR` and no seed recovers `2025`.
+
+`normalize_text` hands every English string to `spell_out_number`, whether or not it holds a digit,
+which is what upstream does. A digit free string comes back from it unchanged: over 20,000 strings
+of 0 to 60 characters drawn from `random.Random(0)` over ASCII letters, spaces, English punctuation
+and three Chinese characters, **not one** is rewritten. The same sentence as the cloning table
+above, `The quick brown fox jumps over the lazy dog.`, was generated again through the front end,
+three seeds on the local GPU, and transcribed with `facebook/wav2vec2-base-960h`: WER
+0.111 / 0.000 / 0.000, seed 0's only error being `QUIT` for `QUICK`.
 
 ## Not carried over from upstream
 
@@ -501,7 +509,7 @@ Recorded per CLAUDE.md section 2.6.
   before the rewriting and sentence splitting that this does implement. So the branch this
   reproduces exactly is upstream's own "no frontend is avaliable" path, and numbers, dates and
   abbreviations are not expanded the way an installed normalizer would expand them. English digit
-  runs are spelled out by `number_to_words`, which reads them the way the package upstream pins does.
+  runs are spelled out by `number_to_words`, which reads them the way `inflect` does.
 - **`ttsfrd`.** Upstream ships it as a wheel in `FunAudioLLM/CosyVoice-ttsfrd` with a 339 MB
   resource pack. It is not on PyPI and has no source release.
 - **Streaming input text.** Upstream's `inference_bistream` accepts a text generator and
