@@ -216,7 +216,7 @@ Upstream pins more than forty packages. What each turned into:
 | `tiktoken` | Removed. `get_encoding` only used it to read a `base64 rank` file and to hold the ranks, so `CosyVoiceV1TikTokenConverter` subclasses transformers' own `TikTokenConverter` and reads the file with `base64` from the standard library. |
 | `openai-whisper` | Replaced by `WhisperTokenizer` for text and `WhisperFeatureExtractor` for the speech tokenizer's mel. `whisper.tokenizer.Tokenizer`, which upstream's `get_tokenizer` returns, is `CosyVoiceV1Tokenizer`. |
 | `inflect` | Removed. Upstream calls one method of it, `number_to_words`, to read an English digit run out; `number_to_words` in `processing_cosyvoice_v1.py` is that reading, inlined. See below. |
-| `pyworld` | Removed. Its `harvest`, `stonemask` and `dio` estimators are ported into `processing_cosyvoice_v1.py`. See below. |
+| `pyworld` | Not required. `CosyVoiceV1WorldEstimator` ports its `harvest`, `stonemask` and `dio`, and delegates to the package where it happens to be installed. See below. |
 | `wetext` | Lazily imported, and not declared. It is the text normalizer upstream's own front end reaches for, and no part of it is math that could be inlined; see "The text normalizer". |
 | `ttsfrd` | Not reachable. See "Not carried over from upstream". |
 | `onnxruntime` | Removed. See below. |
@@ -246,13 +246,17 @@ the module it was traced inside, so the module path and the operator together sa
 initializer is. All 96 of v1's initializers map to exactly one parameter each and load with
 `strict=True`.
 
-`pyworld` was the other one, and it is gone too. The target of the vocoder objective's f0 term is
-the WORLD harvest contour, and no other estimator produces the same numbers, so substituting one
-would have changed the objective silently. Instead the three estimators `compute_f0` uses are ported
-into `processing_cosyvoice_v1.py` from `mmorise/World`'s `harvest.cpp`, `stonemask.cpp` and
-`dio.cpp`. `fft.cpp` is not ported; `numpy.fft` stands in for it. The two IIR filters WORLD applies
-outside its transform, the third-order decimation filter and the second-order zero-lag Butterworth
-the contour is smoothed with, are recursions of a few lines each.
+`pyworld` was the other one, and it is no longer required. The target of the vocoder objective's f0
+term is the WORLD harvest contour, and no other estimator produces the same numbers, so substituting
+one would have changed the objective silently. Instead `CosyVoiceV1WorldEstimator` ports the three
+estimators `compute_f0` uses from `mmorise/World`'s `harvest.cpp`, `stonemask.cpp` and `dio.cpp`.
+`fft.cpp` is not ported; `numpy.fft` stands in for it. The two IIR filters WORLD applies outside its
+transform, the third-order decimation filter and the second-order zero-lag Butterworth the contour is
+smoothed with, are recursions of a few lines each.
+
+The class still delegates to `pyworld` when that package is importable, and runs the port otherwise.
+Nothing depends on which path is taken, because the two agree; the package is about two and a half
+times faster, so it is preferred where a caller has it. `prefer_pyworld=False` forces the port.
 
 Two pieces of upstream behaviour are reproduced rather than corrected, because correcting either
 would move the contour: the mean f0 in `ExtendSub` is not reset between voiced sections and so

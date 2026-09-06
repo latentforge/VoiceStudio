@@ -781,6 +781,15 @@ have had is in the same block. The repository stays Apache-2.0: BSD 3-Clause is 
 Apache-2.0 section 4(c) is the clause that requires carrying the upstream notice through.
 `transformers` does the same thing in `models/blip/modeling_blip_text.py`.
 
+The estimators live on `CosyVoiceV1WorldEstimator` rather than as forty-odd module-level helpers,
+which lets `sampling_rate`, `f0_floor` and `f0_ceil` come off eight signatures. `fs` stays an explicit
+parameter inside harvest, because harvest runs its candidate search on a decimated rate rather than
+the rate the caller passed. The class delegates to `pyworld` when it is importable and runs the port
+otherwise, and the two backends were compared through the same class on the six signals above:
+identical voicing, positions equal, and largest absolute differences of 1.1e-12 for harvest, 4.0e-13
+for stonemask and 5.1e-11 for dio. The package is about two and a half times faster, 2.05 s against
+5.13 s over the six.
+
 Still open for a human: `pyproject.toml`'s `eval` extra no longer needs `pyworld`, and the root
 `README.md` and `docs/locales/README_ko.md` tables have had it dropped from the `eval` row. That
 extra is being edited concurrently, so the entry replacing it is not documented here.
