@@ -105,10 +105,17 @@ Every number below is on the published `fold0_s42_best_model.pth`, run through t
   `torchvision.transforms.Resize((512, 512))` to 7.9e-06, and `remove_silent_sections` returns byte identical
   output to upstream's `remove_silent_section` on real clips, 71432, 58890 and 152383 samples kept out of 93680,
   77040 and 199760.
-- **Not yet measured.** An end-to-end paired comparison of this pipeline's score against upstream's `predict` on
-  real speech, over enough draws to resolve the difference. A first attempt at sixteen draws per estimate showed
-  a gap of up to 0.28 that did not survive a rerun, in which upstream's own estimate for one clip moved from
-  3.823 to 3.615, so sixteen draws does not resolve 0.1 MOS and no conclusion should be drawn from it either way.
+- **End to end against upstream's `predict`, on real speech.** Six clips of the
+  `hf-internal-testing/librispeech_asr_dummy` validation split, fold 0 only. One estimate is 64 draws averaged,
+  and each clip gets three independent estimates from each side, this pipeline against
+  `predict(data=..., num_repetitions=64)`. The per-clip difference has mean `-0.0054` MOS and largest magnitude
+  `0.0329`, against a repeat-to-repeat spread of `0.010` to `0.033` within either side, so the two agree to
+  inside the noise of the estimator.
+
+  The draw count is the finding here. A first attempt at sixteen draws per estimate showed a gap of up to `0.28`
+  that read as a systematic bias, and it was not one: rerunning it moved upstream's own estimate for one clip
+  from `3.823` to `3.615`. Sixteen draws does not resolve 0.1 MOS, and any comparison at that sample size,
+  including a favourable one, says nothing.
 
 
 ## Not carried over from upstream
