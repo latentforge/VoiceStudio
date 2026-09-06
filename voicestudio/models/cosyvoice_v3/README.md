@@ -102,8 +102,8 @@ number the same way.
 
 That markup is what the 278 added embedding rows are for. It is written inline by the caller, to
 override a pronunciation, as in upstream's own `'...对报道[j][ǐ]予好评。'`, and `'[T][AH0][M][EY1][T][OW2]'`
-for English. Nothing in the open upstream source emits it: the only producer is `ttsfrd`, which is
-closed source, so a caller supplies it.
+for English. Nothing in the readable upstream source emits it: the only producer is `ttsfrd`, which
+ships as a compiled wheel with no source release, so a caller supplies it.
 
 Text arrives as a `str`. Passing a generator of `input_ids` tensors to `generate` instead selects
 upstream's `inference_bistream`, the interleaved decode that reads text as it arrives and emits
@@ -839,9 +839,10 @@ Recorded per CLAUDE.md section 2.6.
   **is** `IGNORE_ID`, which reads like a sign error.
 - **`ttsfrd`.** `wetext` is now reachable, when the caller installs it, and "The text normalizer"
   below records what it does and does not fix. `ttsfrd`, which `CosyVoiceFrontEnd.__init__` tries
-  first, is not reachable at all: it is a closed source Alibaba wheel whose rules ship as a separate
-  `CosyVoice-ttsfrd` resource pack, with no source release, so it cannot be traced under CLAUDE.md
-  section 2.2. Whether anything is left that only `ttsfrd` would fix cannot be
+  first, is not reachable at all. It is published under Apache-2.0 in `FunAudioLLM/CosyVoice-ttsfrd`,
+  but only as cp38 and cp310 `linux_x86_64` wheels beside a 339 MB resource pack, with no source
+  release and nothing on PyPI, so there is no specifier to put in an extra, it does not build for this
+  project's Python, and being a compiled binary it cannot be traced under CLAUDE.md section 2.2. Whether anything is left that only `ttsfrd` would fix cannot be
   measured without running it, and that is **still open**. One concrete candidate is on record: the
   `Dr. Smith works at the U.S. Dept. of Energy.` case below is not fixed by `wetext` either, because
   `Dept.` is not in its grammar.
