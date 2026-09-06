@@ -66,8 +66,9 @@ pieces = processor.normalize_text("I paid 1234 dollars in 2025 for 7 books.")
 One thing is v3's rather than v1's: the digit run is skipped inside the markup of the added
 vocabulary, because `[AA1]` is one token whose trailing `1` is a stress mark rather than a number.
 Without that, upstream's own English branch rewrites it to `[AAone]` and the token is gone. The
-reading itself is `number_to_words` in `voicestudio/models/cosyvoice_v1/`, inherited through v2, so
-nothing has to be installed for it and v1, v2 and v3 read a number the same way.
+reading itself is `number_to_words` in `voicestudio/models/cosyvoice_v1/`, inherited through v2. It
+is upstream's `inflect` call inlined, so nothing has to be installed for it and v1, v2 and v3 read a
+number the same way.
 
 That markup is what the 278 added embedding rows are for. It is written inline by the caller, to
 override a pronunciation, as in upstream's own `'...对报道[j][ǐ]予好评。'`, and `'[T][AH0][M][EY1][T][OW2]'`
@@ -464,11 +465,11 @@ LibriSpeech transcript verbatim, upper case and unpunctuated, collapsed the same
 and adding the full stop is the only difference between that and the table above. v1 and v2 generate
 the whole sentence either way, so this sensitivity is v3's.
 
-**The text frontend, against the package upstream pins and against the added vocabulary.** The
-English number reading lives in `voicestudio/models/cosyvoice_v1/processing_cosyvoice_v1.py` and is
-measured there: 41,821 digit strings against the package upstream's `requirements.txt` pins, at
-its pinned version 7.3.1, with zero mismatches, and 1,600 strings of 34 to 41 digits agreeing on
-which side of the largest scale word they fall. See that folder's README for the corpus.
+**The text frontend, against `inflect` and against the added vocabulary.** The English number
+reading lives in `voicestudio/models/cosyvoice_v1/processing_cosyvoice_v1.py` and is measured there,
+against `inflect` 7.3.1, the version upstream's `requirements.txt` pins: 41,821 digit strings with
+zero mismatches, and 1,600 strings of 34 to 41 digits agreeing on which side of the largest scale
+word they fall. That folder's README carries the corpus.
 
 All 278 tokens the released tokenizer gains are reached. Of the 280 entries in `SPECIAL_TOKENS`, 278
 are new to the tokenizer, which grows from 151,646 to 151,924, and none is unknown to it afterwards.
