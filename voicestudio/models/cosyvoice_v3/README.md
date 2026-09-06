@@ -49,10 +49,12 @@ picks up the text tokenizer, the speech tokenizer and the speaker encoder.
 ## The text frontend
 
 `CosyVoiceV3Processor.normalize_text` is upstream's `CosyVoiceFrontEnd.text_normalize`, and it runs
-before the tokenizer. A Chinese sentence loses the spaces that do not sit inside an embedded English
-word, has its corner marks spelled out, its brackets removed, its full stops and dashes replaced by
-their Chinese counterparts and a trailing run of commas turned into a full stop. Any other sentence
-has its digit runs read out in English. Either way the result is split into the pieces upstream
+before the tokenizer. Both branches open with the `wetext` text normalizer, which the `frontend`
+extra installs and which is skipped when it is absent; see "The text normalizer". A Chinese sentence
+then loses the spaces that do not sit inside an embedded English word, has its corner marks spelled
+out, its brackets removed, its full stops and dashes replaced by their Chinese counterparts and a
+trailing run of commas turned into a full stop. Any other sentence has its remaining digit runs read
+out in English. Either way the result is split into the pieces upstream
 synthesizes one at a time, on punctuation, with each piece grown to at most 80 units and a trailing
 piece shorter than 20 merged into the one before it, a Chinese piece measured in characters and any
 other in tokens. `text_frontend=False` turns the whole thing off, which is what upstream passes to
@@ -63,9 +65,10 @@ pieces = processor.normalize_text("I paid 1234 dollars in 2025 for 7 books.")
 # ['I paid one thousand, two hundred and thirty-four dollars in two thousand and twenty-five for seven books.']
 ```
 
-One thing is v3's rather than v1's: the digit run is skipped inside the markup of the added
-vocabulary, because `[AA1]` is one token whose trailing `1` is a stress mark rather than a number.
-Without that, upstream's own English branch rewrites it to `[AAone]` and the token is gone. The
+One thing is v3's rather than v1's: the whole rewrite is skipped inside the markup of the added
+vocabulary, on both branches, because `[AA1]` is one token whose trailing `1` is a stress mark rather
+than a number. Without that, upstream's own English branch rewrites it to `[AAone]` and the token is
+gone, and the text normalizer raises on it outright. The
 reading itself is `number_to_words` in `voicestudio/models/cosyvoice_v1/`, inherited through v2. It
 is upstream's `inflect` call inlined, so nothing has to be installed for it and v1, v2 and v3 read a
 number the same way.
@@ -486,25 +489,9 @@ two pieces of 71 and 53 tokens, while the same paragraph cut to 81 tokens stays 
 `merge_len` 20 is merged back. A Chinese paragraph of three sentences splits into two pieces on
 character count. With `text_frontend=False` all of them come back as one piece, untouched.
 
-**The text frontend, generated and transcribed back.** Zero shot from the 5.86 s LibriSpeech clip
-above, three seeds each, transcribed with `facebook/wav2vec2-base-960h`, word error rate against the
-text the frontend produced:
-
-| Case | frontend | WER by seed | Heard back, seed 2 |
-|---|---|---|---|
-| `I paid 1234 dollars in 2025 for 7 books.` | on | 0.053 / 0.579 / **0.000** | `I PAID ONE THOUSAND TWO HUNDRED AND THIRTY FOUR DOLLARS IN TWO THOUSAND AND TWENTY FIVE FOR SEVEN BOOKS` |
-| the same | off | 0.556 / 0.556 / 0.778 | `AND TWENTY TWENTY FIVE FOR SEVEN BOOKS` |
-| `Dr. Smith works at the U.S. Dept. of Energy.` | on | 1.000 / 0.200 / 0.800 | `OF ENERGY` |
-| the same | off | 1.000 / 0.200 / 0.800 | `OF ENERGY` |
-
-The digits row is the result: with the frontend on, two of three seeds read the numbers back word for
-word and the third dropped a clause; with it off, all three seeds mangle `1234` and `2025` and no
-seed recovers them. That row was measured again on the local GPU, same clip, same three seeds, same
-transcriber, and holds: WER 0.000 / 0.000 / 0.053 with the frontend on, where seed 2 drops one `and`,
-against 0.889 / 0.556 / 0.889 with it off, where no seed reads `1234` back. Seed 0's `TUNE` for `TWO` is the connectionist temporal classification decoder,
-not the model. The abbreviations row is the other result, and it is a negative one: the two settings
-are **identical waveform for waveform**, because expanding `Dr.` and `Dept.` is exactly the part that
-lives in `ttsfrd` or `wetext`. That row is the measurement behind the open dependency item below.
+**The text frontend, generated and transcribed back.** See "The text normalizer" below for the full
+four way grid on five sentences. The two rows this README carried before were re-run inside it and
+both hold, and the older figures are superseded rather than contradicted.
 
 **Streaming input text.** The same clip, the same three seeds, the same transcriber, against the
 sentence `The quick brown fox jumps over the lazy dog.` fed as the four chunks `The quick `,
@@ -533,6 +520,92 @@ attribute names it reads, with both sides drawing from `repetition_aware_samplin
 seed. It agrees **token for token**: 179 tokens against 179, no first difference, from a generator
 yielding one text token at a time and again from one yielding five. That covers the end of prompt
 split as well, since upstream takes its v3 branch on the class name the adapter carries.
+
+## The text normalizer
+
+`normalize_text` is v2's with v3's markup skip on top, and how it composes `wetext` with
+`number_to_words` is described in `voicestudio/models/cosyvoice_v1/README.md`. Two things are v3's
+own: the interaction with the inline markup, and the fact that v3's Chinese needs the normalizer far
+less than v1's and v2's do.
+
+**The markup skip now covers both branches, and it has to.** `normalize_text` applies the normalizer
+span by span, leaving the spans that hold a token of the added vocabulary alone, which is a
+deliberate deviation from upstream and is measured rather than argued. Of the 276 markup tokens, 45
+carry a stress digit, and `wetext` **raises `AssertionError`** on all 45 of them on the English
+branch: `Normalizer().normalize("the word [AA1] here.")` does not return a mangled string, it
+crashes. On the Chinese branch it does not crash but rewrites those same 45, turning `[AA1]` into
+`[AA一]` and destroying the token. With the skip, **all 276 survive both branches**; without it, the
+English branch raises on 45 and the Chinese branch loses 45. Upstream normalizes the whole string on
+both branches and has the same two defects, which is one more reason nothing in its open source can
+emit this markup.
+
+**English**, zero shot from the 5.86 s LibriSpeech clip, three seeds, `facebook/wav2vec2-base-960h`,
+word error rate against the text each setting handed to the model. `off` is `text_frontend=False`,
+`today` is this repository without the `frontend` extra, `clvp` is `today` plus `EnglishNormalizer`
+from `transformers.models.clvp`, which was measured and rejected, and `wetext` is the extra
+installed.
+
+| Case | off | today | clvp | wetext |
+|---|---|---|---|---|
+| `I paid 1234 dollars in 2025 for 7 books.` | 0.667 / 0.833 / 0.833 | 0.053 / 0.579 / 0.000 | 0.053 / 0.579 / 0.000 | 0.000 / 0.000 / 0.538 |
+| `Dr. Smith works at the U.S. Dept. of Energy.` | 1.000 / 0.200 / 0.800 | 1.000 / 0.200 / 0.800 | 0.800 / 0.100 / 0.800 | 0.778 / 0.778 / 0.778 |
+| `The book costs $1,234.50 and weighs 2.5 kilograms.` | 2.333 / 1.833 / 1.333 | 0.467 / 0.733 / 0.733 | 0.158 / 0.000 / 0.053 | 0.056 / 0.056 / 0.111 |
+| `The St. Louis Co. Ltd. shipped 5 ft. of cable.` | 0.778 / 0.778 / 0.889 | 0.700 / 0.700 / 1.300 | 0.000 / 0.000 / 0.100 | 0.100 / 0.100 / 0.200 |
+| `The quick brown fox jumps over the lazy dog.` | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 |
+
+Four things to read out of it.
+
+The **digits** row shows `today` and `clvp` **identical seed for seed**, waveform for waveform,
+because CLVP rewrites nothing in that sentence: this repository's `number_to_words` had already
+consumed every digit. That identity is what makes CLVP's other columns a fair comparison rather than
+a coincidence. It also shows `wetext` scoring lower while saying something less correct, because it
+reads `1234` as `twelve thirty four`, a year reading of a quantity, and the model then says that
+faithfully. A lower figure in this table means the model matched its own reference, not that the
+reference was right.
+
+The **money** row is where the frontend as it stands is worst and where it is not obvious from the
+text alone: `today` hands the model `The book costs $one,two hundred and thirty-four.fifty and
+weighs two.five kilograms.`, and `$1,234.50` comes back as `TWO BLANK QUELL BLADS TWO HUNDRED THIRTY
+FOUR FIFTY`. Both normalizers fix the synthesis. `clvp` is the semantically better of the two here,
+reading `one thousand, two hundred and thirty-four dollars, fifty cents`, where `wetext` drops the
+leading word and reads `thousand two hundred and thirty four point five dollars`.
+
+The **units** row is the reverse and it is why CLVP was rejected. Its figures are the best in the
+table, 0.000 / 0.000 / 0.100, and its transcripts read `THE SAINT LOUIS COMPANY LIMITED SHIPPED FIVE
+FORT OF CABLE`. CLVP's abbreviation table maps `ft.` to `fort`, so the model is faithfully speaking
+a wrong word. `wetext` maps it to `feet` and its transcripts read `FIVE FEET`. Everything CLVP wins,
+`wetext` wins as well or better, and CLVP additionally gets `mrs.` wrong as `misess`, `st.` wrong as
+`saint` in a street name, and every ordinal wrong, `1st` to `onest` and `21st` to `twenty-onest`.
+
+The **abbreviations** row is a negative result under all four settings, and it is the sentence this
+whole investigation started from. `Dr.` and `U.S.` are read correctly by v1 and v2 unaided; what
+fails is `Dept.`, which is absent from CLVP's 18 entry table and from `wetext`'s grammar alike. On
+v3 specifically the sentence also truncates, most seeds returning `OF ENERGY` regardless of setting,
+which is a decode failure rather than a text one. **This case is not closed and no setting closes
+it.**
+
+**Chinese**, upstream's sft mode with the `中文女` speaker vector from
+`FunAudioLLM/CosyVoice-300M-SFT`, no reference waveform, three seeds,
+`openai/whisper-large-v3-turbo`, character error rate against the original sentence rather than each
+setting's own text, since the two settings write a number differently and the transcriber writes it
+a third way:
+
+| Case | today | wetext |
+|---|---|---|
+| `会议定在2025年3月8日下午3点30分开始。` | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 |
+| `这本书卖1234.50元，比原价便宜25%。` | 0.333 / 0.000 / 0.333 | 0.000 / 0.000 / 0.000 |
+| `他跑了5公里，用了30分钟，体重是65kg。` | 0.421 / 0.263 / 0.474 | 0.421 / 0.421 / 0.105 |
+| `电话号码是13800138000，房间号是302。` | 0.000 / 0.000 / 0.043 | 0.043 / 0.261 / 0.000 |
+| `今天天气很好，我们一起去公园散步吧。` | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 |
+
+**v3 is the outlier, and this is worth knowing before assuming the extra is needed.** Where v1 and
+v2 fall apart on an unnormalized Chinese date or phone number, v3 reads both back perfectly with no
+normalizer at all: all three seeds return `会议定在2025年3月8日下午3点30分开始` and
+`电话号码是13800138000，房间号是302`. Its units transcripts already say `五公里`, `三十分钟` and
+`六十五千克` unaided; the figure is inflated only because the transcriber writes Chinese numerals
+where the original has digits. The one case that genuinely improves is the decimal currency amount,
+where `today` reads `1234.50` as `一二三四五十`, digit by digit with a stray fifty, on two of three
+seeds. Compare v2's table, where four rows collapse without the normalizer.
 
 ## The second language model checkpoint
 
@@ -660,21 +733,18 @@ Recorded per CLAUDE.md section 2.6.
   instance and a preference batch, so they do not fit inside a single `forward`. Still open, with the
   same note as v2 that upstream averages its log probabilities over the positions where the target
   **is** `IGNORE_ID`, which reads like a sign error.
-- **The text normalizer inside the text frontend.** The frontend itself is implemented, and so is
-  every part of it upstream writes in Python: the Chinese rewrites, the sentence splitting, the
-  English number expansion and the passage of the added vocabulary's markup. What upstream reaches a
-  package for is not. `CosyVoiceFrontEnd.__init__` tries `ttsfrd` first and falls back to `wetext`,
-  and `text_normalize` calls `self.frd.do_voicegen_frd(text)` or
-  `self.zh_tn_model.normalize(text)` / `self.en_tn_model.normalize(text)` before anything else runs.
-  That is what rewrites a date, a currency amount, an abbreviation or a unit into words, and it is
-  the one piece of the frontend that is genuinely missing. Neither package can be inlined under
-  CLAUDE.md section 9.1. `ttsfrd` is a closed source Alibaba wheel whose rules ship as a separate
-  `CosyVoice-ttsfrd` resource pack, and `wetext` is a weighted finite state transducer grammar
-  compiled into OpenFST archives, a rule set rather than a piece of math. Adding either is a
-  dependency decision under H11 and is **still open**: measured on this checkpoint, `Dr. Smith works
-  at the U.S. Dept. of Energy.` reads identically with the frontend on and off, and the transcripts
-  under Verification show it. Upstream behaves the same way when neither package is installed, which
-  is its own documented third branch, `self.text_frontend = ''`.
+- **`ttsfrd`.** `wetext` is now reachable, as the `frontend` extra, and "The text normalizer" below
+  records what it does and does not fix. `ttsfrd`, which `CosyVoiceFrontEnd.__init__` tries first, is
+  not: it is a closed source Alibaba wheel whose rules ship as a separate `CosyVoice-ttsfrd` resource
+  pack, with no source release, so it cannot be traced under CLAUDE.md section 2.2 and cannot be
+  declared under section 9.1. Whether anything is left that only `ttsfrd` would fix cannot be
+  measured without running it, and that is **still open**. One concrete candidate is on record: the
+  `Dr. Smith works at the U.S. Dept. of Energy.` case below is not fixed by `wetext` either, because
+  `Dept.` is not in its grammar.
+- **A producer for the inline markup.** Unchanged by any of this. Nothing in the open upstream source
+  emits the ARPAbet and pinyin markup the 278 added embedding rows are for; the only producer is
+  `ttsfrd`. A caller supplies it, and `normalize_text` now carries it through both branches
+  untouched.
 
 ## Repository integration
 

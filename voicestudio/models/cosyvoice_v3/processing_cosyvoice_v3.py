@@ -1,15 +1,15 @@
 """Processor class for CosyVoice v3."""
 
 import re
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 from ..cosyvoice_v1.processing_cosyvoice_v1 import (
     contains_chinese,
     is_only_punctuation,
+    normalize_english,
     remove_bracket,
     replace_blank,
     replace_corner_mark,
-    spell_out_number,
     split_paragraph,
 )
 from ..cosyvoice_v2.processing_cosyvoice_v2 import (
@@ -56,27 +56,54 @@ ADDED_TOKEN_PATTERN = re.compile(
 )
 
 
-def spell_out_number_outside_markup(text: str, number_speller) -> str:
+def rewrite_outside_markup(text: str, rewrite: Callable[[str], str]) -> str:
     """
-    Replaces every run of digits with its English reading, skipping the spans that hold a token of
-    the added vocabulary, whose stress digits belong to the token rather than to a number.
+    Applies a rewrite to a sentence span by span, leaving the spans that hold a token of the added
+    vocabulary alone. Their stress digits belong to the token rather than to a number, and the text
+    normalizer either asserts on their bracketed shape or spells those digits out.
 
     Args:
         text (`str`):
             Text to rewrite.
+        rewrite (`Callable`):
+            Callable rewriting one span. It is not called on a span that is empty or whitespace only.
+
+    Returns:
+        `str`: The rewritten text.
+    """
+    rewritten, position = [], 0
+
+    def span(piece: str) -> str:
+        return rewrite(piece) if piece.strip() else piece
+
+    for match in ADDED_TOKEN_PATTERN.finditer(text):
+        rewritten.append(span(text[position : match.start()]))
+        rewritten.append(match.group())
+        position = match.end()
+    rewritten.append(span(text[position:]))
+    return "".join(rewritten)
+
+
+def normalize_english_outside_markup(text: str, english_normalizer, number_speller) -> str:
+    """
+    Rewrites an English sentence the way upstream's front end reads it out, leaving the markup of the
+    added vocabulary alone.
+
+    Args:
+        text (`str`):
+            Text to rewrite.
+        english_normalizer (`wetext.Normalizer` or `None`):
+            Normalizer rewriting a date, a currency amount, a unit and an abbreviation. `None` skips
+            that step.
         number_speller ([`CosyVoiceV1NumberSpeller`]):
             Engine whose `number_to_words` reads a digit run out.
 
     Returns:
         `str`: The rewritten text.
     """
-    spelled, position = [], 0
-    for match in ADDED_TOKEN_PATTERN.finditer(text):
-        spelled.append(spell_out_number(text[position : match.start()], number_speller))
-        spelled.append(match.group())
-        position = match.end()
-    spelled.append(spell_out_number(text[position:], number_speller))
-    return "".join(spelled)
+    return rewrite_outside_markup(
+        text, lambda piece: normalize_english(piece, english_normalizer, number_speller)
+    )
 
 
 class CosyVoiceV3FeatureExtractor(CosyVoiceV2FeatureExtractor):
@@ -98,7 +125,8 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
 
     It differs from v2's in the tokenizer's added vocabulary, which gains the end of system marker
     and the ARPAbet and pinyin sets a caller writes inline to override a pronunciation, in the text
-    front end, which reads a digit run out without disturbing that markup, and in the speech
+    front end, which normalizes and reads a digit run out without disturbing that markup, and in the
+    speech
     tokenizer, which is twice as deep and whose weights come out of `speech_tokenizer_v3.onnx`.
 
     Args:
@@ -145,13 +173,14 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
         Rewrites a sentence the way upstream's text front end does, then optionally splits it into
         the pieces upstream synthesizes one at a time.
 
-        A Chinese sentence loses the spaces that do not sit inside an embedded English word, has its
+        Each branch opens with the `wetext` text normalizer, which rewrites a date, a currency
+        amount, a unit and an abbreviation, and is skipped when `wetext` is not installed. A Chinese
+        sentence then loses the spaces that do not sit inside an embedded English word, has its
         corner marks spelled out, its brackets removed, its full stops and dashes replaced by their
         Chinese counterparts and a trailing run of commas turned into a full stop. Any other
-        sentence has its digit runs read out by [`number_to_words`], leaving the stress digits of
-        an ARPAbet token alone. Text carrying a `<|` `|>` marker is returned untouched. Neither
-        branch runs a text normalizer over numbers, dates or abbreviations, which is what upstream
-        reaches `ttsfrd` or `wetext` for.
+        sentence has its remaining digit runs read out by [`number_to_words`], leaving the markup of
+        the added vocabulary alone on both counts. Text carrying a `<|` `|>` marker is returned
+        untouched.
 
         Args:
             text (`str`):
@@ -173,6 +202,8 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
             return self.tokenizer.encode(piece, add_special_tokens=False)
 
         if contains_chinese(text):
+            if self.chinese_normalizer is not None:
+                text = rewrite_outside_markup(text, self.chinese_normalizer.normalize)
             text = text.replace("\n", "")
             text = replace_blank(text)
             text = replace_corner_mark(text)
@@ -182,7 +213,7 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
             text = re.sub(r"[\uff0c,\u3001]+$", "\u3002", text)
             pieces = split_paragraph(text, tokenize, "zh", token_max_n=80, token_min_n=60, merge_len=20)
         else:
-            text = spell_out_number_outside_markup(text, self.number_speller)
+            text = normalize_english_outside_markup(text, self.english_normalizer, self.number_speller)
             pieces = split_paragraph(text, tokenize, "en", token_max_n=80, token_min_n=60, merge_len=20)
         pieces = [piece for piece in pieces if not is_only_punctuation(piece)]
         return pieces if split else text
@@ -193,5 +224,6 @@ __all__ = [
     "SPECIAL_TOKENS",
     "CosyVoiceV3FeatureExtractor",
     "CosyVoiceV3Processor",
-    "spell_out_number_outside_markup",
+    "normalize_english_outside_markup",
+    "rewrite_outside_markup",
 ]
