@@ -1,6 +1,7 @@
 """Generation utilities for CosyVoice v3."""
 
-from typing import Generator, Optional
+from types import GeneratorType
+from typing import Generator, Iterator, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -21,7 +22,7 @@ class CosyVoiceV3GenerationMixin(CosyVoiceV2GenerationMixin):
 
     def _speech_token_stream(
         self,
-        input_ids: torch.Tensor,
+        input_ids: Union[torch.Tensor, Iterator[torch.Tensor]],
         prompt_input_ids: Optional[torch.Tensor],
         prompt_speech_token_ids: Optional[torch.Tensor],
         source_speech_token_ids: Optional[torch.Tensor],
@@ -56,6 +57,31 @@ class CosyVoiceV3GenerationMixin(CosyVoiceV2GenerationMixin):
             else:
                 run = 0
             yield token_id
+
+    def split_prompt_text(self, prompt_input_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Splits the prompt text of an interleaved decode at the end of prompt token, which v3 places
+        at the head of the sequence rather than interleaving it with the speech tokens.
+
+        Args:
+            prompt_input_ids (`torch.Tensor` of shape `(1, prompt_text_length)`):
+                Text token ids of the prompt utterance.
+
+        Returns:
+            `tuple[torch.Tensor, torch.Tensor]`: the instruction, up to and including the end of
+            prompt token, and the transcript that follows it.
+
+        Raises:
+            ValueError: If the end of prompt token does not appear in `prompt_input_ids`.
+        """
+        positions = (prompt_input_ids.flatten() == self.config.end_of_prompt_token_id).nonzero()
+        if positions.numel() == 0:
+            raise ValueError(
+                f"CosyVoice v3 expects the end of prompt token {self.config.end_of_prompt_token_id} "
+                "in the prompt text of an interleaved decode, and it does not contain it."
+            )
+        index = int(positions[0]) + 1
+        return prompt_input_ids[:, :index], prompt_input_ids[:, index:]
 
     def init_streaming_state(self) -> dict:
         """
@@ -139,7 +165,7 @@ class CosyVoiceV3GenerationMixin(CosyVoiceV2GenerationMixin):
 
     def generate(
         self,
-        input_ids: torch.Tensor,
+        input_ids: Union[torch.Tensor, Iterator[torch.Tensor]],
         speaker_embedding: torch.Tensor,
         prompt_input_ids: Optional[torch.Tensor] = None,
         **kwargs,
@@ -148,9 +174,10 @@ class CosyVoiceV3GenerationMixin(CosyVoiceV2GenerationMixin):
         Synthesizes one utterance.
 
         Args:
-            input_ids (`torch.Tensor` of shape `(1, text_length)`):
+            input_ids (`torch.Tensor` of shape `(1, text_length)`, or a generator of such tensors):
                 Text token ids of the sentence to synthesize. Upstream requires the end of prompt
-                token to be present in the text or the prompt text.
+                token to be present in the text or the prompt text, and in the prompt text alone
+                when the text arrives as a generator.
             speaker_embedding (`torch.Tensor` of shape `(1, speaker_embedding_dim)`):
                 Utterance level speaker embedding, which conditions the flow matching model only.
             prompt_input_ids (`torch.Tensor` of shape `(1, prompt_text_length)`, *optional*):
@@ -167,7 +194,7 @@ class CosyVoiceV3GenerationMixin(CosyVoiceV2GenerationMixin):
                 `prompt_input_ids`.
         """
         end_of_prompt = self.config.end_of_prompt_token_id
-        present = bool((input_ids == end_of_prompt).any())
+        present = not isinstance(input_ids, GeneratorType) and bool((input_ids == end_of_prompt).any())
         if prompt_input_ids is not None:
             present = present or bool((prompt_input_ids == end_of_prompt).any())
         if not present:
