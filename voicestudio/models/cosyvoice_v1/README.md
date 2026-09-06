@@ -265,6 +265,12 @@ leaves it not finishing the sort. WORLD is under the BSD 3-Clause licence, which
 notice be retained in source redistributions, so `processing_cosyvoice_v1.py` carries it beside the
 Apache header.
 
+`librosa` is gone as well, and it was the last package outside `transformers`, `torch` and `numpy`
+that this folder reached for. `CosyVoiceV1FeatureExtractor` built its mel filter bank with
+`librosa.filters.mel`, and it now uses `transformers.audio_utils.mel_filter_bank` with
+`norm="slaney"` and `mel_scale="slaney"`, the pairing `voicestudio/models/f5_tts/` already records as
+reproducing `librosa.filters.mel`'s defaults. v2 and v3 inherit the extractor and so the same bank.
+
 One dependency is still imported lazily rather than depended on, and it was not added to
 `pyproject.toml`. `normalize_text` reaches for `wetext`, and this one does not raise: it falls back
 to the behaviour measured in "The text normalizer" below and warns once instead. See that section.
@@ -380,10 +386,21 @@ numpy's pocketfft and WORLD's Ooura transform. On a 3.0 s signal harvest takes 1
 
 **The mel term against matcha's own function.** Upstream measures it with
 `matcha.utils.audio.mel_spectrogram`, which is not vendored here. Reimplemented from Matcha's
-source with `librosa.filters.mel` and run on the copy synthesis pair above, it returns 4.80676126
+source with `librosa.filters.mel`, which this repository no longer depends on and which reproducing
+this number needs installed, and run on the copy synthesis pair above, it returns 4.80676126
 where `CosyVoiceV1HiFTGenerator.mel_loss` returns 4.80676174, a difference of 4.768e-07 on a value
 of 4.8. The residual is `librosa.filters.mel` against `torchaudio.functional.melscale_fbanks` in
 float32; both are the Slaney scaled, Slaney normalized filter bank.
+
+**The mel filter bank against `librosa`.** `transformers.audio_utils.mel_filter_bank` at
+`norm="slaney"` and `mel_scale="slaney"` agrees with `librosa.filters.mel` to 1.318e-16 absolute in
+double precision, a largest relative difference of 6.9e-13 over the 727 non-zero taps of v1's bank
+and 1.3e-12 over the 1252 of v2's. Cast to the float32 `librosa` returns, the largest tap difference
+is 1.863e-09. Through `_mel_spectrogram` on five signals, WORLD's `test/vaiueo2d.wav`, white noise at
+0.1, silence, a 440 Hz tone at 0.9 and noise at 1e-05, the log mel spectrograms differ by at most
+9.537e-07, which is one float32 ulp at magnitude one, and silence is identical either way.
+`torchaudio.functional.melscale_fbanks` was measured on the same banks and is fifty times further
+from `librosa`, 8.103e-08 on v1's taps, so it was not the substitute chosen.
 
 **Round trip through the hub format.** `from_pretrained` on the released repository id loads
 436,053,808 parameters, and `save_pretrained` followed by `from_pretrained` reproduces every

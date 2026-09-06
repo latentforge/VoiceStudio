@@ -227,7 +227,7 @@ Apache License 2.0을 따릅니다. [LICENSE](LICENSE)를 참고하시기 바랍
 
 - [Hugging Face `transformers`](https://github.com/huggingface/transformers): 이 저장소의 거의 모든 파일이 상속하는 모델 클래스의 기반입니다.
 - [PyTorch](https://pytorch.org/): `torchaudio` 및 `torchcodec`과 함께 사용됩니다.
-- [librosa](https://github.com/librosa/librosa) 및 [NumPy](https://numpy.org/).
+- [NumPy](https://numpy.org/).
 
 ---
 

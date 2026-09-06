@@ -66,7 +66,7 @@ Extras, selected with `uv sync --extra <name>` or all at once with `uv sync --al
 | `research` | `cloud`, `audio`, `omni`, `train`, `eval` | the full research setup, everything but `native` and `web` |
 | `cloud` | `torch`, `numpy`, `hf-xet` | running on NVIDIA hardware, the usual runtime |
 | `native` | `torchnative` | on-device inference, in place of `cloud` |
-| `audio` | `torchaudio`, `torchcodec`, `librosa`, `soundfile` | reading and writing waveforms, which every processor here does |
+| `audio` | `torchaudio`, `torchcodec`, `soundfile` | reading and writing waveforms, which every processor here does |
 | `omni` | `pillow`, `torchvision` | Chroma, whose processor subclasses `Qwen2_5OmniProcessor` |
 | `train` | `accelerate`, `wandb`, `matplotlib`, `notebook`, `ipywidgets`, `tqdm` | training runs and notebooks |
 | `eval` | `jiwer` | The word error rate check used to verify a model |
@@ -264,7 +264,7 @@ And the libraries the code is built out of:
 - [Hugging Face `transformers`](https://github.com/huggingface/transformers), whose model classes
   almost every file here inherits from.
 - [PyTorch](https://pytorch.org/), with `torchaudio` and `torchcodec` behind the `audio` extra.
-- [librosa](https://github.com/librosa/librosa) and [NumPy](https://numpy.org/).
+- [NumPy](https://numpy.org/).
 
 ---
 

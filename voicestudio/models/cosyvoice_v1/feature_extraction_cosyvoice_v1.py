@@ -19,8 +19,8 @@ from typing import Optional, Union
 import numpy as np
 import torch
 import torchaudio
-from librosa.filters import mel as librosa_mel
 
+from transformers.audio_utils import mel_filter_bank
 from transformers.feature_extraction_sequence_utils import SequenceFeatureExtractor
 from transformers.feature_extraction_utils import BatchFeature
 
@@ -75,9 +75,15 @@ class CosyVoiceV1FeatureExtractor(SequenceFeatureExtractor):
         self.win_length = win_length
         self.fmin = fmin
         self.fmax = fmax
-        self.mel_filters = librosa_mel(
-            sr=mel_sampling_rate, n_fft=n_fft, n_mels=feature_size, fmin=fmin, fmax=fmax
-        )
+        self.mel_filters = mel_filter_bank(
+            num_frequency_bins=1 + n_fft // 2,
+            num_mel_filters=feature_size,
+            min_frequency=fmin,
+            max_frequency=fmax,
+            sampling_rate=mel_sampling_rate,
+            norm="slaney",
+            mel_scale="slaney",
+        ).T.astype(np.float32)
 
     def _mel_spectrogram(self, waveform: torch.Tensor) -> torch.Tensor:
         """

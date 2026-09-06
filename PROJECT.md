@@ -840,6 +840,16 @@ ranks, 9292 of its tokens are absent from Whisper's and 48003 of the rest sit at
 Its absence from `AutoTokenizer` is deliberate for the same reason. All of that was already recorded
 in the folder's README, under the open question of whether to cover that release.
 
+`librosa` went with it. `CosyVoiceV1FeatureExtractor` was its only caller anywhere in the
+repository, for `librosa.filters.mel`, and `transformers.audio_utils.mel_filter_bank` at
+`norm="slaney"` and `mel_scale="slaney"` replaces it. In double precision the two agree to 1.318e-16
+absolute and 6.9e-13 relative over the non-zero taps; the float32 banks differ by 1.863e-09 and the
+log mel spectrograms by at most 9.537e-07, one float32 ulp at magnitude one, over five signals
+including WORLD's `test/vaiueo2d.wav` and silence, which is identical either way.
+`torchaudio.functional.melscale_fbanks` is fifty times further from `librosa` at 8.103e-08 on the
+taps, which is the residual the folder's README already attributed to that pairing, so it was not
+chosen. v2 and v3 inherit the extractor.
+
 Every file in the three folders now carries a licence header. Fifteen had none, including all three
 `__init__.py`, both remaining `processing_<model>.py`, and every `configuration_`, `generation_` and
 `weight_conversion` file. Measured in transformers rather than assumed: 504 of 509 model `__init__.py`
