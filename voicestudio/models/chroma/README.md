@@ -10,12 +10,12 @@ Original model and code: [FlashLabs-AI-Corp/FlashLabs-Chroma](https://github.com
 ## Usage
 
 ```python
-from transformers import AutoModelForTextToWaveform, AutoProcessor
+from voicestudio.models.chroma import ChromaForConditionalGeneration, ChromaProcessor
 
 model_id = "FlashLabs/Chroma-4B"
 
-processor = AutoProcessor.from_pretrained(model_id)
-model = AutoModelForTextToWaveform.from_pretrained(model_id)
+processor = ChromaProcessor.from_pretrained(model_id)
+model = ChromaForConditionalGeneration.from_pretrained(model_id)
 model.to("cuda")
 ```
 
