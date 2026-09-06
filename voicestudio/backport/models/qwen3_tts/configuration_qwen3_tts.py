@@ -130,7 +130,6 @@ class Qwen3TTSTalkerCodePredictorConfig(PreTrainedConfig):
     """
 
     keys_to_ignore_at_inference = ["past_key_values"]
-    default_theta = 500000.0
 
     def __init__(
         self,
@@ -159,9 +158,6 @@ class Qwen3TTSTalkerCodePredictorConfig(PreTrainedConfig):
         **kwargs,
     ):
         self.pad_token_id = pad_token_id
-        # `rope_parameters` has to be set before `super().__init__()`, which is where the legacy
-        # `rope_scaling`/`rope_theta` keys the published checkpoints carry are folded into it.
-        self.rope_parameters = rope_parameters
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
 
         self.vocab_size = vocab_size
@@ -183,6 +179,9 @@ class Qwen3TTSTalkerCodePredictorConfig(PreTrainedConfig):
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
+        self.rope_parameters = (
+            rope_parameters if rope_parameters is not None else {"rope_type": "default", "rope_theta": 500000.0}
+        )
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
 
@@ -280,11 +279,9 @@ class Qwen3TTSTalkerConfig(PreTrainedConfig):
     base_config_key = "talker_config"
     keys_to_ignore_at_inference = ["past_key_values"]
     sub_configs = {"code_predictor_config": Qwen3TTSTalkerCodePredictorConfig}
-    default_theta = 500000.0
-    # The talker applies mRoPE on top of a standard rotary embedding, so `mrope_section` and the
-    # `interleaved` flag ride along in `rope_parameters` without being part of the `default` rope
-    # schema. Same handling as Qwen2-VL.
-    ignore_keys_at_rope_validation = {"mrope_section", "interleaved"}
+    # The talker applies mRoPE on top of a standard rotary embedding, so `mrope_section` rides along
+    # in `rope_parameters` without being part of the `default` rope schema. Same handling as Qwen2-VL.
+    ignore_keys_at_rope_validation = {"mrope_section"}
 
     def __init__(
         self,
@@ -337,9 +334,6 @@ class Qwen3TTSTalkerConfig(PreTrainedConfig):
         else:
             self.code_predictor_config = Qwen3TTSTalkerCodePredictorConfig(**code_predictor_config)
 
-        # `rope_parameters` has to be set before `super().__init__()`, which is where the legacy
-        # `rope_scaling`/`rope_theta` keys the published checkpoints carry are folded into it.
-        self.rope_parameters = rope_parameters
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
 
         self.vocab_size = vocab_size
@@ -369,6 +363,9 @@ class Qwen3TTSTalkerConfig(PreTrainedConfig):
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
+        self.rope_parameters = (
+            rope_parameters if rope_parameters is not None else {"rope_type": "default", "rope_theta": 500000.0}
+        )
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
 
