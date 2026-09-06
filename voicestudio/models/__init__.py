@@ -22,5 +22,6 @@ from .prompt_tts_pp import *
 from .qwen3_tts import *
 from .spark_tts import *
 from .spark_tts_bicodec import *
+from .utmos_v2 import *
 from .vocos import *
 from .vox_instruct import *
