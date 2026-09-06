@@ -589,10 +589,23 @@ a fact about Dia2, and the README says so rather than calling it upstream's obje
 
 **Settled: the text normalizer reaches `wetext` through an optional extra.** The user granted an H11
 exception for it, conditional on the measurement, and the measurement carried it. `e0efb9b9`, `6ae69b3e`,
-`040bed9a` and `02413ef2` land `wetext>=0.1.7` as its own `frontend` extra, Apache-2.0, pulling `kaldifst`
-and `contractions`, 35 MB of grammar on disk bundled in the wheel with no download at first use. It is in
-neither `all` nor `research`, and with it absent `load_text_normalizer` returns `None` and every existing
-path behaves exactly as before, so the default is unchanged.
+`040bed9a` reach `wetext` through an optional import in the processor, and `0269464e` leaves it undeclared:
+the extra that `02413ef2` had added was removed at the user's request, so `wetext` appears nowhere in
+`pyproject.toml` and is a package the caller installs for themselves. Apache-2.0, pulling `kaldifst` and
+`contractions`, 35 MB of grammar bundled in the wheel with no download at first use.
+
+With it absent `load_text_normalizer` returns `None`, every existing path behaves exactly as before, and
+`594d9178` warns once per process rather than failing silently. The warning fires from the point the
+normalizer would have run rather than at import or construction, so it reaches the caller whose text it
+would have changed instead of everyone who loads CosyVoice, and it is gated on the text holding a digit,
+since the digit-free rows measure identical either way. It uses `logger.warning_once` from
+`transformers.utils.logging`, 278 uses across the `transformers` models tree, with
+`pp_formulanet/processing_pp_formulanet.py:103` the exact precedent: an `ImportError` on `ftfy` warned once
+as skipped normalization. `TRANSFORMERS_VERBOSITY=error` silences it.
+
+The absent path was verified byte for byte identical before and after the change across both branches, and
+the warning fired once over 150 calls with none of them from the 30 digit-free calls. The present path was
+not exercised, since installing `wetext` to test it is what H11 forbids.
 
 Chinese is what justified it, not English. On CosyVoice v2 under `openai/whisper-large-v3-turbo`, three
 seeds, character error rate against the original sentence: dates 0.545/0.545/1.000 to 0.000/0.045/0.182,
