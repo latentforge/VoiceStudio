@@ -1,7 +1,7 @@
 """Processor class for CosyVoice v3."""
 
 import re
-from typing import Callable, Optional, Union
+from typing import Optional, Union
 
 from ..cosyvoice_v1.processing_cosyvoice_v1 import (
     contains_chinese,
@@ -13,76 +13,11 @@ from ..cosyvoice_v1.processing_cosyvoice_v1 import (
     split_paragraph,
     warn_without_text_normalizer,
 )
-from ..cosyvoice_v2.processing_cosyvoice_v2 import (
-    SPECIAL_TOKENS as V2_SPECIAL_TOKENS,
-    CosyVoiceV2Processor,
-)
+from ..cosyvoice_v2.processing_cosyvoice_v2 import CosyVoiceV2Processor
 from .configuration_cosyvoice_v3 import CosyVoiceV3Config
 from .feature_extraction_cosyvoice_v3 import CosyVoiceV3FeatureExtractor
+from .tokenization_cosyvoice_v3 import CosyVoiceV3Tokenizer, rewrite_outside_markup
 from .weight_conversion import SPEECH_TOKENIZER_FILE
-
-
-# The tokens upstream's `CosyVoice3Tokenizer` adds to the Qwen2 tokenizer, in the order it adds
-# them: v2's tokens, then the end of system marker, the ARPAbet phoneme set and the pinyin initial
-# and final set, which a caller writes inline to override the pronunciation of a word.
-SPECIAL_TOKENS = V2_SPECIAL_TOKENS + [
-    "<|endofsystem|>",
-    "[AA]", "[AA0]", "[AA1]", "[AA2]", "[AE]", "[AE0]", "[AE1]", "[AE2]", "[AH]", "[AH0]", "[AH1]", "[AH2]",
-    "[AO]", "[AO0]", "[AO1]", "[AO2]", "[AW]", "[AW0]", "[AW1]", "[AW2]", "[AY]", "[AY0]", "[AY1]", "[AY2]",
-    "[B]", "[CH]", "[D]", "[DH]", "[EH]", "[EH0]", "[EH1]", "[EH2]", "[ER]", "[ER0]", "[ER1]", "[ER2]", "[EY]",
-    "[EY0]", "[EY1]", "[EY2]", "[F]", "[G]", "[HH]", "[IH]", "[IH0]", "[IH1]", "[IH2]", "[IY]", "[IY0]", "[IY1]",
-    "[IY2]", "[JH]", "[K]", "[L]", "[M]", "[N]", "[NG]", "[OW]", "[OW0]", "[OW1]", "[OW2]", "[OY]", "[OY0]",
-    "[OY1]", "[OY2]", "[P]", "[R]", "[S]", "[SH]", "[T]", "[TH]", "[UH]", "[UH0]", "[UH1]", "[UH2]", "[UW]",
-    "[UW0]", "[UW1]", "[UW2]", "[V]", "[W]", "[Y]", "[Z]", "[ZH]",
-    "[a]", "[ai]", "[an]", "[ang]", "[ao]", "[b]", "[c]", "[ch]", "[d]", "[e]", "[ei]", "[en]", "[eng]", "[f]",
-    "[g]", "[h]", "[i]", "[ian]", "[in]", "[ing]", "[iu]", "[ià]", "[iàn]", "[iàng]", "[iào]", "[iá]", "[ián]",
-    "[iáng]", "[iáo]", "[iè]", "[ié]", "[iòng]", "[ióng]", "[iù]", "[iú]", "[iā]", "[iān]", "[iāng]", "[iāo]",
-    "[iē]", "[iě]", "[iōng]", "[iū]", "[iǎ]", "[iǎn]", "[iǎng]", "[iǎo]", "[iǒng]", "[iǔ]", "[j]", "[k]", "[l]",
-    "[m]", "[n]", "[o]", "[ong]", "[ou]", "[p]", "[q]", "[r]", "[s]", "[sh]", "[t]", "[u]", "[uang]", "[ue]",
-    "[un]", "[uo]", "[uà]", "[uài]", "[uàn]", "[uàng]", "[uá]", "[uái]", "[uán]", "[uáng]", "[uè]", "[ué]", "[uì]",
-    "[uí]", "[uò]", "[uó]", "[uā]", "[uāi]", "[uān]", "[uāng]", "[uē]", "[uě]", "[uī]", "[uō]", "[uǎ]", "[uǎi]",
-    "[uǎn]", "[uǎng]", "[uǐ]", "[uǒ]", "[vè]", "[w]", "[x]", "[y]", "[z]", "[zh]", "[à]", "[ài]", "[àn]", "[àng]",
-    "[ào]", "[á]", "[ái]", "[án]", "[áng]", "[áo]", "[è]", "[èi]", "[èn]", "[èng]", "[èr]", "[é]", "[éi]", "[én]",
-    "[éng]", "[ér]", "[ì]", "[ìn]", "[ìng]", "[í]", "[ín]", "[íng]", "[ò]", "[òng]", "[òu]", "[ó]", "[óng]", "[óu]",
-    "[ù]", "[ùn]", "[ú]", "[ún]", "[ā]", "[āi]", "[ān]", "[āng]", "[āo]", "[ē]", "[ēi]", "[ēn]", "[ēng]", "[ě]",
-    "[ěi]", "[ěn]", "[ěng]", "[ěr]", "[ī]", "[īn]", "[īng]", "[ō]", "[ōng]", "[ōu]", "[ū]", "[ūn]", "[ǎ]", "[ǎi]",
-    "[ǎn]", "[ǎng]", "[ǎo]", "[ǐ]", "[ǐn]", "[ǐng]", "[ǒ]", "[ǒng]", "[ǒu]", "[ǔ]", "[ǔn]", "[ǘ]", "[ǚ]", "[ǜ]",
-]
-
-
-# The added vocabulary as it is written inline, longest first so that no token is matched inside a
-# longer one.
-ADDED_TOKEN_PATTERN = re.compile(
-    "|".join(re.escape(token) for token in sorted(SPECIAL_TOKENS, key=len, reverse=True))
-)
-
-
-def rewrite_outside_markup(text: str, rewrite: Callable[[str], str]) -> str:
-    """
-    Applies a rewrite to a sentence span by span, leaving the spans that hold a token of the added
-    vocabulary alone. Their stress digits belong to the token rather than to a number, and the text
-    normalizer either asserts on their bracketed shape or spells those digits out.
-
-    Args:
-        text (`str`):
-            Text to rewrite.
-        rewrite (`Callable`):
-            Callable rewriting one span. It is not called on a span that is empty or whitespace only.
-
-    Returns:
-        `str`: The rewritten text.
-    """
-    rewritten, position = [], 0
-
-    def span(piece: str) -> str:
-        return rewrite(piece) if piece.strip() else piece
-
-    for match in ADDED_TOKEN_PATTERN.finditer(text):
-        rewritten.append(span(text[position : match.start()]))
-        rewritten.append(match.group())
-        position = match.end()
-    rewritten.append(span(text[position:]))
-    return "".join(rewritten)
 
 
 def normalize_english_outside_markup(text: str, english_normalizer, number_speller) -> str:
@@ -135,26 +70,9 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
     """
 
     feature_extractor_type = CosyVoiceV3FeatureExtractor
+    tokenizer_type = CosyVoiceV3Tokenizer
     model_config_type = CosyVoiceV3Config
     speech_tokenizer_file = SPEECH_TOKENIZER_FILE
-
-    @staticmethod
-    def add_special_tokens(tokenizer, tokens: Optional[list[str]] = None) -> int:
-        r"""
-        Adds upstream's v3 special tokens to a tokenizer, in upstream's order.
-
-        Args:
-            tokenizer (`PreTrainedTokenizerBase`):
-                Tokenizer to extend.
-            tokens (`list[str]`, *optional*):
-                Tokens to add. Defaults to [`SPECIAL_TOKENS`].
-
-        Returns:
-            `int`: The number of tokens the tokenizer did not already carry.
-        """
-        return CosyVoiceV2Processor.add_special_tokens(
-            tokenizer, tokens=SPECIAL_TOKENS if tokens is None else tokens
-        )
 
     def normalize_text(
         self, text: str, split: bool = True, text_frontend: bool = True
@@ -211,10 +129,4 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
         return pieces if split else text
 
 
-__all__ = [
-    "ADDED_TOKEN_PATTERN",
-    "SPECIAL_TOKENS",
-    "CosyVoiceV3Processor",
-    "normalize_english_outside_markup",
-    "rewrite_outside_markup",
-]
+__all__ = ["CosyVoiceV3Processor", "normalize_english_outside_markup"]

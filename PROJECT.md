@@ -794,6 +794,39 @@ Still open for a human: `pyproject.toml`'s `eval` extra no longer needs `pyworld
 `README.md` and `docs/locales/README_ko.md` tables have had it dropped from the `eval` row. That
 extra is being edited concurrently, so the entry replacing it is not documented here.
 
+## Settled: the CosyVoice added vocabulary belongs to a tokenizer, not a processor
+
+v2 and v3 held their added vocabulary in `processing_<model>.py`: a `SPECIAL_TOKENS` list, v3's
+`ADDED_TOKEN_PATTERN` over it, and an `add_special_tokens` static method that mutated a tokenizer
+`AutoTokenizer` had just built. v1 already kept the same kind of thing in
+`tokenization_cosyvoice_v1.py`, where `LANGUAGES`, `AUDIO_EVENTS`, `EMOTIONS`, `TTS_VOCAL_TOKENS` and
+`build_special_tokens` live, so the three folders disagreed with each other. Upstream disagreed with
+both: it has `CosyVoice2Tokenizer` and `CosyVoice3Tokenizer` classes.
+
+They are now `CosyVoiceV2Tokenizer(Qwen2Tokenizer)` and `CosyVoiceV3Tokenizer(CosyVoiceV2Tokenizer)`,
+each adding the vocabulary its `added_special_tokens` class attribute names. The processors carry a
+`tokenizer_type`, next to the `feature_extractor_type` and `speech_tokenizer_type` they already had,
+and `_released_processor` builds the tokenizer through it, so v3 no longer overrides that method or
+`add_special_tokens`.
+
+Measured against the path they replace, a plain `Qwen2Tokenizer` with the tokens added afterwards, on
+`Qwen/Qwen2-0.5B-Instruct`, whose 151,646 token base is the one the released `CosyVoice-BlankEN`
+directory carries. Vocabulary size, added vocabulary, `all_special_tokens`, `special_tokens_map` and
+the encoding of a probe carrying both an inline tag and a `<|...|>` marker are equal for both
+versions, and every one of the 19 v2 and 280 v3 entries encodes to a single id. A `save_pretrained`
+and reload round trip does not add the vocabulary twice: size, added vocabulary and encoding come
+back equal, and `tokenizer_config.json` names the class.
+
+Where transformers puts text normalisation is a related finding, and it is still open. `clvp`,
+`speecht5` and `whisper` all import their normaliser from `tokenization_<model>.py`, speecht5's
+tokenizer takes a `normalize` flag and applies it in `prepare_for_tokenization`, and whisper's
+carries `normalize` and `basic_normalize` methods. No processing file in transformers normalises
+text. Here the whole layer, eleven module functions plus `CosyVoiceV1NumberSpeller`, sits in
+`processing_cosyvoice_v1.py` behind `CosyVoiceV1Processor.normalize_text`. Two of the thirteen,
+`split_paragraph` and `is_only_punctuation`, are sentence segmentation rather than normalisation and
+decide synthesis chunks rather than tokens, so they belong where they are. The rest is a move a human
+should sign off, because `normalize_text` is public API and v3 reaches five of those functions.
+
 ## Sibling inheritance map
 
 Principle 1 asks for inheritance between models inside `voicestudio/models/`, not only from

@@ -37,6 +37,7 @@ from .modeling_cosyvoice_v2 import (
     CosyVoiceV2UpsampleEncoder,
 )
 from .processing_cosyvoice_v2 import CosyVoiceV2Processor
+from .tokenization_cosyvoice_v2 import CosyVoiceV2Tokenizer
 
 
 AutoConfig.register(CosyVoiceV2Config.model_type, CosyVoiceV2Config, exist_ok=True)
@@ -62,6 +63,7 @@ __all__ = [
     "CosyVoiceV2PreLookaheadLayer",
     "CosyVoiceV2PreTrainedModel",
     "CosyVoiceV2Processor",
+    "CosyVoiceV2Tokenizer",
     "CosyVoiceV2SineGen",
     "CosyVoiceV2SourceModule",
     "CosyVoiceV2SpeechTokenLM",

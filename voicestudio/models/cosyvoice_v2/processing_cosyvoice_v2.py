@@ -7,26 +7,14 @@ import numpy as np
 import torch
 
 from transformers.feature_extraction_utils import BatchFeature
-from transformers.models.auto.tokenization_auto import AutoTokenizer
 
 from ..cosyvoice_v1.processing_cosyvoice_v1 import CosyVoiceV1Processor
 from ..cosyvoice_v1.weight_conversion import resolve_checkpoint
 from .configuration_cosyvoice_v2 import CosyVoiceV2Config
 from .feature_extraction_cosyvoice_v2 import CosyVoiceV2FeatureExtractor
 from .modeling_cosyvoice_v2 import CosyVoiceV2SpeechTokenizer
+from .tokenization_cosyvoice_v2 import CosyVoiceV2Tokenizer
 from .weight_conversion import SPEECH_TOKENIZER_FILE, TEXT_MODEL_SUBDIR
-
-
-# The tokens upstream's `CosyVoice2Tokenizer` adds to the Qwen2 tokenizer, in the order it adds them.
-SPECIAL_TOKENS = [
-    "<|im_start|>", "<|im_end|>", "<|endofprompt|>",
-    "[breath]", "<strong>", "</strong>", "[noise]",
-    "[laughter]", "[cough]", "[clucking]", "[accent]",
-    "[quick_breath]",
-    "<laughter>", "</laughter>",
-    "[hissing]", "[sigh]", "[vocalized-noise]",
-    "[lipsmack]", "[mn]",
-]
 
 
 class CosyVoiceV2Processor(CosyVoiceV1Processor):
@@ -58,6 +46,7 @@ class CosyVoiceV2Processor(CosyVoiceV1Processor):
     """
 
     feature_extractor_type = CosyVoiceV2FeatureExtractor
+    tokenizer_type = CosyVoiceV2Tokenizer
     speech_tokenizer_type = CosyVoiceV2SpeechTokenizer
     model_config_type = CosyVoiceV2Config
     speech_tokenizer_file = SPEECH_TOKENIZER_FILE
@@ -78,11 +67,9 @@ class CosyVoiceV2Processor(CosyVoiceV1Processor):
             [`CosyVoiceV2Processor`]: The processor.
         """
         directory = Path(directory)
-        tokenizer = AutoTokenizer.from_pretrained(str(directory / TEXT_MODEL_SUBDIR))
-        cls.add_special_tokens(tokenizer)
         return cls(
             feature_extractor=cls.feature_extractor_type(),
-            tokenizer=tokenizer,
+            tokenizer=cls.tokenizer_type.from_pretrained(str(directory / TEXT_MODEL_SUBDIR)),
             speech_token_model_path=str(directory / cls.speech_tokenizer_file),
         )
 
@@ -102,28 +89,6 @@ class CosyVoiceV2Processor(CosyVoiceV1Processor):
             checkpoint.
         """
         return resolve_checkpoint(source, (cls.speech_tokenizer_file,), (f"{TEXT_MODEL_SUBDIR}/*",), **kwargs)
-
-    @staticmethod
-    def add_special_tokens(tokenizer, tokens: Optional[list[str]] = None) -> int:
-        r"""
-        Adds upstream's v2 special tokens to a tokenizer, in upstream's order.
-
-        Args:
-            tokenizer (`PreTrainedTokenizerBase`):
-                Tokenizer to extend.
-            tokens (`list[str]`, *optional*):
-                Tokens to add. Defaults to [`SPECIAL_TOKENS`].
-
-        Returns:
-            `int`: The number of tokens the tokenizer did not already carry.
-        """
-        return tokenizer.add_special_tokens(
-            {
-                "eos_token": "<|endoftext|>",
-                "pad_token": "<|endoftext|>",
-                "additional_special_tokens": SPECIAL_TOKENS if tokens is None else tokens,
-            }
-        )
 
     def __init__(
         self,
@@ -189,4 +154,4 @@ class CosyVoiceV2Processor(CosyVoiceV1Processor):
         return data
 
 
-__all__ = ["SPECIAL_TOKENS", "CosyVoiceV2Processor"]
+__all__ = ["CosyVoiceV2Processor"]

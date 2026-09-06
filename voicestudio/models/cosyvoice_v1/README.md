@@ -696,7 +696,7 @@ rewrote 199 of that file's 327 lines and only the language table survived intact
 | `cosyvoice/cli/cosyvoice.py` | `weight_conversion.py`. Its `load` method became the reading of a released directory, which `from_pretrained` calls when the published layout is what it was given. |
 | `cosyvoice.yaml` | `configuration_cosyvoice_v1.py`. |
 | `cosyvoice/__init__.py` | `__init__.py`. |
-| `cosyvoice/tokenizer/tokenizer.py` | `tokenization_cosyvoice_v1.py`. `get_encoding` and `get_tokenizer` became `CosyVoiceV1Tokenizer` over `CosyVoiceV1TikTokenConverter`. `TO_LANGUAGE_CODE` went, because it only validated the `language` argument of Whisper's decoding API, which the text tokenizer never reaches, and `LANGUAGES` stays because the order of its keys fixes the id of every special token after it. `get_qwen_tokenizer`, `CosyVoice2Tokenizer` and `CosyVoice3Tokenizer` are `SPECIAL_TOKENS` and `CosyVoiceV3Processor.add_special_tokens` in `processing_cosyvoice_v3.py`. |
+| `cosyvoice/tokenizer/tokenizer.py` | `tokenization_cosyvoice_v1.py`. `get_encoding` and `get_tokenizer` became `CosyVoiceV1Tokenizer` over `CosyVoiceV1TikTokenConverter`. `TO_LANGUAGE_CODE` went, because it only validated the `language` argument of Whisper's decoding API, which the text tokenizer never reaches, and `LANGUAGES` stays because the order of its keys fixes the id of every special token after it. `get_qwen_tokenizer`, `CosyVoice2Tokenizer` and `CosyVoice3Tokenizer` are `CosyVoiceV2Tokenizer` and `CosyVoiceV3Tokenizer`, in those folders' `tokenization_<model>.py`. |
 
 ### Removed, with a counterpart in one of the three folders
 

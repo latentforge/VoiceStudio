@@ -41,7 +41,8 @@ from .modeling_cosyvoice_v3 import (
     CosyVoiceV3TimestepEmbedding,
     build_chunk_mask,
 )
-from .processing_cosyvoice_v3 import SPECIAL_TOKENS, CosyVoiceV3Processor
+from .processing_cosyvoice_v3 import CosyVoiceV3Processor
+from .tokenization_cosyvoice_v3 import SPECIAL_TOKENS, CosyVoiceV3Tokenizer
 
 
 AutoConfig.register(CosyVoiceV3Config.model_type, CosyVoiceV3Config, exist_ok=True)
@@ -72,6 +73,7 @@ __all__ = [
     "CosyVoiceV3Output",
     "CosyVoiceV3PreTrainedModel",
     "CosyVoiceV3Processor",
+    "CosyVoiceV3Tokenizer",
     "CosyVoiceV3ResBlock",
     "CosyVoiceV3RotaryEmbedding",
     "CosyVoiceV3SineGen",
