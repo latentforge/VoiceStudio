@@ -54,6 +54,37 @@ WHISPER_MIN_WORD_DURATION = 0.02
 # because they join a word rather than close it.
 WORD_END_PUNCTUATION = "".join(mark for mark in string.punctuation if mark not in "-'") + "。，！？：”、…"
 
+# The decode of a run of tokens that spells only part of a character holds this in place of the character.
+UNICODE_REPLACEMENT = "\ufffd"
+
+
+def _decode_trailing_group(tokenizer, token_ids: list[int]) -> str:
+    """
+    Decodes the trailing token group of one word.
+
+    A group is a run of tokens whose decode is free of the replacement character, which is the unit the
+    grouping cuts on. A mark spelled over several tokens reads as itself only once the whole run is decoded
+    together.
+
+    Args:
+        tokenizer (`WhisperTokenizer`):
+            Tokenizer the ids come from.
+        token_ids (`list[int]`):
+            Ids of one word's tokens, in order.
+
+    Returns:
+        `str`: The decode of the trailing group, or an empty string when the last token leaves one unclosed.
+    """
+    group = []
+    trailing = ""
+    for token_id in token_ids:
+        group.append(token_id)
+        decoded = tokenizer.decode(group)
+        if UNICODE_REPLACEMENT not in decoded:
+            trailing = decoded
+            group = []
+    return "" if group else trailing
+
 
 def _ensure_increasing_positions(alignment: list[dict], min_duration: float) -> list[dict]:
     """
@@ -390,7 +421,7 @@ class Dia2Processor(ProcessorMixin):
             last = len(group) - 1
             # A trailing punctuation mark carries no speech, so its own span would stretch the word over the
             # silence that follows it. The word ends where that mark starts instead.
-            mark = tokenizer.decode([content_tokens[group[last]]])
+            mark = _decode_trailing_group(tokenizer, [content_tokens[index] for index in group])
             if last > 0 and mark and mark in WORD_END_PUNCTUATION:
                 last -= 1
             start_position = content_positions[group[0]]
