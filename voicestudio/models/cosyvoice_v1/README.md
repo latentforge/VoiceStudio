@@ -425,7 +425,7 @@ was not run, because it needs `inflect`.
 
 ## Not carried over from upstream
 
-Recorded per CLAUDE.md section 2.6. None of these is resolved here.
+Recorded per CLAUDE.md section 2.6.
 
 - **The vocoder's discriminators, and the three objective terms that need them.** Upstream trains
   HiFT as a GAN through `cosyvoice/hifigan/hifigan.py`. Of its five generator side terms, the mel
@@ -435,14 +435,37 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
   turn, `discriminator_loss` plus the same weighted `tpr_loss` optimized in an alternating turn
   with its own optimizer, all read discriminator outputs. Those discriminators are
   `MultipleDiscriminator` over `matcha.hifigan.models.MultiPeriodDiscriminator` and
-  `cosyvoice.hifigan.discriminator.MultiResSpecDiscriminator`, and no model in transformers carries
-  a GAN discriminator in its model class: `ElectraDiscriminatorPredictions` and
-  `FunnelForPreTraining` are pretraining heads, not adversaries over a waveform. Implementing them
-  is therefore a new class of module for this repository, not a port, and it is the decision this
-  leaves open. `cosyvoice/hifigan/discriminator.py` was deleted rather than kept as an unmigrated
+  `cosyvoice.hifigan.discriminator.MultiResSpecDiscriminator`. Leaving them out follows the
+  `transformers` convention on GAN trained vocoders, measured over the 494 `modeling_*.py` files in
+  the 510 model folders of `transformers` 5.16.1. `Discriminator` appears in two of those files,
+  `electra/modeling_electra.py` and `funnel/modeling_funnel.py`, and both are pretraining heads over
+  token logits, `ElectraDiscriminatorPredictions` and `FunnelDiscriminatorPredictions` under
+  `FunnelForPreTraining`, not adversaries over a waveform. `adversarial` appears in none of them.
+  Every vocoder shipped takes a spectrogram or codes and returns a bare tensor, and none takes
+  `labels`:
+
+  | Class | `forward` signature |
+  |---|---|
+  | `SpeechT5HifiGan` | `(self, spectrogram, **kwargs) -> torch.FloatTensor` |
+  | `FastSpeech2ConformerHifiGan` | `(self, spectrogram, **kwargs) -> torch.FloatTensor` |
+  | `VitsHifiGan` | `(self, spectrogram, global_conditioning=None) -> torch.FloatTensor` |
+  | `SeamlessM4THifiGan`, `SeamlessM4Tv2HifiGan` | `(self, inputs_embeds) -> torch.FloatTensor` |
+  | `SeamlessM4TCodeHifiGan` | `(self, input_ids, spkr_id, lang_id, **kwargs) -> tuple[torch.Tensor]` |
+  | `SeamlessM4Tv2CodeHifiGan` | `(self, input_ids, speaker_id, lang_id, **kwargs) -> tuple[torch.Tensor]` |
+  | `Qwen2_5OmniToken2WavBigVGANModel` | `(self, mel_spectrogram, **kwargs)`, returning a clamped waveform |
+
+  VITS is the case that settles it, because upstream VITS is GAN trained end to end:
+  `VitsModel.forward` declares `labels` and its body opens with
+  `raise NotImplementedError("Training of VITS is not supported yet.")`. The one shipped speech
+  synthesis model with a real objective, `FastSpeech2ConformerWithHifiGan`, sums L1 mel, duration,
+  pitch and energy in `FastSpeech2ConformerLoss` and carries no adversarial term, and its vocoder
+  half takes no labels. Against that convention, `CosyVoiceV1HiFTGenerator.compute_loss` scoring the
+  mel reconstruction and f0 terms goes beyond it rather than falling short of it. The consequence to
+  know is that a HiFT trained through those two terms alone would not reproduce a released
+  checkpoint. `cosyvoice/hifigan/discriminator.py` was deleted rather than kept as an unmigrated
   file; what went with it is named in "File map". `tpr_loss` in `cosyvoice/utils/losses.py` went
   the same way, since it takes discriminator outputs on both sides and has nothing to score without
-  them. This is the same shape as the open Vocos item and it needs a human.
+  them.
 - **`DPOLoss`.** `cosyvoice/utils/losses.py` also held a direct preference optimization loss, used
   by `examples/libritts/cosyvoice2/run_dpo.sh` through `Executor.train_one_epoc_dpo`. It belongs to
   the CosyVoice 2 recipe, not to v1, and this folder deleted it with the rest of that file. Whether
@@ -556,7 +579,7 @@ rewrote 199 of that file's 327 lines and only the language table survived intact
 
 | Upstream file | Why it went |
 |---|---|
-| `cosyvoice/hifigan/discriminator.py` | `MultipleDiscriminator`, `MultiResolutionDiscriminator`, `DiscriminatorR`, `MultiResSpecDiscriminator`, `SpecDiscriminator` and `stft`, together with the `matcha.hifigan.models.MultiPeriodDiscriminator` that `MultipleDiscriminator` takes as its `mpd`. None of them is implemented here, and the three objective terms that read their outputs are open; see "Not carried over from upstream". It was deleted rather than renamed onto the convention, because a file holding unmigrated upstream code under a migrated name is the nested tree with a new name, and a stub under that name would claim a home for something this folder does not have. |
+| `cosyvoice/hifigan/discriminator.py` | `MultipleDiscriminator`, `MultiResolutionDiscriminator`, `DiscriminatorR`, `MultiResSpecDiscriminator`, `SpecDiscriminator` and `stft`, together with the `matcha.hifigan.models.MultiPeriodDiscriminator` that `MultipleDiscriminator` takes as its `mpd`. None of them is implemented here, and neither are the three objective terms that read their outputs; see "Not carried over from upstream". It was deleted rather than renamed onto the convention, because a file holding unmigrated upstream code under a migrated name is the nested tree with a new name, and a stub under that name would claim a home for something this folder does not have. |
 | `LICENSE` | Apache 2.0, identical to the repository root's copy but for the "how to apply" appendix, and carrying no restriction on the weights. The licence lives in the header of `modeling_cosyvoice_v1.py` and at the repository root, per CLAUDE.md section 6. |
 | `requirements.txt.bak` | Upstream's dependency list, kept readable until its dependencies were dealt with. "Dependencies" above accounts for every entry, including the ones that could not be removed. |
 
