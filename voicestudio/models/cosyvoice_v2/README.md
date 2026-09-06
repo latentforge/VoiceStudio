@@ -372,6 +372,19 @@ The decode was also checked as a decode rather than only by its audio: from seed
 speech tokens with a maximum id of 6558 against a `speech_vocab_size` of 6561, so every fill token
 and the end of speech token were consumed inside the loop and none leaked into the output.
 
+**The text frontend, generated and transcribed back.** The English digit reading v2 inherits from
+`CosyVoiceV1Processor` was exercised on the real weights: zero shot from the same 5.86 s LibriSpeech
+clip, `I paid 1234 dollars in 2025 for 7 books.`, three seeds each, on the local GPU, transcribed with
+`facebook/wav2vec2-base-960h`, word error rate against the text handed to the model:
+
+| Frontend | WER by seed | Heard back, seed 0 |
+|---|---|---|
+| on | 0.000 / 0.000 / 0.000 | `I PAID ONE THOUSAND TWO HUNDRED AND THIRTY FOUR DOLLARS IN TWO THOUSAND AND TWENTY FIVE FOR SEVEN BOOKS` |
+| off | 1.111 / 1.000 / 0.889 | `I PAID TWONE HUNDRED AN D THIRTY FOUR DOLLARS INTWUNDRED INDE FY FOR SEVEN BOOKS` |
+
+With the front end on, all three seeds are word for word. With it off, no seed reads either number
+back and every one of them slurs the words around it.
+
 **The interleaved decode against upstream's own `inference_bistream`.** Upstream's method was run
 unmodified on the same weights, through an adapter exposing this model's language model under the
 attribute names it reads, with both sides drawing from `repetition_aware_sampling` off the same
@@ -428,11 +441,15 @@ Recorded per CLAUDE.md section 2.6.
   added to the ordinary cross entropy on the chosen half. Note also that upstream averages those log
   probabilities over the positions where the target **is** `IGNORE_ID` rather than where it is not,
   which reads like a sign error in upstream and is recorded here rather than corrected.
-- **The text frontend.** Upstream's `CosyVoiceFrontEnd.text_normalize` runs the input through
-  `ttsfrd` if the resource pack is installed, otherwise `wetext`, otherwise nothing, and then splits
-  long text into sentences with `split_paragraph`, using `inflect` for English number expansion.
-  `CosyVoiceV2Processor` tokenizes the text as given, so digits, abbreviations and multi sentence
-  input do not behave the way upstream does.
+- **The text normalizer inside the text frontend.** The frontend itself is implemented:
+  `CosyVoiceV2Processor` inherits `CosyVoiceV1Processor.normalize_text`, which is upstream's
+  `CosyVoiceFrontEnd.text_normalize` with the sentence splitting of `split_paragraph` and the English
+  digit reading of `number_to_words`, so digits and multi sentence input behave the way upstream does.
+  What is missing is the normalizer upstream runs before all of that, `ttsfrd` if the resource pack is
+  installed, otherwise `wetext`, otherwise nothing. So the branch this reproduces exactly is upstream's
+  own "no frontend is avaliable" path, and abbreviations, dates and currency are not expanded the way
+  an installed normalizer would expand them. `processor(text=..., normalize=True)` applies the
+  rewriting; the processor tokenizes the text as given when it is not asked to.
 - **A speaker table.** The released v2 directory ships no `spk2info.pt`, ModelScope's
   `iic/CosyVoice2-0.5B` ships none, and the one mirror that does, `lucyknada/CosyVoice2-0.5B`, turns
   out to hold a **v1** table. Its seven speakers top out at speech token id 4085 against v2's 6561
