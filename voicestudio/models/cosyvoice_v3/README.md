@@ -511,7 +511,7 @@ and adding the full stop is the only difference between that and the table above
 the whole sentence either way, so this sensitivity is v3's.
 
 **The text frontend, against `inflect` and against the added vocabulary.** The English number
-reading lives in `voicestudio/models/cosyvoice_v1/processing_cosyvoice_v1.py` and is measured there,
+reading lives in `voicestudio/models/cosyvoice_v1/tokenization_cosyvoice_v1.py` and is measured there,
 against `inflect` 7.3.1, the version upstream's `requirements.txt` pins: 41,821 digit strings with
 zero mismatches, and 1,600 strings of 34 to 41 digits agreeing on which side of the largest scale
 word they fall. That folder's README carries the corpus.

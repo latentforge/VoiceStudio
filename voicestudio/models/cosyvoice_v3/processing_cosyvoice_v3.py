@@ -1,16 +1,29 @@
+# coding=utf-8
+# Copyright 2024 Alibaba Inc (authors: Xiang Lyu, Zhihao Du) and the HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Processor class for CosyVoice v3."""
 
 import re
 from typing import Optional, Union
 
-from ..cosyvoice_v1.processing_cosyvoice_v1 import (
+from ..cosyvoice_v1.processing_cosyvoice_v1 import is_only_punctuation, split_paragraph
+from ..cosyvoice_v1.tokenization_cosyvoice_v1 import (
     contains_chinese,
-    is_only_punctuation,
     normalize_english,
     remove_bracket,
     replace_blank,
     replace_corner_mark,
-    split_paragraph,
     warn_without_text_normalizer,
 )
 from ..cosyvoice_v2.processing_cosyvoice_v2 import CosyVoiceV2Processor

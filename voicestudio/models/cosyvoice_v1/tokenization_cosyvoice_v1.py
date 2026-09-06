@@ -1,6 +1,21 @@
+# coding=utf-8
+# Copyright 2024 Alibaba Inc (authors: Xiang Lyu, Zhihao Du) and the HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Tokenization class for CosyVoice v1."""
 
 import base64
+import re
 from typing import Optional, Union
 
 from tokenizers import AddedToken, Regex, Tokenizer, decoders, pre_tokenizers, processors
@@ -8,6 +23,278 @@ from tokenizers.models import BPE
 
 from transformers.convert_slow_tokenizer import TikTokenConverter, bytes_to_unicode
 from transformers.tokenization_utils_tokenizers import TokenizersBackend
+from transformers.utils import logging
+
+
+logger = logging.get_logger(__name__)
+
+
+CHINESE_CHARACTERS = re.compile(r"[\u4e00-\u9fff]+")
+
+
+CORNER_MARKS = {"\u00b2": "\u5e73\u65b9", "\u00b3": "\u7acb\u65b9"}
+
+
+ENGLISH_UNITS = ("", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+
+
+ENGLISH_TEENS = (
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+    "nineteen",
+)
+
+
+ENGLISH_TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+
+
+ENGLISH_SCALES = (
+    "", " thousand", " million", " billion", " trillion", " quadrillion", " quintillion", " sextillion",
+    " septillion", " octillion", " nonillion", " decillion",
+)
+
+
+def contains_chinese(text: str) -> bool:
+    """
+    Args:
+        text (`str`):
+            Text to test.
+
+    Returns:
+        `bool`: Whether the text holds at least one Chinese character.
+    """
+    return bool(CHINESE_CHARACTERS.search(text))
+
+
+def replace_corner_mark(text: str) -> str:
+    """
+    Spells the squared and cubed corner marks out in Chinese.
+
+    Args:
+        text (`str`):
+            Text to rewrite.
+
+    Returns:
+        `str`: The rewritten text.
+    """
+    for mark, replacement in CORNER_MARKS.items():
+        text = text.replace(mark, replacement)
+    return text
+
+
+def remove_bracket(text: str) -> str:
+    """
+    Drops the bracket and quote characters the Chinese front end treats as meaningless.
+
+    Args:
+        text (`str`):
+            Text to rewrite.
+
+    Returns:
+        `str`: The rewritten text.
+    """
+    text = text.replace("\uff08", "").replace("\uff09", "")
+    text = text.replace("\u3010", "").replace("\u3011", "")
+    text = text.replace("`", "")
+    text = text.replace("\u2014\u2014", " ")
+    return text
+
+
+def replace_blank(text: str) -> str:
+    """
+    Drops every space that does not sit between two ASCII characters, which is how a Chinese sentence
+    keeps the spaces of an embedded English word and loses the rest.
+
+    Args:
+        text (`str`):
+            Text to rewrite.
+
+    Returns:
+        `str`: The rewritten text.
+    """
+    characters = []
+    for index, character in enumerate(text):
+        if character != " ":
+            characters.append(character)
+        elif (
+            text[index + 1].isascii()
+            and text[index + 1] != " "
+            and text[index - 1].isascii()
+            and text[index - 1] != " "
+        ):
+            characters.append(character)
+    return "".join(characters)
+
+
+def spell_out_two_digits(tens: int, units: int) -> str:
+    """
+    Args:
+        tens (`int`):
+            Tens digit.
+        units (`int`):
+            Units digit.
+
+    Returns:
+        `str`: The two digits read out, hyphenated when both are nonzero and empty when both are
+        zero.
+    """
+    if tens == 1:
+        return ENGLISH_TEENS[units]
+    return ENGLISH_TENS[tens] + ("-" if tens and units else "") + ENGLISH_UNITS[units]
+
+
+def number_to_words(number: str) -> str:
+    """
+    Reads a run of decimal digits out in English: groups of three carrying a scale word and
+    separated by commas, `and` after a hundreds digit and before a trailing group that is a single
+    word, tens and units hyphenated, and leading zeros dropped.
+
+    Args:
+        number (`str`):
+            Run of decimal digits, with no sign, decimal point or group separator. A run of zeros
+            reads as `zero`.
+
+    Returns:
+        `str`: The reading.
+
+    Raises:
+        ValueError: If the run needs a scale word beyond `decillion`.
+    """
+    digits = number.lstrip("0")
+    if digits == "":
+        return "zero"
+    if int(digits) == 1:
+        return "one"
+    groups = []
+    while digits:
+        groups.append(int(digits[-3:]))
+        digits = digits[:-3]
+    if len(groups) > len(ENGLISH_SCALES):
+        raise ValueError(f"{number} is larger than the English scale words reach")
+    spelled = []
+    for index in range(len(groups) - 1, -1, -1):
+        hundreds, remainder = divmod(groups[index], 100)
+        if hundreds == 0 and remainder == 0:
+            continue
+        below_hundred = spell_out_two_digits(*divmod(remainder, 10))
+        if hundreds:
+            joiner = " and " if remainder else ""
+            spelled.append(f"{ENGLISH_UNITS[hundreds]} hundred{joiner}{below_hundred}{ENGLISH_SCALES[index]}")
+        else:
+            spelled.append(f"{below_hundred}{ENGLISH_SCALES[index]}")
+    words = ", ".join(spelled)
+    head, separator, tail = words.rpartition(", ")
+    if separator and " " not in tail:
+        words = f"{head} and {tail}"
+    return words
+
+
+class CosyVoiceV1NumberSpeller:
+    r"""
+    Constructs the engine [`~CosyVoiceV1Processor.normalize_text`] reads an English digit run out
+    with.
+    """
+
+    def number_to_words(self, number: str) -> str:
+        """
+        Args:
+            number (`str`):
+                Run of decimal digits.
+
+        Returns:
+            `str`: The reading, from [`number_to_words`].
+        """
+        return number_to_words(number)
+
+
+def load_text_normalizer(**kwargs):
+    """
+    Builds the weighted finite state transducer normalizer upstream's text front end rewrites a date,
+    a currency amount, a unit and an abbreviation with, from the optional `wetext` package.
+
+    Args:
+        kwargs:
+            Forwarded to `wetext.Normalizer`.
+
+    Returns:
+        `wetext.Normalizer` or `None`: The normalizer, or `None` when `wetext` is not installed.
+    """
+    try:
+        from wetext import Normalizer
+    except ImportError:
+        return None
+    return Normalizer(**kwargs)
+
+
+def warn_without_text_normalizer(text: str) -> None:
+    """
+    Reports that the text normalizer is unavailable, once per process, and only for text holding a
+    digit, which is the text whose reading it changes.
+
+    Args:
+        text (`str`):
+            Text the normalizer was going to be applied to.
+    """
+    if any(character.isdigit() for character in text):
+        logger.warning_once(
+            "`wetext` is not installed, so the text normalizer of the CosyVoice front end is skipped "
+            "and this text reaches the model with its numbers written as they are. A date, a currency "
+            "amount, a unit and a phone number are read wrongly without it; plain text is unaffected, "
+            "and an English digit run is still read out. Install `wetext` to enable it."
+        )
+
+
+def spell_out_number(text: str, number_speller) -> str:
+    """
+    Replaces every run of digits with its English reading.
+
+    Args:
+        text (`str`):
+            Text to rewrite.
+        number_speller ([`CosyVoiceV1NumberSpeller`]):
+            Engine whose `number_to_words` reads a digit run out.
+
+    Returns:
+        `str`: The rewritten text.
+    """
+    spelled = []
+    start = None
+    for index, character in enumerate(text):
+        if character.isdigit():
+            if start is None:
+                start = index
+            continue
+        if start is not None:
+            spelled.append(number_speller.number_to_words(text[start:index]))
+            start = None
+        spelled.append(character)
+    if start is not None and start < len(text):
+        spelled.append(number_speller.number_to_words(text[start:]))
+    return "".join(spelled)
+
+
+def normalize_english(text: str, english_normalizer, number_speller) -> str:
+    """
+    Rewrites an English sentence the way upstream's front end reads it out: the text normalizer
+    first, then every digit run it leaves behind.
+
+    Args:
+        text (`str`):
+            Text to rewrite. A string that is empty or whitespace only skips the normalizer, which
+            asserts on one.
+        english_normalizer (`wetext.Normalizer` or `None`):
+            Normalizer rewriting a date, a currency amount, a unit and an abbreviation. `None` skips
+            that step.
+        number_speller ([`CosyVoiceV1NumberSpeller`]):
+            Engine whose `number_to_words` reads a digit run out.
+
+    Returns:
+        `str`: The rewritten text.
+    """
+    if english_normalizer is None:
+        warn_without_text_normalizer(text)
+    elif text.strip():
+        text = english_normalizer.normalize(text)
+    return spell_out_number(text, number_speller)
 
 
 VOCAB_FILES_NAMES = {
@@ -330,4 +617,19 @@ class CosyVoiceV1Tokenizer(TokenizersBackend):
         )
 
 
-__all__ = ["CosyVoiceV1TikTokenConverter", "CosyVoiceV1Tokenizer", "build_special_tokens"]
+__all__ = [
+    "CosyVoiceV1NumberSpeller",
+    "CosyVoiceV1TikTokenConverter",
+    "CosyVoiceV1Tokenizer",
+    "build_special_tokens",
+    "contains_chinese",
+    "load_text_normalizer",
+    "normalize_english",
+    "number_to_words",
+    "remove_bracket",
+    "replace_blank",
+    "replace_corner_mark",
+    "spell_out_number",
+    "spell_out_two_digits",
+    "warn_without_text_normalizer",
+]

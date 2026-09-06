@@ -817,15 +817,33 @@ versions, and every one of the 19 v2 and 280 v3 entries encodes to a single id. 
 and reload round trip does not add the vocabulary twice: size, added vocabulary and encoding come
 back equal, and `tokenizer_config.json` names the class.
 
-Where transformers puts text normalisation is a related finding, and it is still open. `clvp`,
-`speecht5` and `whisper` all import their normaliser from `tokenization_<model>.py`, speecht5's
-tokenizer takes a `normalize` flag and applies it in `prepare_for_tokenization`, and whisper's
-carries `normalize` and `basic_normalize` methods. No processing file in transformers normalises
-text. Here the whole layer, eleven module functions plus `CosyVoiceV1NumberSpeller`, sits in
-`processing_cosyvoice_v1.py` behind `CosyVoiceV1Processor.normalize_text`. Two of the thirteen,
-`split_paragraph` and `is_only_punctuation`, are sentence segmentation rather than normalisation and
-decide synthesis chunks rather than tokens, so they belong where they are. The rest is a move a human
-should sign off, because `normalize_text` is public API and v3 reaches five of those functions.
+Text normalisation moved with it. `clvp`, `speecht5` and `whisper` all import their normaliser from
+`tokenization_<model>.py`, speecht5's tokenizer takes a `normalize` flag and applies it in
+`prepare_for_tokenization`, and whisper's carries `normalize` and `basic_normalize` methods, while no
+processing file in transformers normalises text at all. Ten module functions, `CosyVoiceV1NumberSpeller`
+and six constants are now in `tokenization_cosyvoice_v1.py`. `split_paragraph` and `is_only_punctuation`
+stayed in `processing_cosyvoice_v1.py`, because they segment a sentence into synthesis chunks rather
+than rewrite it, and they are the two that decide nothing about tokens.
+
+The transformers pattern is not fully reachable here and it is worth saying why. There the tokenizer
+itself normalises. `CosyVoiceV1Processor` carries a `WhisperTokenizer` rather than
+`CosyVoiceV1Tokenizer`, for the reason recorded below, so `normalize_text` cannot move onto it and
+stays public API on the processor, importing what it needs. Every moved node is byte identical to the
+form it had in `processing_cosyvoice_v1.py`, checked by comparing the `ast` source segment of each
+against the previous commit.
+
+`CosyVoiceV1Tokenizer` looked unused and is not. It is the tokenizer of the `CosyVoice-300M-25Hz`
+release, built from that release's `multilingual_zh_ja_yue_char_del.tiktoken`, and the three 50 Hz
+checkpoints this folder converts tokenize with Whisper's vocabulary instead. Wiring
+`_released_processor` onto it would be wrong: the two vocabularies carry 58836 and 51866 mergeable
+ranks, 9292 of its tokens are absent from Whisper's and 48003 of the rest sit at a different rank.
+Its absence from `AutoTokenizer` is deliberate for the same reason. All of that was already recorded
+in the folder's README, under the open question of whether to cover that release.
+
+Every file in the three folders now carries a licence header. Fifteen had none, including all three
+`__init__.py`, both remaining `processing_<model>.py`, and every `configuration_`, `generation_` and
+`weight_conversion` file. Measured in transformers rather than assumed: 504 of 509 model `__init__.py`
+carry one, 97 of 102 `tokenization_*`, 10 of 10 `generation_*` and 330 of 496 `configuration_*`.
 
 ## Sibling inheritance map
 

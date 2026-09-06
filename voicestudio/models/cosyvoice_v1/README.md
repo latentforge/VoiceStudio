@@ -215,7 +215,7 @@ Upstream pins more than forty packages. What each turned into:
 | `regex` | Removed. Its one call site is `is_only_punctuation`, whose `^[\p{P}\p{S}]*$` is `unicodedata.category(character)[0] in "PS"`. The two agree on all 149251 assigned code points. |
 | `tiktoken` | Removed. `get_encoding` only used it to read a `base64 rank` file and to hold the ranks, so `CosyVoiceV1TikTokenConverter` subclasses transformers' own `TikTokenConverter` and reads the file with `base64` from the standard library. |
 | `openai-whisper` | Replaced by `WhisperTokenizer` for text and `WhisperFeatureExtractor` for the speech tokenizer's mel. `whisper.tokenizer.Tokenizer`, which upstream's `get_tokenizer` returns, is `CosyVoiceV1Tokenizer`. |
-| `inflect` | Removed. Upstream calls one method of it, `number_to_words`, to read an English digit run out; `number_to_words` in `processing_cosyvoice_v1.py` is that reading, inlined. See below. |
+| `inflect` | Removed. Upstream calls one method of it, `number_to_words`, to read an English digit run out; `number_to_words` in `tokenization_cosyvoice_v1.py` is that reading, inlined. See below. |
 | `pyworld` | Not required. `CosyVoiceV1WorldEstimator` ports its `harvest`, `stonemask` and `dio`, and delegates to the package where it happens to be installed. See below. |
 | `wetext` | Lazily imported, and not declared. It is the text normalizer upstream's own front end reaches for, and no part of it is math that could be inlined; see "The text normalizer". |
 | `ttsfrd` | Not reachable. See "Not carried over from upstream". |
@@ -692,7 +692,7 @@ rewrote 199 of that file's 327 lines and only the language table survived intact
 |---|---|
 | `cosyvoice/llm/llm.py` | `modeling_cosyvoice_v1.py`. `TransformerLM` became `CosyVoiceV1SpeechTokenLM` plus `CosyVoiceV1ForConditionalGeneration`. |
 | `cosyvoice/cli/model.py` | `generation_cosyvoice_v1.py`. `CosyVoiceModel.token2wav` and `CosyVoiceModel.tts` became `CosyVoiceV1GenerationMixin`. |
-| `cosyvoice/cli/frontend.py` | `processing_cosyvoice_v1.py`, except the mel spectrogram extraction, which is `feature_extraction_cosyvoice_v1.py`. |
+| `cosyvoice/cli/frontend.py` | `processing_cosyvoice_v1.py`, except the mel spectrogram extraction, which is `feature_extraction_cosyvoice_v1.py`, and the text normalisation, which is `tokenization_cosyvoice_v1.py`. |
 | `cosyvoice/cli/cosyvoice.py` | `weight_conversion.py`. Its `load` method became the reading of a released directory, which `from_pretrained` calls when the published layout is what it was given. |
 | `cosyvoice.yaml` | `configuration_cosyvoice_v1.py`. |
 | `cosyvoice/__init__.py` | `__init__.py`. |
@@ -724,7 +724,7 @@ rewrote 199 of that file's 327 lines and only the language table survived intact
 | `cosyvoice/cli/__init__.py`, `cosyvoice/dataset/__init__.py`, `cosyvoice/transformer/__init__.py`, `cosyvoice/utils/__init__.py` | `__init__.py`. All four are empty. |
 | `cosyvoice/hifigan/hifigan.py` | `HiFiGan.forward_generator` is `CosyVoiceV1HiFTGenerator.compute_loss`, without the three terms that read discriminator outputs. `forward_discriminator` has no counterpart. |
 | `cosyvoice/utils/losses.py` | `mel_loss` is `CosyVoiceV1HiFTGenerator.mel_loss`, over the mel spectrogram `voicestudio/models/bigvgan/` builds. `tpr_loss` and `DPOLoss` have no counterpart. |
-| `cosyvoice/utils/frontend_utils.py` | All seven functions are module level functions of `processing_cosyvoice_v1.py`, and `CosyVoiceFrontEnd.text_normalize`, their only caller, is `CosyVoiceV1Processor.normalize_text`. |
+| `cosyvoice/utils/frontend_utils.py` | All seven functions are module level functions, five of them normalisation in `tokenization_cosyvoice_v1.py` and `is_only_punctuation` and `split_paragraph`, which segment a sentence rather than rewrite it, in `processing_cosyvoice_v1.py`. `CosyVoiceFrontEnd.text_normalize`, their only caller, is `CosyVoiceV1Processor.normalize_text`. |
 | `cosyvoice/dataset/processor.py` | `compute_f0` is `CosyVoiceV1Processor.compute_f0`. `compute_fbank` is `CosyVoiceV1FeatureExtractor`, `compute_whisper_fbank` is the processor's `WhisperFeatureExtractor`, `tokenize` is the processor's tokenizer, `parse_embedding` is the `speaker_embedding` input, and `parquet_opener` through `padding` is an iterable data pipeline and a collator, which `transformers` supplies. |
 | `cosyvoice/tokenizer/assets/multilingual_zh_ja_yue_char_del.tiktoken` | Checkpoint side data rather than library source, the way `f5_tts`'s `vocab.txt` is. `CosyVoiceV1Tokenizer.vocab_files_names` names it, `from_pretrained` resolves it out of the checkpoint directory, and `save_pretrained` writes a `tokenizer.json` that no longer needs it. |
 
