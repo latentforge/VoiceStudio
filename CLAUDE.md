@@ -197,6 +197,21 @@ distance caught it. Where a numeric check against upstream's own classes is poss
 that is the strongest evidence available, and several models here match upstream to
 1e-07 or bit for bit.
 
+Every recorded number carries the method that produced it: the transcriber by
+name, the number of seeds behind a range, the redraw scheme behind a negative
+control. A number without its method is not a result, because no later run can
+tell reproduction from divergence. Three findings in one week came from exactly
+that gap. A `0.137` copy-synthesis figure recorded for Vocos read as covering
+both its mel and its EnCodec frontend when it had only ever been measured on
+mel, and the EnCodec variant's own `0.5685` had never been written down at all.
+BigVGAN's `3.13` and `4.35` negative controls reproduce only when the
+convolutions are redrawn from a unit normal, while the README paragraph beside
+them names `initializer_range`, which gives `0.702` and `1.121`; the scheme was
+written down nowhere and the folder carried two mutually inconsistent control
+pairs. And transcripts recorded without naming the transcriber: `wav2vec2` and
+`whisper-large-v3-turbo` disagreed on the same audio three times in one day,
+once making a healthy VoxInstruct generation look like a failure.
+
 Verification does not run on the local GPU. Use the `colab` CLI for real-checkpoint
 runs. `colab exec` can time out client-side while the remote script keeps running, so
 poll for the result rather than reading a timeout as a failure.
