@@ -15,6 +15,7 @@ from transformers.feature_extraction_sequence_utils import SequenceFeatureExtrac
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.whisper.tokenization_whisper import WhisperTokenizer
 from transformers.processing_utils import ProcessorMixin
+from transformers.utils import logging
 
 from .configuration_cosyvoice_v1 import CosyVoiceV1Config
 from .modeling_cosyvoice_v1 import CosyVoiceV1SpeakerEncoder, CosyVoiceV1SpeechTokenizer
@@ -27,6 +28,9 @@ from .weight_conversion import (
     convert_speech_tokenizer,
     resolve_checkpoint,
 )
+
+
+logger = logging.get_logger(__name__)
 
 
 CHINESE_CHARACTERS = re.compile(r"[\u4e00-\u9fff]+")
@@ -224,6 +228,24 @@ def load_text_normalizer(**kwargs):
     return Normalizer(**kwargs)
 
 
+def warn_without_text_normalizer(text: str) -> None:
+    """
+    Reports that the text normalizer is unavailable, once per process, and only for text holding a
+    digit, which is the text whose reading it changes.
+
+    Args:
+        text (`str`):
+            Text the normalizer was going to be applied to.
+    """
+    if any(character.isdigit() for character in text):
+        logger.warning_once(
+            "`wetext` is not installed, so the text normalizer of the CosyVoice front end is skipped "
+            "and this text reaches the model with its numbers written as they are. A date, a currency "
+            "amount, a unit and a phone number are read wrongly without it; plain text is unaffected, "
+            "and an English digit run is still read out. Install `wetext` to enable it."
+        )
+
+
 def spell_out_number(text: str, number_speller) -> str:
     """
     Replaces every run of digits with its English reading.
@@ -271,7 +293,9 @@ def normalize_english(text: str, english_normalizer, number_speller) -> str:
     Returns:
         `str`: The rewritten text.
     """
-    if english_normalizer is not None and text.strip():
+    if english_normalizer is None:
+        warn_without_text_normalizer(text)
+    elif text.strip():
         text = english_normalizer.normalize(text)
     return spell_out_number(text, number_speller)
 
@@ -815,7 +839,9 @@ class CosyVoiceV1Processor(ProcessorMixin):
             return self.tokenizer.encode(piece, add_special_tokens=False)
 
         if contains_chinese(text):
-            if self.chinese_normalizer is not None:
+            if self.chinese_normalizer is None:
+                warn_without_text_normalizer(text)
+            else:
                 text = self.chinese_normalizer.normalize(text)
             text = text.replace("\n", "")
             text = replace_blank(text)
@@ -960,4 +986,5 @@ __all__ = [
     "spell_out_number",
     "spell_out_two_digits",
     "split_paragraph",
+    "warn_without_text_normalizer",
 ]

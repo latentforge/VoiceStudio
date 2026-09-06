@@ -44,7 +44,8 @@ zero shot mode; passing only the flow one is upstream's cross lingual mode; pass
 `processor.normalize_text(text)` is upstream's text front end: it rewrites the string and returns
 the sentences upstream synthesizes one at a time. `processor(text=..., normalize=True)` applies the
 rewriting to a single sequence without splitting. Its first step is the `wetext` text normalizer,
-which is installed by the `frontend` extra and skipped when it is absent; see "The text normalizer".
+which this project does not declare and which is skipped when it is not installed; see "The text
+normalizer".
 
 `processor.compute_f0(audio, sampling_rate)` returns the `pitch_feat` the vocoder objective
 regresses onto, and `model.hift.compute_loss(mel, waveform, pitch_feat)` scores the vocoder against
@@ -216,7 +217,7 @@ Upstream pins more than forty packages. What each turned into:
 | `openai-whisper` | Replaced by `WhisperTokenizer` for text and `WhisperFeatureExtractor` for the speech tokenizer's mel. `whisper.tokenizer.Tokenizer`, which upstream's `get_tokenizer` returns, is `CosyVoiceV1Tokenizer`. |
 | `inflect` | Removed. Upstream calls one method of it, `number_to_words`, to read an English digit run out; `number_to_words` in `processing_cosyvoice_v1.py` is that reading, inlined. See below. |
 | `pyworld` | Lazily imported. See below. |
-| `wetext` | Kept, as the `frontend` extra rather than a core dependency. It is the text normalizer upstream's own front end reaches for, and no part of it is math that could be inlined; see "The text normalizer". |
+| `wetext` | Lazily imported, and not declared. It is the text normalizer upstream's own front end reaches for, and no part of it is math that could be inlined; see "The text normalizer". |
 | `ttsfrd` | Not reachable. See "Not carried over from upstream". |
 | `onnxruntime` | Removed. See below. |
 | `tensorrt`, `vllm`, `modelscope`, `gradio`, `fastapi`, `grpcio` | Serving paths, not part of the model. |
@@ -245,12 +246,15 @@ the module it was traced inside, so the module path and the operator together sa
 initializer is. All 96 of v1's initializers map to exactly one parameter each and load with
 `strict=True`.
 
-One is imported lazily rather than depended on, and it was not added to `pyproject.toml`.
+Two are imported lazily rather than depended on, and neither was added to `pyproject.toml`.
 `CosyVoiceV1Processor.compute_f0` needs `pyworld`, because the target of the vocoder objective's f0
 term is the WORLD harvest contour and no other estimator produces the same numbers; substituting one
 would change the objective silently. `pyproject.toml` already declares `pyworld>=0.3.5` under the
 `eval` extra, so this adds nothing new, but the base install does not carry it. It raises with an
 explanation naming what is missing and what to do instead.
+
+`normalize_text` reaches for `wetext` the same way, and this one does not raise: it falls back to the
+behaviour measured in "The text normalizer" below and warns once instead. See that section.
 
 The English digit reading is not one of them. `CosyVoiceV1Processor.normalize_text` reads a digit run
 out through `CosyVoiceV1NumberSpeller`, whose `number_to_words` is the inlined reading, so nothing has
@@ -464,19 +468,33 @@ Upstream's `CosyVoiceFrontEnd.__init__` tries three things in order: `ttsfrd`, t
 nothing. Until now this folder was the third branch, reproduced exactly, and the categories a
 normalizer covers, dates, currency, units and abbreviations, were not expanded at all.
 
-`wetext` is now reachable, as the `frontend` extra rather than a core dependency, and
-`normalize_text` composes it the way upstream composes it: the Chinese branch runs
-`Normalizer(remove_erhua=False).normalize`, the English branch runs `Normalizer().normalize` and
-then reads whatever digit runs survive with `number_to_words`. With the extra absent, both branches
-skip the normalizer and the behaviour is what it was, upstream's third branch, so the default
-install is unchanged.
+`wetext` is now reachable, and `normalize_text` composes it the way upstream composes it: the
+Chinese branch runs `Normalizer(remove_erhua=False).normalize`, the English branch runs
+`Normalizer().normalize` and then reads whatever digit runs survive with `number_to_words`. It is a
+package the caller installs, not something this project declares: `pyproject.toml` names it nowhere,
+in an extra or otherwise, and `load_text_normalizer` returns `None` on the `ImportError`. With it
+absent both branches skip the normalizer and the behaviour is what it was, upstream's third branch,
+so the default install is unchanged.
+
+**The warning, and when it fires.** With `wetext` absent, `normalize_text` reports it through
+`logger.warning_once` from `transformers.utils.logging`, which is how `transformers` itself reports a
+missing optional package, `processing_pp_formulanet.py` doing exactly this for `ftfy`. It fires from
+the point where the normalizer would have run, not at import or at construction, so it reaches the
+caller whose text the normalizer would have changed rather than every caller of CosyVoice. It is
+further held back to text holding a digit, because the table below is unanimous that a digit is what
+is at stake: every row that improves has one, and the digit free rows are identical to three decimal
+places on both settings or slightly worse with the normalizer. The message names the categories that
+are read wrongly without it, a date, a currency amount, a unit and a phone number, and says that
+plain text is unaffected and an English digit run is still read out. `warning_once` is cached on the
+message, so a loop or a batch sees it once per process rather than once per utterance, and
+`TRANSFORMERS_VERBOSITY=error` silences it.
 
 **Which component owns numbers.** On the English path, `wetext` owns everything it rewrites and
 `number_to_words` owns the digit runs it leaves behind. There is no double expansion, because
 `number_to_words` only ever sees characters that are still digits, and this is upstream's own
-ordering rather than a choice made here. `I paid 1234 dollars in 2025 for 7 books.` with the extra
-installed comes out of `wetext` as `I paid twelve thirty four dollars in twenty twenty five for
-seven books.` with no digit left, so `spell_out_number` returns it unchanged, and without the extra
+ordering rather than a choice made here. `I paid 1234 dollars in 2025 for 7 books.` with `wetext`
+installed comes out of it as `I paid twelve thirty four dollars in twenty twenty five for
+seven books.` with no digit left, so `spell_out_number` returns it unchanged, and without it
 `number_to_words` reads all three numbers itself. On the Chinese path `number_to_words` is never
 called at all, on either setting: `normalize_text` only reaches it through the `else` branch of
 `contains_chinese`. The `inflect` parity that `number_to_words` is measured against is unaffected
@@ -488,7 +506,7 @@ with 627 of the 1,600 long strings agreeing on a reading and 973 raising on both
 of `$1,234.50`, giving `thousand two hundred and thirty four point five dollars`. Both are upstream's
 behaviour, reproduced rather than corrected, and both are visible in the tables below as a reference
 string that the model then speaks faithfully. Where this folder's own reading is better it is still
-available: leave the extra out.
+available: leave `wetext` uninstalled.
 
 **`EnglishNormalizer` from `transformers.models.clvp` was measured and rejected.** It is already
 installed, so it engages no dependency question at all, and on the two cases where this folder's own
@@ -503,8 +521,9 @@ hand-picked rule set could not. The measurement is in the table below, under `cl
 
 **What was measured.** Zero shot from the 5.86 s LibriSpeech clip used elsewhere in this README,
 three seeds, transcribed with `facebook/wav2vec2-base-960h`, word error rate against the text each
-setting handed to the model. `off` is `text_frontend` disabled, `today` is this folder without the
-extra, `clvp` is `today` plus the CLVP normalizer, `wetext` is this folder with the extra.
+setting handed to the model. `off` is `text_frontend` disabled, `today` is this folder without
+`wetext` installed, `clvp` is `today` plus the CLVP normalizer, `wetext` is this folder with it
+installed.
 
 | Case | off | today | clvp | wetext |
 |---|---|---|---|---|
@@ -596,9 +615,10 @@ Recorded per CLAUDE.md section 2.6.
 - **`ttsfrd`.** Upstream tries it before `wetext` and it is the one normalizer this folder does not
   reach. Upstream ships it as a wheel in `FunAudioLLM/CosyVoice-ttsfrd` with a 339 MB resource pack.
   It is not on PyPI, has no source release, and is closed source, so it cannot be traced the way
-  CLAUDE.md section 2.2 requires and cannot be declared under section 9.1. `wetext` covers the
-  categories measured in "The text normalizer" above; whether anything is left that only `ttsfrd`
-  would fix has not been measured, because there is no way to run it. That is **still open**.
+  CLAUDE.md section 2.2 requires. `wetext` is not declared either, and is reached only when the
+  caller installs it, but it covers the categories measured in "The text normalizer" above; whether
+  anything is left that only `ttsfrd` would fix has not been measured, because there is no way to run
+  it. That is **still open**.
 - **Streaming input text.** Upstream's `inference_bistream` accepts a text generator and
   interleaves text and speech tokens. It exists only on `Qwen2LM`, that is CosyVoice 2 and 3, and
   is not part of v1.
