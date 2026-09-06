@@ -24,6 +24,7 @@ from transformers.tokenization_utils_base import PreTokenizedInput, TextInput
 from transformers.utils import logging
 from transformers.utils.import_utils import requires
 
+from ..cosyvoice_v1.processing_cosyvoice_v1 import contains_chinese
 from .weight_conversion import convert_published_checkpoint
 
 
@@ -134,11 +135,30 @@ class SparkTTSProcessor(ProcessorMixin):
     def _semantic_tokens(codes: torch.Tensor) -> str:
         return "".join(f"<|bicodec_semantic_{code}|>" for code in codes.reshape(-1).tolist())
 
+    @staticmethod
+    def _join_content(prompt_text: str, text: str) -> str:
+        r"""
+        Joins the reference transcript to the text to synthesize with the separator the script of `text` puts
+        between its own words, so that the first word of `text` carries the token it carries anywhere else.
+
+        Args:
+            prompt_text (`str`):
+                Transcript of the reference clip.
+            text (`str`):
+                Text to synthesize.
+
+        Returns:
+            `str`: The two texts, joined.
+        """
+        if not text or not prompt_text or prompt_text[-1].isspace() or contains_chinese(text[0]):
+            return prompt_text + text
+        return prompt_text + " " + text
+
     def _build_voice_cloning_prompt(self, text: str, global_codes: torch.Tensor, prompt_text: str | None) -> str:
         prompt = [
             TASK_TOKENS["tts"],
             "<|start_content|>",
-            text if prompt_text is None else prompt_text + text,
+            text if prompt_text is None else self._join_content(prompt_text, text),
             "<|end_content|>",
             "<|start_global_token|>",
             self._global_tokens(global_codes),
@@ -261,11 +281,11 @@ class SparkTTSProcessor(ProcessorMixin):
                 Clip whose voice is cloned. Mutually exclusive with `gender`/`pitch`/`speed`, unless `output_labels`
                 is set, in which case the attribute layout needs it as the clip the target codes come from.
             prompt_text (`str`, *optional*):
-                Transcript of `reference_audio`. When given, it is concatenated in front of `text` with no separator
-                and the reference clip's own semantic tokens are appended to the prompt, so that generation continues
-                the clip rather than starting from silence. Since the join is verbatim, a `prompt_text` that does not
-                end in whitespace merges its last character with the first word of `text` into a single token, which
-                the model was never trained on and frequently fails to speak.
+                Transcript of `reference_audio`. When given, it goes in front of `text` and the reference clip's own
+                semantic tokens are appended to the prompt, so that generation continues the clip rather than
+                starting from silence. A `prompt_text` that does not already end in whitespace is separated from
+                `text` by a single space, unless `text` opens on a Chinese character, where the two are joined
+                directly.
             gender (`str`, *optional*):
                 One of `"female"` or `"male"`.
             pitch (`str`, *optional*):

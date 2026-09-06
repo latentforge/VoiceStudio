@@ -76,21 +76,30 @@ inputs = processor(
     text="Actions speak louder than words.",
     reference_audio=reference,
     sampling_rate=sampling_rate,
-    prompt_text="Mr. Quilter is the apostle of the middle classes, and we are glad to welcome his gospel. ",
+    prompt_text="Mr. Quilter is the apostle of the middle classes, and we are glad to welcome his gospel.",
 ).to(model.device)
 ```
 
-End `prompt_text` with a separator, as above. The two texts are concatenated verbatim, which is what upstream's
-`cli/SparkTTS.py` does, so a transcript ending in `gospel.` and a text starting with `Actions` meet inside one BPE
-token, `.Actions`. The model never saw that: SparkVox's `egs/speech_synthesis/spark-tts/scripts/prepare_train.py`
-puts a single utterance's transcript between the content markers and never concatenates a reference transcript, so
-the sentence-boundary tokens fused this way are out of distribution. Measured on
-`librispeech_1272-128104-0000.wav` with that transcript, `"Actions speak louder than words."` is 0 of 8 seeds
-verbatim under `openai/whisper-large-v3-turbo` with the two joined directly, five seeds dropping the leading word and
-three collapsing into a filler syllable, one of them running 3000 tokens into the `max_new_tokens` ceiling. The same
-sentence with one space added to the end of `prompt_text` is 8 of 8. How badly it fails depends on which fused token
-comes out: `.The` is common enough that the same clip and the same reference transcript give 7 of 8 verbatim with no
-separator at all.
+The processor separates the two texts, and this is a deliberate divergence from upstream: `cli/SparkTTS.py`
+concatenates them verbatim, so a transcript ending in `gospel.` and a text starting with `Actions` meet inside one
+BPE token, `.Actions` (id 72044), where the same word after a space is `ĠActions` (id 26722). The model never saw
+the fused form: SparkVox's `egs/speech_synthesis/spark-tts/scripts/prepare_train.py` puts a single utterance's
+transcript between the content markers and never concatenates a reference transcript, so the sentence-boundary
+tokens fused this way are out of distribution. Measured on `librispeech_1272-128104-0000.wav` with that transcript,
+`"Actions speak louder than words."` is 0 of 8 seeds verbatim under `openai/whisper-large-v3-turbo` with the two
+joined directly, five seeds dropping the leading word and three collapsing into a filler syllable, one of them
+running 3000 tokens into the `max_new_tokens` ceiling. The same sentence with one space between them is 8 of 8. How
+badly the fused form fails depends on which token comes out: `.The` is common enough that the same clip and the same
+reference transcript give 7 of 8 verbatim without a separator. A reader diffing this repository's audio against
+upstream's should expect the two to part company here.
+
+The separator is a space only where the script uses one. Chinese never fuses across the join, because the tokenizer
+carries no merge spanning a CJK boundary: `今天天气真不错。` followed by `行动胜于雄辩。` tokenizes as
+`。`(1773), `行动`(100675) whether the two are joined directly or not. A space in front of a Chinese character is
+what does damage there, since `Ġ行动` does not exist and the tokenizer falls back to the partial-UTF-8 pair
+`Ġè¡`(77407), `Į`(234). So the join looks at the text being appended: a space goes in unless that text opens on a
+Chinese character, which also gets the mixed cases right, a space before an English sentence following `。` and none
+before a Chinese one following `classes.`.
 
 BiCodec is usable on its own through [`SparkTTSBiCodecModel`](../spark_tts_bicodec), which is what
 `processor.audio_tokenizer` holds:
