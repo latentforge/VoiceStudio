@@ -645,9 +645,8 @@ Ordering, since two components now expand numbers: on the English path `wetext` 
 path `number_to_words` is never reached, sitting in the `else` of `contains_chinese`. The 41,821-string
 `inflect` parity was re-run after the change at zero mismatches.
 
-**Settled: `ttsfrd` stays unimplemented.** It is the closed-source Alibaba wheel whose rules ship as a
-separate `CosyVoice-ttsfrd` resource pack, and it was deliberately not touched even under the H11
-exception. What it alone would add is `Dept.`, absent from both `wetext`'s grammar and CLVP's table,
+**Settled: `ttsfrd` stays unimplemented.** It is published under Apache-2.0 in the Hugging Face repository `FunAudioLLM/CosyVoice-ttsfrd`, but distributed as cp38 and cp310 `linux_x86_64` wheels beside a 339 MB `resource.zip` rather than through PyPI, so it cannot be reached the way `wetext` is: there is no version specifier to put in an extra, it does not build for this project's Python, and a caller on macOS or Windows cannot install it at all. It was deliberately not touched even under
+the H11 exception. What it alone would add is `Dept.`, absent from both `wetext`'s grammar and CLVP's table,
 since `Dr.` and `U.S.` are already read correctly unaided and dates, currency, units and phone numbers are
 what `wetext` took. Against that, a closed wheel and a separate resource pack whose licence this project
 does not control. The residual it would close is one abbreviation on one sentence, measured at word error
@@ -708,9 +707,13 @@ only ever hurt: every remeasured row improved or held. The Chinese rows are stru
 been run in sft mode with a speaker vector and no reference waveform, so there is no transcript to
 misplace, and they were the stated justification anyway.
 
-**The wider lesson is about where the harnesses live.** `.cache/verify/scripts/` is gitignored, so the
-script that produced a table cited in three commits and in this file was never reviewed by anyone. An
-audit of the four CosyVoice harnesses found one more marker mistake, a `whole text` row in
+**The wider lesson is about what a recorded method leaves out.** Section 2.5 was satisfied here: the
+transcriber, the seed count and the checkpoint were all written down. What was not written down was the
+marker placement, because nobody knew it was load bearing, and a prose description cannot record a detail
+its author does not know matters. The harnesses live under the gitignored `.cache/verify/scripts/`, which
+did not cause this and would not have prevented it, since tracking a file does not make anyone read it;
+what it costs is that someone doubting a number has nothing to inspect. An audit of the four CosyVoice
+harnesses found one more marker mistake, a `whole text` row in
 `run_cosyvoice_v3_bistream.py` running with two markers, benign because it scored 0.000 on every seed but
 not measuring the sequence it claims, and a real defect in
 `probe_cosyvoice_v3_bistream_reference.py`, whose adapter passes `attention_mask=masks[:, -1, :]`, length
