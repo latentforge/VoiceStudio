@@ -71,6 +71,9 @@ eval = [
 web = [  # Voice Studio Web
     "fastapi>=0.126.0",
 ]
+frontend = [  # text normalization front end, the one CosyVoice's own front end reaches for
+    "wetext>=0.1.7",
+]
 
 [tool.uv.sources]
 torch = [
