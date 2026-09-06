@@ -27,7 +27,7 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
 dependencies = [
-    "transformers[kernels]>=5.16.0",
+    "transformers[kernels]>=5.16.1",
 ]
 [project.optional-dependencies]
 research = [  # full-research setup
@@ -70,9 +70,6 @@ eval = [
 ]
 web = [  # Voice Studio Web
     "fastapi>=0.126.0",
-]
-frontend = [  # text normalization front end, the one CosyVoice's own front end reaches for
-    "wetext>=0.1.7",
 ]
 
 [tool.uv.sources]
