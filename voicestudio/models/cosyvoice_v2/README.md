@@ -372,6 +372,14 @@ The decode was also checked as a decode rather than only by its audio: from seed
 speech tokens with a maximum id of 6558 against a `speech_vocab_size` of 6561, so every fill token
 and the end of speech token were consumed inside the loop and none leaked into the output.
 
+**The interleaved decode against upstream's own `inference_bistream`.** Upstream's method was run
+unmodified on the same weights, through an adapter exposing this model's language model under the
+attribute names it reads, with both sides drawing from `repetition_aware_sampling` off the same
+seed. It agrees **token for token**: 209 tokens against 209, no first difference, from a generator
+yielding one text token at a time and again from one yielding five. The one library difference the
+adapter absorbs is that upstream reads the cache length as `cache[0][0].size(2)`, the tuple layout
+`transformers` carried before 5.0.
+
 ## Not carried over from upstream
 
 Recorded per CLAUDE.md section 2.6.
