@@ -10,12 +10,12 @@ Original model and code: [boson-ai/higgs-audio](https://github.com/boson-ai/higg
 ## Usage
 
 ```python
-from transformers import AutoModelForTextToWaveform, AutoProcessor
+from voicestudio.models.higgs_tts3 import HiggsTTS3ForConditionalGeneration, HiggsTTS3Processor
 
 model_id = "bosonai/higgs-tts-3-4b"
 
-processor = AutoProcessor.from_pretrained(model_id)
-model = AutoModelForTextToWaveform.from_pretrained(model_id)
+processor = HiggsTTS3Processor.from_pretrained(model_id)
+model = HiggsTTS3ForConditionalGeneration.from_pretrained(model_id)
 model.to("cuda")
 processor.audio_tokenizer.to(model.device)
 ```
@@ -53,3 +53,18 @@ never terminates.
 `bosonai/higgs-tts-3-4b` ships no `preprocessor_config.json` and no audio tokenizer weights of its
 own, so `HiggsTTS3Processor.from_pretrained` loads both from the codec repository named by
 `config.audio_tokenizer_id`, which is `bosonai/higgs-audio-v2-tokenizer`.
+
+The `Auto` classes reach the same two objects, but only once `voicestudio.models` has been imported.
+That import is what aliases the checkpoint's `higgs_multimodal_qwen3` model type onto
+`HiggsTTS3Config` and maps it onto these classes. Without it `AutoConfig` and
+`AutoModelForTextToWaveform` raise on an unrecognized model type, and `AutoProcessor` raises nothing
+at all: it falls through to the checkpoint's own `Qwen2Tokenizer` and returns that instead of a
+`HiggsTTS3Processor`.
+
+```python
+import voicestudio.models  # noqa: F401
+from transformers import AutoModelForTextToWaveform, AutoProcessor
+
+processor = AutoProcessor.from_pretrained(model_id)
+model = AutoModelForTextToWaveform.from_pretrained(model_id)
+```
