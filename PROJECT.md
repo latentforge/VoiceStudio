@@ -585,16 +585,47 @@ not produce a NaN and would not show in a gradient norm, and would surface only 
 in audio detail or loses word timing. So the equal-weight sum is a defensible inherited-lineage choice, not
 a fact about Dia2, and the README says so rather than calling it upstream's objective.
 
-## Open: two items that need a decision, not code
+## Open: one item that needs a decision, not code
 
-**CosyVoice v3's text normalizer.** Everything else of the v3 text frontend landed in `a8ee1b30` and
-`59f59ae7`: the English number reading is inlined and checked against upstream's pinned `inflect` over
-41,821 digit strings with zero mismatches, markup spans are protected from the digit scan (all 45 markup
-tokens carrying a digit are destroyed without it), and all 278 added vocabulary tokens are now reachable.
-What is blocked is the normalizer proper. `ttsfrd` is a closed-source Alibaba wheel with a separate
-resource pack and `wetext` is a compiled OpenFST grammar; both are rule sets rather than the small piece of
-math section 9.1 allows inlining. Measured cost: `Dr. Smith works at the U.S. Dept. of Energy.` reads
-identically waveform for waveform with the frontend on and off. Recorded open under H11.
+**Settled: the text normalizer reaches `wetext` through an optional extra.** The user granted an H11
+exception for it, conditional on the measurement, and the measurement carried it. `e0efb9b9`, `6ae69b3e`,
+`040bed9a` and `02413ef2` land `wetext>=0.1.7` as its own `frontend` extra, Apache-2.0, pulling `kaldifst`
+and `contractions`, 35 MB of grammar on disk bundled in the wheel with no download at first use. It is in
+neither `all` nor `research`, and with it absent `load_text_normalizer` returns `None` and every existing
+path behaves exactly as before, so the default is unchanged.
+
+Chinese is what justified it, not English. On CosyVoice v2 under `openai/whisper-large-v3-turbo`, three
+seeds, character error rate against the original sentence: dates 0.545/0.545/1.000 to 0.000/0.045/0.182,
+currency 0.444/2.056/0.722 to 0.000 three times, phone numbers 0.522/0.609/0.391 to 0.000/0.000/0.087.
+Without it v2 reads a Chinese date back as `会议定在疫情意识五年三个支指` and one seed collapses to `好`.
+v3 is the outlier: it already reads unnormalized Chinese dates and phone numbers back perfectly and only
+currency improves. The digit-free control is identical seed for seed on all three models, which is what
+rules out collateral damage.
+
+`transformers`' own `EnglishNormalizer` from `models/clvp/number_normalizer.py` was the preferred route
+under section 9.1 rule 1, measured, and rejected on content rather than on score. Its abbreviation table
+maps `ft.` to `fort`, so `5 ft.` transcribes as `FIVE FORT` where `wetext` gives `FIVE FEET`; it also maps
+`mrs.` to `misess`, `st.` to `saint` inside street names, and every ordinal wrongly, `1st` to `onest` and
+`21st` to `twenty-onest`. It posted the best `units` figures while reading the wrong words.
+
+Two things about it are worth knowing rather than discovering later. `wetext` reads `1234` as "twelve
+thirty four" where this repository's own `number_to_words` reads it in full, and it drops the "one" from
+`$1,234.50`; that is upstream's behaviour reproduced rather than corrected, it is invisible in a word error
+rate scored against what each setting produced, and the better reading stays available by leaving the extra
+out. And `wetext` raises `AssertionError` on 45 of v3's 276 markup tokens on the English branch while
+silently rewriting those same 45 on the Chinese branch, `[AA1]` to `[AA一]`; `6ae69b3e` extends the markup
+skip across both branches so all 276 survive. Upstream carries both defects.
+
+Ordering, since two components now expand numbers: on the English path `wetext` runs first and
+`number_to_words` reads only the digit runs it leaves behind, which is upstream's own ordering, and
+`I paid 1234 dollars in 2025 for 7 books.` reaches `spell_out_number` with no digits left. On the Chinese
+path `number_to_words` is never reached, sitting in the `else` of `contains_chinese`. The 41,821-string
+`inflect` parity was re-run after the change at zero mismatches.
+
+**Still open: `ttsfrd`.** It is the closed-source Alibaba wheel whose rules ship as a separate
+`CosyVoice-ttsfrd` resource pack, and it was deliberately not touched even under the H11 exception. The one
+concrete case naming it is `Dept.`, which is in neither `wetext`'s tables nor CLVP's, so
+`Dr. Smith works at the U.S. Dept. of Energy.` is still not read correctly by anything available here.
 
 One correction to the record it replaces: the old entry said the frontend emits the ARPAbet and pinyin
 markup the 278 tokens exist for. Nothing in the open upstream source emits it. `ttsfrd` is its only
