@@ -2292,9 +2292,9 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
         r"""
         Loads a Parler-TTS checkpoint, from a published repository as it stands or from a directory
-        [`~weight_conversion.convert`] wrote. A published checkpoint holds its audio codec as the
-        `descript-audio-codec` module Parler-TTS trained with, which is rewritten into [`DacModel`]'s weight
-        layout on the way in.
+        [`~weight_conversion.convert`] wrote. A published checkpoint bundles its audio codec as the
+        `descript-audio-codec` module Parler-TTS trained with, so the codec is taken from the repository that
+        publishes it in [`DacModel`]'s own layout and checked against that bundle on the way in.
 
         Args:
             pretrained_model_name_or_path (`str` or `os.PathLike`):

@@ -1,9 +1,7 @@
 """Checkpoint conversion for Parler-TTS."""
 
-import io
 import json
 import shutil
-from contextlib import redirect_stdout
 from pathlib import Path
 
 import torch
@@ -13,7 +11,6 @@ from transformers.utils import (
     CONFIG_NAME,
     SAFE_WEIGHTS_INDEX_NAME,
     SAFE_WEIGHTS_NAME,
-    logging,
 )
 from transformers.utils.hub import cached_file
 
@@ -22,21 +19,47 @@ from .configuration_parler_tts import ParlerTTSConfig, is_legacy_audio_encoder_c
 from .processing_parler_tts import AUDIO_TOKENIZER_SUBFOLDER
 
 
-# The published Parler-TTS checkpoints store the audio codec as the original
-# `descript-audio-codec` module under an `audio_encoder.model.` prefix: weight-normalized
-# convolutions kept as separate `weight_g`/`weight_v` tensors, and block indices numbered
-# the way the upstream `DAC` module nests them. `transformers`'s `DacModel` uses flattened
-# `encoder.block.<i>.res_unit<j>` names with the weight norm already folded in.
+# The published Parler-TTS checkpoints bundle the audio codec as the original `descript-audio-codec`
+# module under an `audio_encoder.model.` prefix: weight-normalized convolutions kept as separate
+# `weight_g`/`weight_v` tensors, and block indices numbered the way the upstream `DAC` module nests
+# them. `transformers`'s `DacModel` uses flattened `encoder.block.<i>.res_unit<j>` names with the
+# weight norm already folded in.
 _AUDIO_ENCODER_PREFIX = "audio_encoder."
 _DAC_PREFIX = f"{_AUDIO_ENCODER_PREFIX}model."
 
-# The entry of the `descript-audio-codec` release the published codec comes from, which names the layout
-# `recursively_load_weights` reads.
-_DAC_VARIANT = "dac_44khz"
+# The codec's quantizer, the one part of the module both layouts name alike.
+_QUANTIZER_PREFIX = "quantizer."
+
+# Repository publishing the codec Parler-TTS is trained against, in [`DacModel`]'s own layout.
+_CODEC_REPO = "descript/dac_44khz"
+
+# Fields of [`DacConfig`] that fix the codec's shape and bandwidth, which the checkpoint's own configuration
+# and `_CODEC_REPO`'s have to agree on for the two to be the same codec.
+_CODEC_FIELDS = (
+    "encoder_hidden_size",
+    "downsampling_ratios",
+    "decoder_hidden_size",
+    "upsampling_ratios",
+    "hidden_size",
+    "n_codebooks",
+    "codebook_size",
+    "codebook_dim",
+    "sampling_rate",
+    "hop_length",
+)
+
+# Largest difference tolerated between a quantizer tensor of the bundle and `_CODEC_REPO`'s, which is the
+# float32 rounding of folding the weight norm here against `remove_weight_norm` folding it there. The 18
+# projection tensors of `parler-tts/parler-tts-mini-v1` differ by at most 5.96e-08, the other 27 not at all.
+_CODEC_ATOL = 1e-06
 
 # Keyword arguments of [`~transformers.utils.hub.cached_file`] that select which copy of a repository is read,
 # which the loaders forward from their own call.
 _DOWNLOAD_KWARGS = ("revision", "token", "cache_dir", "local_files_only")
+
+# Of those, the ones that carry over to a repository other than the one the caller named. A revision pins the
+# checkpoint alone.
+_CODEC_DOWNLOAD_KWARGS = ("token", "cache_dir", "local_files_only")
 
 _COPIED_FILES = (
     "generation_config.json",
@@ -152,30 +175,31 @@ def resolve_weight_files(source, subfolder: str | None = None, **kwargs) -> list
     return [weights_file]
 
 
-def read_dac_state_dict(weight_files: list[str]) -> dict[str, torch.Tensor]:
+def read_quantizer_state_dict(weight_files: list[str]) -> dict[str, torch.Tensor]:
     r"""
-    Reads the codec's tensors out of a published checkpoint, leaving the text encoder and the decoder unread.
+    Reads the bundled codec's quantizer tensors out of a published checkpoint, leaving everything else unread.
 
     Args:
         weight_files (`list[str]`):
             Local paths of the checkpoint's safetensors shards.
 
     Returns:
-        `dict[str, torch.Tensor]`: The codec's tensors, under the names the `descript-audio-codec` module gives
-        them.
+        `dict[str, torch.Tensor]`: The quantizer's tensors, under the names the `descript-audio-codec` module
+        gives them.
 
     Raises:
-        ValueError: If the checkpoint holds no codec weights.
+        ValueError: If the checkpoint bundles no codec quantizer.
     """
+    prefix = _DAC_PREFIX + _QUANTIZER_PREFIX
     state_dict = {}
     for path in weight_files:
         with safe_open(path, framework="pt") as handle:
             for key in handle.keys():
-                if key.startswith(_DAC_PREFIX):
+                if key.startswith(prefix):
                     state_dict[key[len(_DAC_PREFIX) :]] = handle.get_tensor(key)
 
     if not state_dict:
-        raise ValueError(f"No `{_DAC_PREFIX}` weights found in {weight_files}.")
+        raise ValueError(f"No `{prefix}` weights found in {weight_files}.")
     return state_dict
 
 
@@ -186,7 +210,7 @@ def fold_weight_norm(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Ten
 
     Args:
         state_dict (`dict[str, torch.Tensor]`):
-            The codec's tensors, as [`read_dac_state_dict`] returns them.
+            Tensors of the bundled codec, as [`read_quantizer_state_dict`] returns them.
 
     Returns:
         `dict[str, torch.Tensor]`: The same tensors with the weight norm reparameterization folded in.
@@ -204,47 +228,74 @@ def fold_weight_norm(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Ten
     return folded
 
 
-def build_dac_model(config: DacConfig, state_dict: dict[str, torch.Tensor]) -> DacModel:
-    r"""
-    Builds the [`DacModel`] a published Parler-TTS checkpoint's codec weights describe.
+def _as_list(value):
+    """Returns a configuration field's value as a list if it is a tuple or a list, and unchanged otherwise."""
+    return list(value) if isinstance(value, (list, tuple)) else value
 
-    The names are the `descript-audio-codec` module's own, so they are mapped by the converter `transformers`
-    ships for that layout, which shape checks every tensor against the module it lands in. That check is what
-    ties the configuration read from `config.json`, which declares no architecture hyperparameter, to the
-    checkpoint it describes.
+
+def load_codec(config: DacConfig, quantizer_state_dict: dict[str, torch.Tensor], **kwargs) -> DacModel:
+    r"""
+    Loads the codec a published Parler-TTS checkpoint speaks, from the repository that publishes it in
+    [`DacModel`]'s own layout.
+
+    Parler-TTS holds its codec frozen for the whole of training and ships it unchanged, so the tensors the
+    checkpoint bundles under `audio_encoder.model.` are `_CODEC_REPO`'s, spelled the way the
+    `descript-audio-codec` module names them. Both halves of that are checked here rather than assumed: the
+    shape and bandwidth the checkpoint's own `audio_encoder` entry describes against the repository's
+    configuration, and the quantizer, whose codebooks fix what the decoder's tokens mean, tensor by tensor
+    against the bundle. A checkpoint carrying a codec of its own is refused instead of being read as this one.
 
     Args:
         config ([`DacConfig`]):
-            Configuration of the codec.
-        state_dict (`dict[str, torch.Tensor]`):
-            The codec's tensors, as [`read_dac_state_dict`] returns them.
+            Configuration of the codec, as the checkpoint describes it.
+        quantizer_state_dict (`dict[str, torch.Tensor]`):
+            The bundled quantizer's tensors, as [`read_quantizer_state_dict`] returns them.
+        kwargs (`dict`, *optional*):
+            Keyword arguments of [`~transformers.utils.hub.cached_file`], of which `token`, `cache_dir` and
+            `local_files_only` are used.
 
     Returns:
-        [`DacModel`]: The codec, holding the checkpoint's weights.
+        [`DacModel`]: The codec, holding the published weights.
 
     Raises:
-        ValueError: If the checkpoint holds a different number of codec tensors than the codec has.
+        ValueError: If the checkpoint describes or bundles a different codec than `_CODEC_REPO` holds.
     """
-    model = DacModel(config)
-    state_dict = fold_weight_norm(state_dict)
-    if len(state_dict) != len(model.state_dict()):
+    model = DacModel.from_pretrained(
+        _CODEC_REPO, **{key: value for key, value in kwargs.items() if key in _CODEC_DOWNLOAD_KWARGS}
+    )
+
+    # A field holding a sequence reads back as a tuple from one configuration and as a list from the other,
+    # depending on whether it was built in Python or parsed from JSON.
+    described = {field: _as_list(getattr(config, field)) for field in _CODEC_FIELDS}
+    holds = {field: _as_list(getattr(model.config, field)) for field in _CODEC_FIELDS}
+    differing = [
+        f"{field} is {described[field]!r} against {holds[field]!r}"
+        for field in _CODEC_FIELDS
+        if described[field] != holds[field]
+    ]
+    if differing:
         raise ValueError(
-            f"The published checkpoint holds {len(state_dict)} codec tensors, against the "
-            f"{len(model.state_dict())} of the codec its configuration describes."
+            f"The checkpoint describes a codec {_CODEC_REPO} does not hold: {', '.join(differing)}."
         )
 
-    # `transformers.models.dac.convert_dac_checkpoint` is a conversion script rather than library code: importing
-    # it raises the library's verbosity to INFO, and it reports the tensors it mapped nowhere on stdout instead of
-    # returning them, which the count above already accounts for.
-    verbosity = logging.get_verbosity()
-    try:
-        from transformers.models.dac.convert_dac_checkpoint import recursively_load_weights
+    published = {key: value for key, value in model.state_dict().items() if key.startswith(_QUANTIZER_PREFIX)}
+    bundled = fold_weight_norm(quantizer_state_dict)
+    if set(bundled) != set(published):
+        raise ValueError(
+            f"The checkpoint bundles a quantizer of {sorted(set(bundled) - set(published))} that {_CODEC_REPO} "
+            f"does not hold, and none of {sorted(set(published) - set(bundled))} that it does."
+        )
 
-        logging.set_verbosity_error()
-        with redirect_stdout(io.StringIO()):
-            recursively_load_weights(state_dict, model, _DAC_VARIANT)
-    finally:
-        logging.set_verbosity(verbosity)
+    mismatched = sorted(
+        key
+        for key, value in bundled.items()
+        if not torch.allclose(value.float(), published[key].float(), rtol=0, atol=_CODEC_ATOL)
+    )
+    if mismatched:
+        raise ValueError(
+            f"{len(mismatched)} of the checkpoint's {len(bundled)} quantizer tensors differ from "
+            f"{_CODEC_REPO}'s by more than {_CODEC_ATOL}, so it carries a codec of its own: {mismatched}."
+        )
 
     return model
 
@@ -254,9 +305,10 @@ def write_checkpoint(
 ) -> None:
     r"""
     Reads a published Parler-TTS checkpoint and writes what [`ParlerTTSForConditionalGeneration.from_pretrained`]
-    reads into `directory`, with the codec rewritten into [`DacModel`]'s weight layout under the same
-    `audio_encoder` prefix. The codec is also saved standalone under `directory`'s `audio_encoder` subfolder, for
-    [`ParlerTTSProcessor`] to read with an ordinary [`DacModel.from_pretrained`].
+    reads into `directory`, with the codec taken from the repository that publishes it in [`DacModel`]'s layout
+    and written under the same `audio_encoder` prefix. The codec is also saved standalone under `directory`'s
+    `audio_encoder` subfolder, for [`ParlerTTSProcessor`] to read with an ordinary
+    [`DacModel.from_pretrained`].
 
     The text encoder and the decoder are copied over a tensor at a time and written out in shards, so a
     checkpoint too large to hold twice is never held once.
@@ -279,12 +331,12 @@ def write_checkpoint(
     target = Path(directory)
     weight_files = resolve_weight_files(source, subfolder=subfolder, **kwargs)
     with CheckpointWriter(directory) as writer:
-        dac_model = build_dac_model(config.audio_encoder, read_dac_state_dict(weight_files))
-        writer.update({_AUDIO_ENCODER_PREFIX + key: value for key, value in dac_model.state_dict().items()})
+        codec = load_codec(config.audio_encoder, read_quantizer_state_dict(weight_files), **kwargs)
+        writer.update({_AUDIO_ENCODER_PREFIX + key: value for key, value in codec.state_dict().items()})
         # The codec is written out and dropped before the rest is read, so the two are never resident together.
         writer.flush()
-        dac_model.save_pretrained(target / AUDIO_TOKENIZER_SUBFOLDER)
-        del dac_model
+        codec.save_pretrained(target / AUDIO_TOKENIZER_SUBFOLDER)
+        del codec
 
         for path in weight_files:
             with safe_open(path, framework="pt") as handle:
@@ -321,7 +373,7 @@ def converted_checkpoint(
         `Path`: The directory holding the converted checkpoint.
     """
     config_file = resolve_file(source, CONFIG_NAME, subfolder=subfolder, **kwargs)
-    parts = [str(source), subfolder, source_identity(source, config_file)]
+    parts = [str(source), subfolder, source_identity(source, config_file), _CODEC_REPO]
     if config is not None:
         parts.append(config.to_json_string())
     return cached_conversion(
@@ -353,13 +405,13 @@ def convert(checkpoint_path, output_dir):
 
 
 __all__ = [
-    "build_dac_model",
     "convert",
     "converted_checkpoint",
     "fold_weight_norm",
     "is_published_layout",
+    "load_codec",
     "read_config",
-    "read_dac_state_dict",
+    "read_quantizer_state_dict",
     "resolve_file",
     "resolve_weight_files",
     "write_checkpoint",

@@ -32,12 +32,17 @@ generation = model.generate(**inputs)
 sf.write("output.wav", generation.float().cpu().numpy().squeeze(), model.config.audio_encoder.sampling_rate)
 ```
 
-A published checkpoint holds its audio codec as the `descript-audio-codec` module Parler-TTS trained with, in
+A published checkpoint bundles its audio codec as the `descript-audio-codec` module Parler-TTS trained with, in
 that module's own weight layout, described by a vendored `DACConfig` serialized under `model_type: "dac"` that
 declares the codec's bitrate and latent width and none of the architecture hyperparameters. Both calls above read
-that layout as it stands. `ParlerTTSConfig` builds the `DacConfig` the entry describes, and
-`ParlerTTSForConditionalGeneration.from_pretrained` folds the codec's weight norm reparameterization back into
-plain weights and maps its 301 tensors onto `DacModel`'s 223 on the way in.
+that layout as it stands. `ParlerTTSConfig` builds the `DacConfig` the entry describes, and the codec itself is
+loaded from `descript/dac_44khz`, which publishes the same codec in `DacModel`'s own layout. Parler-TTS freezes
+the codec for the whole of training and ships it unchanged: the 301 tensors `parler-tts/parler-tts-mini-v1`
+bundles are bit for bit the 301 of `parler-tts/dac_44khZ_8kbps` the config names as their source, and folding
+their weight norm reproduces `descript/dac_44khz` to 2.4e-07 over 223 tensors, 145 of them bit identical. The
+bundled quantizer is folded and compared against the loaded codec tensor by tensor before the codec is accepted,
+and the shape and bandwidth the checkpoint describes against the repository's configuration, so a checkpoint
+carrying a codec of its own is refused rather than read as this one.
 
 Three things about that path are load-bearing:
 
@@ -47,9 +52,9 @@ Three things about that path are load-bearing:
   `DacModel` codec as `self.audio_encoder` and decodes internally before returning, the same shape MusicGen uses,
   so no separate `.decode()` call is needed in the flow above.
 - `ParlerTTSProcessor` still carries its own `audio_tokenizer`, for decoding DAC codes obtained some other way
-  than `generate`. It is read out of the published checkpoint's own weights, or out of the `audio_encoder`
-  subfolder of a converted directory, the same one `ParlerTTSForConditionalGeneration.from_pretrained` writes
-  and caches, so loading the processor after the model touches no published weight file again.
+  than `generate`. It is read out of the `audio_encoder` subfolder of a converted directory, the same one
+  `ParlerTTSForConditionalGeneration.from_pretrained` writes and caches, so loading the processor after the model
+  touches no published weight file again.
 
 `ParlerTTSForConditionalGeneration` also accepts raw target audio for training, through `input_values` rather
 than through the processor: the model encodes it into codes with its own `audio_encoder` to derive

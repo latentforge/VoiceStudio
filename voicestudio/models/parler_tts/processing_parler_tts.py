@@ -27,8 +27,8 @@ logger = logging.get_logger(__name__)
 
 # The published `parler-tts/parler-tts-*` checkpoints keep the DAC codec fused into the composite
 # model's own `model.safetensors`, under an `audio_encoder.` prefix, rather than in a repository of its
-# own. `weight_conversion.convert` additionally saves it standalone under this subfolder so it can be
-# loaded here the normal `DacModel.from_pretrained` way.
+# own. `weight_conversion.convert` saves the codec standalone under this subfolder so it can be loaded
+# here the normal `DacModel.from_pretrained` way.
 AUDIO_TOKENIZER_SUBFOLDER = "audio_encoder"
 
 
@@ -68,9 +68,8 @@ class ParlerTTSProcessor(ProcessorMixin):
     def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
         r"""
         Loads the processor of a Parler-TTS checkpoint, from a published repository as it stands or from a
-        directory [`weight_conversion.convert`] wrote. A published checkpoint fuses the DAC codec into the
-        composite model's own weights, so `audio_tokenizer` is read out of those; a converted directory holds it
-        standalone in its `audio_encoder` subfolder.
+        directory [`weight_conversion.convert`] wrote. A published checkpoint carries no standalone codec, so
+        `audio_tokenizer` comes from the converted directory's `audio_encoder` subfolder.
 
         Args:
             pretrained_model_name_or_path (`str` or `os.PathLike`):
