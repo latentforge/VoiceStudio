@@ -423,11 +423,21 @@ again. Several converters changed today, so this is not hypothetical.
 
 ## Decided: the Auto classes are left alone
 
-Five published repositories cannot be opened through an Auto class: `charactr/vocos-*` ships a
-`config.yaml` and no `config.json` at all, while `nvidia/bigvgan_*` and `nari-labs/Dia2-*` ship a
-`config.json` carrying the upstream project's own schema with no `model_type` key, and PromptTTS++'s
-weights live in a Space. `AutoConfig.from_pretrained` picks a config class from `model_type` alone,
-so it fails before any of this repository's code can run its `is_published_layout` probe.
+Six published repositories cannot be opened through an Auto class. What a caller needs to know is the
+same for all six, so they are listed together: reach for the concrete class the folder README
+documents, not `AutoConfig`, `AutoModel` or `AutoProcessor`.
+
+Five fail because `AutoConfig.from_pretrained` picks a config class from `model_type` alone and there
+is none to pick from, so it gives up before any of this repository's code can run its
+`is_published_layout` probe. `charactr/vocos-*` ships a `config.yaml` and no `config.json` at all;
+`nvidia/bigvgan_*` and `nari-labs/Dia2-*` ship a `config.json` carrying the upstream project's own
+schema with no `model_type` key; PromptTTS++'s weights live in a Space rather than a model repository.
+
+`BreezeBlue/breeze-tts-2` fails the other way round, and it is worth separating because the fix would
+be different if it were ever available. Its config is read fine and is wrong: `tokenizer_config.json`
+declares `processor_class: Gemma3Processor`, so `AutoProcessor` follows it into an image processor the
+repository does not carry and raises `OSError: Can't load image processor`. Nothing in this repository
+runs before that. The declaration is in the published repository, so it is not ours to correct.
 
 A fallback is possible: catch that specific failure and ask each registered model whether it claims
 the repository. It is deliberately not built. The concrete classes already load every one of these
