@@ -327,7 +327,7 @@ Every word is there; the second splits `SEASHELLS`, a decoder edge rather than a
 
 ## Not carried over from upstream
 
-Recorded per CLAUDE.md section 2.6. None of these is resolved here.
+Recorded per CLAUDE.md section 2.6.
 
 - **The vocoder's adversarial objective.** `cosyvoice/hifigan/hifigan.py` is unchanged from v1: the
   generator loss is `generator_loss` plus `feat_match_loss_weight` (2.0) times the feature matching
@@ -336,8 +336,33 @@ Recorded per CLAUDE.md section 2.6. None of these is resolved here.
   predicted f0 and the pitch feature, and the discriminator loss is `discriminator_loss` plus the same
   weighted `tpr_loss`, optimized in an alternating turn with its own optimizer. `MultipleDiscriminator`
   and the three loss functions upstream imports from `matcha.hifigan.models` are not implemented, so
-  the vocoder cannot be trained the way upstream trained it. This is the same shape as the open Vocos
-  item and it needs a human.
+  the vocoder cannot be trained the way upstream trained it. Leaving them out follows the
+  `transformers` convention on GAN trained vocoders, measured over the 494 `modeling_*.py` files in
+  the 510 model folders of `transformers` 5.16.1. `Discriminator` appears in two of those files,
+  `electra/modeling_electra.py` and `funnel/modeling_funnel.py`, and both are pretraining heads over
+  token logits, `ElectraDiscriminatorPredictions` and `FunnelDiscriminatorPredictions` under
+  `FunnelForPreTraining`, not adversaries over a waveform. `adversarial` appears in none of them.
+  Every vocoder shipped takes a spectrogram or codes and returns a bare tensor, and none takes
+  `labels`:
+
+  | Class | `forward` signature |
+  |---|---|
+  | `SpeechT5HifiGan` | `(self, spectrogram, **kwargs) -> torch.FloatTensor` |
+  | `FastSpeech2ConformerHifiGan` | `(self, spectrogram, **kwargs) -> torch.FloatTensor` |
+  | `VitsHifiGan` | `(self, spectrogram, global_conditioning=None) -> torch.FloatTensor` |
+  | `SeamlessM4THifiGan`, `SeamlessM4Tv2HifiGan` | `(self, inputs_embeds) -> torch.FloatTensor` |
+  | `SeamlessM4TCodeHifiGan` | `(self, input_ids, spkr_id, lang_id, **kwargs) -> tuple[torch.Tensor]` |
+  | `SeamlessM4Tv2CodeHifiGan` | `(self, input_ids, speaker_id, lang_id, **kwargs) -> tuple[torch.Tensor]` |
+  | `Qwen2_5OmniToken2WavBigVGANModel` | `(self, mel_spectrogram, **kwargs)`, returning a clamped waveform |
+
+  VITS is the case that settles it, because upstream VITS is GAN trained end to end:
+  `VitsModel.forward` declares `labels` and its body opens with
+  `raise NotImplementedError("Training of VITS is not supported yet.")`. The one shipped speech
+  synthesis model with a real objective, `FastSpeech2ConformerWithHifiGan`, sums L1 mel, duration,
+  pitch and energy in `FastSpeech2ConformerLoss` and carries no adversarial term, and its vocoder
+  half takes no labels. Against that convention, the two terms this folder does score, the mel
+  reconstruction loss and the f0 loss, go beyond it rather than falling short of it. The consequence
+  to know is that a vocoder trained through them alone would not reproduce a released checkpoint.
 - **Direct preference optimization.** `Qwen2LM.forward_dpo` and `DPOLoss` in `cosyvoice/utils/losses.py`
   are a second training objective, reached only through `examples/libritts/cosyvoice2/run_dpo.sh`. It
   needs a second, separately constructed model instance held in `Executor.ref_model` and a batch
