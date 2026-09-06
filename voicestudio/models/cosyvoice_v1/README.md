@@ -437,8 +437,11 @@ integer from 0 to 10,000, every 97th from 10,000 to 1,000,000, 20,000 strings of
 drawn from `random.Random(0)` a digit at a time over a length drawn the same way, every one of the
 numbers 0 to 79 carrying 1 to 20 leading zeros, and the runs of 1 to 13 zeros. **Zero mismatches.**
 A further 1,600 strings of 34 to 41 digits, 200 per length from `random.Random(1)`, put the two on
-the same side of the largest scale word in every case: 600 agree on a reading and 1,000 raise on
-both sides, `inflect` with `NumOutOfRangeError` and `number_to_words` with `ValueError`. `inflect`
+the same side of the largest scale word in every case: 627 agree on a reading and 973 raise on
+both sides, `inflect` with `NumOutOfRangeError` and `number_to_words` with `ValueError`. That split
+depends on how the digits are drawn, not only on the seed, so it reproduces only against the script
+in `.cache/verify/scripts/`; the property that holds regardless is that neither side ever reads a
+string the other refuses. `inflect`
 was unpacked into a scratch directory as an oracle; it is not installed, not imported by this
 repository and not declared anywhere.
 
@@ -499,7 +502,7 @@ seven books.` with no digit left, so `spell_out_number` returns it unchanged, an
 called at all, on either setting: `normalize_text` only reaches it through the `else` branch of
 `contains_chinese`. The `inflect` parity that `number_to_words` is measured against is unaffected
 by any of this and was re-run: **41,821 digit strings, zero mismatches** against `inflect` 7.3.1,
-with 627 of the 1,600 long strings agreeing on a reading and 973 raising on both sides.
+with the 1,600 long strings splitting as recorded above.
 
 **A normalizer that is right for English is not always right.** `wetext` reads `1234` as
 `twelve thirty four`, which is a year reading rather than a quantity, and it drops the leading word
