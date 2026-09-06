@@ -46,6 +46,61 @@ directory loads. Later loads reuse it, and resolve nothing but the `cosyvoice3.y
 files are dropped from the `huggingface_hub` cache. The processor takes the same repository id and
 picks up the text tokenizer, the speech tokenizer and the speaker encoder.
 
+## The text frontend
+
+`CosyVoiceV3Processor.normalize_text` is upstream's `CosyVoiceFrontEnd.text_normalize`, and it runs
+before the tokenizer. A Chinese sentence loses the spaces that do not sit inside an embedded English
+word, has its corner marks spelled out, its brackets removed, its full stops and dashes replaced by
+their Chinese counterparts and a trailing run of commas turned into a full stop. Any other sentence
+has its digit runs read out in English. Either way the result is split into the pieces upstream
+synthesizes one at a time, on punctuation, with each piece grown to at most 80 units and a trailing
+piece shorter than 20 merged into the one before it, a Chinese piece measured in characters and any
+other in tokens. `text_frontend=False` turns the whole thing off, which is what upstream passes to
+reproduce the samples of its demonstration pages.
+
+```python
+pieces = processor.normalize_text("I paid 1234 dollars in 2025 for 7 books.")
+# ['I paid one thousand, two hundred and thirty-four dollars in two thousand and twenty-five for seven books.']
+```
+
+Two things are v3's rather than v1's. Upstream reads a digit run out with `inflect`; here that is
+inlined, so nothing has to be installed, and the reading agrees with `inflect` 7.3.1, the version
+upstream pins, on every one of 41,820 digit strings tested. And the run is skipped inside the
+markup of the added vocabulary, because `[AA1]` is one token whose trailing `1` is a stress mark
+rather than a number. Without that, upstream's own English branch rewrites it to `[AAone]` and the
+token is gone.
+
+That markup is what the 278 added embedding rows are for. It is written inline by the caller, to
+override a pronunciation, as in upstream's own `'...对报道[j][ǐ]予好评。'`, and `'[T][AH0][M][EY1][T][OW2]'`
+for English. Nothing in the open upstream source emits it: the only producer is `ttsfrd`, which is
+closed source, so a caller supplies it.
+
+Text arrives as a `str`. Passing a generator of `input_ids` tensors to `generate` instead selects
+upstream's `inference_bistream`, the interleaved decode that reads text as it arrives and emits
+speech tokens between the groups, at the same `mix_ratio` `[5, 15]` the interleaved training layout
+uses. v3 requires the end of prompt token in the prompt text there, since the text is not complete
+when the sequence opens.
+
+```python
+def stream():
+    for chunk in ["The quick ", "brown fox ", "jumps over ", "the lazy dog."]:
+        yield processor(text=chunk).input_ids
+
+waveform = model.generate(input_ids=stream(), speaker_embedding=speaker_embedding,
+                          prompt_input_ids=prompt.prompt_input_ids,
+                          prompt_speech_token_ids=prompt.prompt_speech_token_ids,
+                          prompt_speech_feat=prompt.speech_feat)
+```
+
+Switching on `isinstance(input_ids, GeneratorType)` is what `transformers` itself does for a
+streamed input: `nemotron_asr_streaming/generation_nemotron_asr_streaming.py` selects its streaming
+path with `isinstance(input_features, GeneratorType)` in both `_prepare_model_inputs` and
+`generate`, and `voxtral_realtime` does the same in four places. Those are the only two occurrences
+of `GeneratorType` in `transformers`, and both are input side. The `BaseStreamer` family in
+`generation/streamers.py` was rejected because it is an output side protocol, `put` and `end` called
+by `generate` as it produces tokens, with no input side counterpart; a `TextIteratorStreamer` driving
+this model is its consumer side, and reaches it as `(chunk for chunk in streamer)`.
+
 ## Training
 
 `CosyVoiceV3ForConditionalGeneration.forward(labels=...)` returns the language model objective only,
@@ -410,6 +465,152 @@ LibriSpeech transcript verbatim, upper case and unpunctuated, collapsed the same
 and adding the full stop is the only difference between that and the table above. v1 and v2 generate
 the whole sentence either way, so this sensitivity is v3's.
 
+**The text frontend, against `inflect` and against the added vocabulary.** The inlined English
+number reading was compared with `inflect` 7.3.1, the version upstream's `requirements.txt` pins,
+over 41,820 digit strings: every integer from 0 to 10,000, every 97th from 10,000 to 1,000,000,
+20,000 uniformly drawn strings of 1 to 33 digits, and runs of leading zeros. **Zero mismatches.** A
+further 1,600 strings of 34 to 42 digits put the two on the same side of the largest scale word in
+every case, 600 agreeing on a reading and 1,000 raising on both sides. `inflect` was fetched into a
+scratch directory as an oracle and is not installed, not imported by this folder and not declared
+anywhere.
+
+All 278 tokens the released tokenizer gains are reached. Of the 280 entries in `SPECIAL_TOKENS`, 278
+are new to the tokenizer, which grows from 151,646 to 151,924, and none is unknown to it afterwards.
+276 are inline markup, and every one of them survives `normalize_text` and encodes to its own single
+id through **both** branches, the English one carrying it in `the word @ here.` and the Chinese one
+in `这是@的读音。`. The remaining 4 are the `<|...|>` markers, which trip upstream's own guard and come
+back verbatim, again each on its own id. Without the markup skip the English branch loses **all 45**
+markup tokens that carry a digit, rewriting `[AA1]` to `[AAone]`; measured by running the same 45
+through the reading with the skip removed, none survives.
+
+Splitting was checked at the boundary rather than asserted. A 122 token English paragraph splits into
+two pieces of 71 and 53 tokens, while the same paragraph cut to 81 tokens stays one piece, which is
+`token_max_n` 80 and `token_min_n` 60 together with the rule that a trailing piece shorter than
+`merge_len` 20 is merged back. A Chinese paragraph of three sentences splits into two pieces on
+character count. With `text_frontend=False` all of them come back as one piece, untouched.
+
+**The text frontend, generated and transcribed back.** Zero shot from the 5.86 s LibriSpeech clip
+above, three seeds each, transcribed with `facebook/wav2vec2-base-960h`, word error rate against the
+text the frontend produced:
+
+| Case | frontend | WER by seed | Heard back, seed 2 |
+|---|---|---|---|
+| `I paid 1234 dollars in 2025 for 7 books.` | on | 0.053 / 0.579 / **0.000** | `I PAID ONE THOUSAND TWO HUNDRED AND THIRTY FOUR DOLLARS IN TWO THOUSAND AND TWENTY FIVE FOR SEVEN BOOKS` |
+| the same | off | 0.556 / 0.556 / 0.778 | `AND TWENTY TWENTY FIVE FOR SEVEN BOOKS` |
+| `Dr. Smith works at the U.S. Dept. of Energy.` | on | 1.000 / 0.200 / 0.800 | `OF ENERGY` |
+| the same | off | 1.000 / 0.200 / 0.800 | `OF ENERGY` |
+
+The digits row is the result: with the frontend on, two of three seeds read the numbers back word for
+word and the third dropped a clause; with it off, all three seeds mangle `1234` and `2025` and no
+seed recovers them. Seed 0's `TUNE` for `TWO` is the connectionist temporal classification decoder,
+not the model. The abbreviations row is the other result, and it is a negative one: the two settings
+are **identical waveform for waveform**, because expanding `Dr.` and `Dept.` is exactly the part that
+lives in `ttsfrd` or `wetext`. That row is the measurement behind the open dependency item below.
+
+**Streaming input text.** The same clip, the same three seeds, the same transcriber, against the
+sentence `The quick brown fox jumps over the lazy dog.` fed as the four chunks `The quick `,
+`brown fox `, `jumps over `, `the lazy dog.`:
+
+| Input | WER by seed | Heard back |
+|---|---|---|
+| the whole text at once | 0.000 / 0.000 / 0.000 | `THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG` |
+| a generator of the four chunks | 0.333 / 0.333 / 0.333 | `WELCOME HIS GOSPEL THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG` |
+
+Every seed of the streamed decode carries the whole sentence word for word, preceded by the last
+three words of the prompt utterance. That prefix is the interleaved layout rather than a defect, and
+a redraw shows why: dropping the prompt speech tokens from the language model, which is upstream's
+cross lingual shape, leaves the prompt transcript interleaved with no speech to stand in for it and
+the model speaks **the whole prompt sentence** first, at 9.5 to 14.8 s and WER 1.889 to 2.444 against
+the same three seeds. The prompt text is part of the interleaved stream by construction, so the
+decode continues out of it.
+
+The decode was also checked as a decode rather than only by its audio: from seed 0 it yields 118
+speech tokens with a maximum id of 6459 against a `speech_vocab_size` of 6561, so every fill token
+and the end of speech token were consumed inside the loop and none leaked into the output.
+
+## The second language model checkpoint
+
+The released directory ships `llm.rl.pt` beside `llm.pt`, and nothing in this folder reads it. What
+follows is what it is, measured rather than inferred from the name, against commit
+`29e01c4e8d000f4bcd70751be16fa94bf3d85a18` of `FunAudioLLM/Fun-CosyVoice3-0.5B-2512`.
+
+**It is a second full checkpoint, not a delta.** `llm.pt` is 2,024,669,519 bytes and `llm.rl.pt` is
+2,024,682,701, a difference of 13,182. Both load with `torch.load(weights_only=True)` to a plain
+dictionary of 293 tensors, the key sets are exactly equal, all 293 shapes and dtypes match, and
+neither file carries a single non tensor entry: no optimizer state, no step counter, no metadata.
+Both load into a stock `Qwen2ForCausalLM` built from the shipped `CosyVoice-BlankEN/config.json`
+with zero missing and zero unexpected keys. It is not a LoRA, an adapter or a trainer state.
+
+**The weights have moved much further than the name suggests.** Per tensor figures are
+`‖b − a‖₂ / ‖a‖₂` and elementwise `max|a − b|` with `a` the base file and `b` the RL one; a group
+figure is `sqrt(Σ‖b − a‖² / Σ‖a‖²)` over the group's tensors, not a mean of ratios.
+
+| module group | relative L2 | max abs diff |
+|---|---|---|
+| `layers.*.self_attn.o_proj` | 1.602 | 1.612 |
+| `layers.*.mlp.down_proj` | 1.577 | 1.347 |
+| `layers.*.mlp.up_proj` | 1.561 | 0.586 |
+| `layers.*.mlp.gate_proj` | 1.550 | 0.866 |
+| `llm_decoder`, the speech token output head | 1.413 | 0.4205 |
+| `lm_head` and `embed_tokens`, which are tied | 1.033 | 0.2195 |
+| `layers.*.self_attn.q_proj` | 0.751 | 65.55 |
+| `layers.*.self_attn.k_proj` | 0.594 | 88.29 |
+| `speech_embedding` | 0.585 | 2.655 |
+| `model.norm` | 0.541 | 8.921 |
+
+Zero of the 293 tensors are bit identical, and 0.999999 of the 642,283,136 parameters differ; the
+898 exactly equal elements all sit in `speech_embedding.weight`. Overall relative L2 over the whole
+checkpoint is 0.657. **Every embedding and every head moved**, so nothing can be shared between the
+two. The speech token input embedding is the one that moved in scale rather than direction, cosine
+0.9919 with its root mean square rescaled from 0.8907 to 0.3753, while the speech token output head
+is at cosine 0.3415.
+
+**It is the same lineage, but it is not `llm.pt` plus a small aligned delta.** Against the shipped
+`CosyVoice-BlankEN/model.safetensors`, cosines stay positive throughout and the final norm channel
+scale is preserved in all three at cosine at least 0.9995, so both descend from the same base. But
+`llm.rl.pt` sits strictly further from that base than `llm.pt` does, `embed_tokens` at 1.239 relative
+against 0.783 and layer 23's `o_proj` at 2.633 against 1.391, and the delta direction test
+`cos(a − base, b − base)` is only 0.33 to 0.37 at layer 0 and 0.07 to 0.09 in the upper layers.
+Either the reinforcement learning run was long with no effective anchor, or the branch went through
+further supervised fine tuning first. Weights alone cannot separate those two.
+
+**What the file is for comes from the repository card, not from the code.** Its evaluation table
+carries two rows, and the second is the characteristic signature of reinforcement learning against a
+recognition derived reward, large error rate gains with a small speaker similarity regression:
+
+| model | test-zh CER | test-zh SIM | test-en WER | test-en SIM | test-hard CER | test-hard SIM |
+|---|---|---|---|---|---|---|
+| Fun-CosyVoice3-0.5B-2512 | 1.21 | 78.0 | 2.24 | 71.8 | 6.71 | 75.8 |
+| Fun-CosyVoice3-0.5B-2512_RL | 0.81 | 77.4 | 1.68 | 69.5 | 5.44 | 75.0 |
+
+**Nothing in upstream's code loads it.** `grep -rn "llm\.rl\|rl\.pt"` over the whole vendored tree
+returns no hit. The only load path is hardcoded, `cosyvoice/cli/cosyvoice.py:213`
+`self.model.load('{}/llm.pt'.format(model_dir), ...)`, with no flag, argument or configuration field
+that selects another file. Upstream's own recipes never produce this name either: the direct
+preference optimization recipe averages its result back into a plain `llm.pt`
+(`examples/libritts/cosyvoice2/run_dpo.sh`), and the GRPO recipe writes a Hugging Face format
+directory (`examples/grpo/cosyvoice2/run.sh`). The upstream `README.md` roadmap mentions releasing a
+"rl model and its training/inference script"; the script is not in the tree.
+
+**What it would take to use it here.** The registered conversion mapping needs no change at all:
+because the key sets are identical, `WeightRenaming(r"^llm\.llm\.model\.model\." → r"llm\.model\.")`
+in `modeling_cosyvoice_v3.py` matches this file exactly as it matches `llm.pt`. Four things are
+missing, and none of them is in this folder alone:
+
+1. `CHECKPOINT_FILES` in `voicestudio/models/cosyvoice_v1/weight_conversion.py` is a module constant
+   that both `load_checkpoint` and `write_checkpoint` iterate directly, so which language model file
+   the merge reads cannot be selected.
+2. The same constant is the `allow_patterns` list `resolve_checkpoint` passes to `snapshot_download`,
+   so the file would never be fetched.
+3. `converted_checkpoint` keys the cache on the model type and the source snapshot revision alone.
+   Both variants come from one repository at one commit, so they would hash to the same directory and
+   whichever converted first would silently serve both.
+4. `from_pretrained` forwards its keyword arguments verbatim, and neither `CosyVoiceV3Config` nor
+   `PUBLISHED_CHECKPOINTS` carries a variant field, so there is no caller facing knob to add one to.
+
+None of that is a large change, but it reaches outside this folder, and no verification of this
+checkpoint through the migrated model exists. The decision to wire it in is left open.
+
 ## Not carried over from upstream
 
 Recorded per CLAUDE.md section 2.6.
@@ -446,21 +647,28 @@ Recorded per CLAUDE.md section 2.6.
   score, the mel reconstruction loss and the f0 loss, go beyond it rather than falling short of it.
   The consequence to know is that a vocoder trained through them alone would not reproduce a released
   checkpoint.
-- **`llm.rl.pt`.** The released v3 directory ships a second language model checkpoint, 2,024,682,701
-  bytes, alongside `llm.pt`. It is a reinforcement learning tuned model. Nothing here reads it and no
-  decision has been taken about it.
+- **`llm.rl.pt`.** The released v3 directory ships a second language model checkpoint alongside
+  `llm.pt`, and nothing here reads it. What it is was established by measurement rather than from
+  its name, and the decision is still open; see "The second language model checkpoint" below.
 - **Direct preference optimization.** `Qwen2LM.forward_dpo` and `DPOLoss` need a second model
   instance and a preference batch, so they do not fit inside a single `forward`. Still open, with the
   same note as v2 that upstream averages its log probabilities over the positions where the target
   **is** `IGNORE_ID`, which reads like a sign error.
-- **The text frontend**, and its connection to the added vocabulary. Upstream's `text_normalize` runs
-  `ttsfrd` or `wetext`, expands numbers with `inflect`, splits sentences, and for v3 emits the ARPAbet
-  and pinyin markup that the 278 added tokens exist for. None of that is implemented, so those 278
-  embedding rows, which upstream notes are randomly initialised in any case, are never reached. Text
-  with digits, abbreviations, more than one sentence or phoneme markup does not behave the way
-  upstream does.
-- **`inference_bistream`.** The interleaved training layout is implemented; the streaming input text
-  inference path is not.
+- **The text normalizer inside the text frontend.** The frontend itself is implemented, and so is
+  every part of it upstream writes in Python: the Chinese rewrites, the sentence splitting, the
+  English number expansion and the passage of the added vocabulary's markup. What upstream reaches a
+  package for is not. `CosyVoiceFrontEnd.__init__` tries `ttsfrd` first and falls back to `wetext`,
+  and `text_normalize` calls `self.frd.do_voicegen_frd(text)` or
+  `self.zh_tn_model.normalize(text)` / `self.en_tn_model.normalize(text)` before anything else runs.
+  That is what rewrites a date, a currency amount, an abbreviation or a unit into words, and it is
+  the one piece of the frontend that is genuinely missing. Neither package can be inlined under
+  CLAUDE.md section 9.1. `ttsfrd` is a closed source Alibaba wheel whose rules ship as a separate
+  `CosyVoice-ttsfrd` resource pack, and `wetext` is a weighted finite state transducer grammar
+  compiled into OpenFST archives, a rule set rather than a piece of math. Adding either is a
+  dependency decision under H11 and is **still open**: measured on this checkpoint, `Dr. Smith works
+  at the U.S. Dept. of Energy.` reads identically with the frontend on and off, and the transcripts
+  under Verification show it. Upstream behaves the same way when neither package is installed, which
+  is its own documented third branch, `self.text_frontend = ''`.
 
 ## Repository integration
 
