@@ -43,6 +43,8 @@ from .weight_conversion import RELEASED_CONFIG_FILE, build_config, converted_che
 
 IGNORE_ID = -1
 
+_WINDOW_CACHE = {}
+
 
 # A released CosyVoice v1 directory holds one file per network, and [`load_checkpoint`] merges them
 # under the name of the submodule each belongs to. What is left is upstream's own module names.
@@ -1848,7 +1850,12 @@ class CosyVoiceV1HiFTGenerator(nn.Module):
         Returns:
             `torch.Tensor` of shape `(vocoder_istft_n_fft,)`: the analysis window.
         """
-        return torch.hann_window(self.n_fft, periodic=True, device=tensor.device, dtype=tensor.dtype)
+        key = (self.n_fft, tensor.device, tensor.dtype)
+        if key not in _WINDOW_CACHE:
+            _WINDOW_CACHE[key] = torch.hann_window(
+                self.n_fft, periodic=True, device=tensor.device, dtype=tensor.dtype
+            )
+        return _WINDOW_CACHE[key]
 
     def _stft(self, waveform: torch.Tensor) -> torch.Tensor:
         spectrogram = torch.stft(

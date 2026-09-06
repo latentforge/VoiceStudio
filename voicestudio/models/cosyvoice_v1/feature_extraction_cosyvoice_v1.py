@@ -25,6 +25,9 @@ from transformers.feature_extraction_sequence_utils import SequenceFeatureExtrac
 from transformers.feature_extraction_utils import BatchFeature
 
 
+_WINDOW_CACHE = {}
+
+
 class CosyVoiceV1FeatureExtractor(SequenceFeatureExtractor):
     r"""
     Constructs a CosyVoice v1 feature extractor, which turns a waveform into the log mel spectrogram
@@ -85,6 +88,12 @@ class CosyVoiceV1FeatureExtractor(SequenceFeatureExtractor):
             mel_scale="slaney",
         ).T.astype(np.float32)
 
+    def _get_window(self, device) -> torch.Tensor:
+        key = (self.win_length, device)
+        if key not in _WINDOW_CACHE:
+            _WINDOW_CACHE[key] = torch.hann_window(self.win_length, device=device)
+        return _WINDOW_CACHE[key]
+
     def _mel_spectrogram(self, waveform: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -101,7 +110,7 @@ class CosyVoiceV1FeatureExtractor(SequenceFeatureExtractor):
             self.n_fft,
             hop_length=self.hop_length,
             win_length=self.win_length,
-            window=torch.hann_window(self.win_length, device=waveform.device),
+            window=self._get_window(waveform.device),
             center=False,
             pad_mode="reflect",
             normalized=False,

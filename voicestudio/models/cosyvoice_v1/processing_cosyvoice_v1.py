@@ -378,22 +378,14 @@ class CosyVoiceV1WorldEstimator:
 
     def _direct_form_2(self, x, a, b):
         """Runs a direct form II recursion whose state is `len(a)` samples wide."""
-        order = len(a)
-        y = np.empty(x.shape[0], dtype=np.float64)
-        w = [0.0] * order
-        source = x.tolist()
-        for i, sample in enumerate(source):
-            wt = sample
-            for k in range(order):
-                wt += a[k] * w[k]
-            accumulator = b[0] * wt
-            for k in range(order):
-                accumulator += b[k + 1] * w[k]
-            y[i] = accumulator
-            for k in range(order - 1, 0, -1):
-                w[k] = w[k - 1]
-            w[0] = wt
-        return y
+        denominator = torch.tensor((1.0, *(-coefficient for coefficient in a)), dtype=torch.float64)
+        numerator = torch.tensor(b, dtype=torch.float64)
+        # `clamp` defaults to True and would hold the output inside [-1, 1], which is not a range an
+        # f0 contour or a decimated waveform stays in.
+        filtered = torchaudio.functional.lfilter(
+            torch.from_numpy(np.ascontiguousarray(x)).unsqueeze(0), denominator, numerator, clamp=False
+        )
+        return filtered.squeeze(0).numpy()
 
     def _filter_for_decimate(self, x, ratio):
         a, b = _DECIMATE_COEFFICIENTS[ratio]

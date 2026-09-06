@@ -855,6 +855,40 @@ Every file in the three folders now carries a licence header. Fifteen had none, 
 `weight_conversion` file. Measured in transformers rather than assumed: 504 of 509 model `__init__.py`
 carry one, 97 of 102 `tokenization_*`, 10 of 10 `generation_*` and 330 of 496 `configuration_*`.
 
+## Measured: what was worth speeding up in the CosyVoice folders, and what was not
+
+The ported WORLD recursion is now `torchaudio.functional.lfilter` rather than a per sample Python
+loop. `clamp` has to be passed `False`: it defaults to holding the output inside `[-1, 1]`, which is
+not a range an f0 contour or a decimated waveform stays in. On the two sizes harvest actually uses
+the recursion alone goes from 110.66 ms to 1.30 ms at 88500 samples and 3.71 ms to 0.52 ms at 4601.
+Harvest as a whole gains a tenth, median 1.69 s against 1.52 s on a 4 s signal, because the recursion
+was never the dominant term. The float32 contour is still bit identical to `pyworld`'s on all six
+verification signals with no voicing difference.
+
+Timing this needed care, and the first two attempts were both wrong. A single unrepeated run said
+the swap made things slower, and a run that also built extra estimators and called `dio` said the
+same. Alternating the two implementations inside one process and taking medians over seven rounds is
+what settled it. A ten percent difference does not survive a one-shot measurement on this machine.
+
+`torch.hann_window` is now cached the way `bigvgan`, `f5_tts`, `vocos` and `prompt_tts_pp` already
+cache it, in `feature_extraction_cosyvoice_v1.py` and in `CosyVoiceV1HiFTGenerator._stft_window`.
+Both built a fresh window on every call. It is worth 20.9 us a call against a 166.6 us STFT on one
+second of audio, so roughly one percent of a feature extractor call rather than anything larger; the
+reason to do it is that four other folders already do. The extractor's cache is keyed on window
+length and device rather than on dtype, because the window it built was always float32 while
+`_mel_spectrogram` accepts a float64 waveform, and keying on dtype would have changed that path.
+
+Ruled out, and worth knowing about: caching the resampling kernel. `torchaudio.functional.resample`
+rebuilds its sinc kernel on every call and all eight call sites in the repository use it, so
+`torchaudio.transforms.Resample` looks like a free 0.3 to 0.6 ms. It is not a drop in. On 24000 to
+22050 the two disagree by 1.739e-05 absolute and 1.4e-02 relative, which is two orders above float32
+rounding, so it changes the audio rather than the speed of producing it.
+
+Nothing else in these folders recomputes a window or a filter bank per call, `spark_tts_bicodec`
+holds both in buffers, the loops in `generation_<model>.py` are autoregressive decoding, and the only
+per element Python iteration over an array anywhere was the recursion above. `voicestudio/backport/`
+has the same uncached window but is vendored transformers awaiting release, so it was left alone.
+
 ## Sibling inheritance map
 
 Principle 1 asks for inheritance between models inside `voicestudio/models/`, not only from
