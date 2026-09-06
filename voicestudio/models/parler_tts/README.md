@@ -11,12 +11,13 @@ Original model and code: [huggingface/parler-tts](https://github.com/huggingface
 
 ```python
 import torch
-from transformers import AutoModelForTextToWaveform, AutoProcessor
+
+from voicestudio.models.parler_tts import ParlerTTSForConditionalGeneration, ParlerTTSProcessor
 
 model_id = "parler-tts/parler-tts-mini-v1"
 
-processor = AutoProcessor.from_pretrained(model_id)
-model = AutoModelForTextToWaveform.from_pretrained(model_id, dtype=torch.float16).to("cuda")
+processor = ParlerTTSProcessor.from_pretrained(model_id)
+model = ParlerTTSForConditionalGeneration.from_pretrained(model_id, dtype=torch.float16).to("cuda")
 ```
 
 ```python
@@ -76,4 +77,18 @@ subfolder, and both classes load the result without converting anything again:
 from voicestudio.models.parler_tts.weight_conversion import convert
 
 convert("parler-tts/parler-tts-mini-v1", "parler-tts-mini-v1-converted")
+```
+
+The `Auto` classes reach the same two objects, but only once `voicestudio.models` has been imported. That import is
+what registers `ParlerTTSConfig` under the checkpoint's `parler_tts` model type and maps it onto these classes.
+Without it `AutoConfig` and `AutoModelForTextToWaveform` raise on an unrecognized model type, and `AutoProcessor`
+raises nothing at all: it falls through to the checkpoint's own `T5Tokenizer` and returns that instead of a
+`ParlerTTSProcessor`.
+
+```python
+import voicestudio.models  # noqa: F401
+from transformers import AutoModelForTextToWaveform, AutoProcessor
+
+processor = AutoProcessor.from_pretrained(model_id)
+model = AutoModelForTextToWaveform.from_pretrained(model_id, dtype=torch.float16).to("cuda")
 ```
