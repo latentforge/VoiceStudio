@@ -14,6 +14,7 @@
 """Processor class for Dia2."""
 
 import re
+import string
 
 import numpy as np
 import torch
@@ -48,6 +49,10 @@ WHISPER_FRAME_DURATION = 0.02
 WHISPER_WINDOW_FRAMES = 1500
 WHISPER_MEDIAN_FILTER_WIDTH = 9
 WHISPER_MIN_WORD_DURATION = 0.02
+
+# Marks that end a word without occupying any of its speech. The hyphen and the apostrophe are left out
+# because they join a word rather than close it.
+WORD_END_PUNCTUATION = "".join(mark for mark in string.punctuation if mark not in "-'") + "。，！？：”、…"
 
 
 def _ensure_increasing_positions(alignment: list[dict], min_duration: float) -> list[dict]:
@@ -382,8 +387,14 @@ class Dia2Processor(ProcessorMixin):
 
         alignment = []
         for word, group in zip(words, token_groups):
+            last = len(group) - 1
+            # A trailing punctuation mark carries no speech, so its own span would stretch the word over the
+            # silence that follows it. The word ends where that mark starts instead.
+            mark = tokenizer.decode([content_tokens[group[last]]])
+            if last > 0 and mark and mark in WORD_END_PUNCTUATION:
+                last -= 1
             start_position = content_positions[group[0]]
-            end_position = content_positions[group[-1]]
+            end_position = content_positions[group[last]]
             start = token_timestamps[start_position - 1] if start_position > 0 else 0.0
             alignment.append({"text": word.strip(), "start": start, "end": token_timestamps[end_position]})
         if segments:
