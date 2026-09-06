@@ -617,8 +617,10 @@ Recorded per CLAUDE.md section 2.6.
   `voicestudio/models/cosyvoice_v2/` should carry it is that folder's decision, not this one's.
 - **`ttsfrd`.** Upstream tries it before `wetext` and it is the one normalizer this folder does not
   reach. Upstream ships it as a wheel in `FunAudioLLM/CosyVoice-ttsfrd` with a 339 MB resource pack.
-  It is not on PyPI, has no source release, and is closed source, so it cannot be traced the way
-  CLAUDE.md section 2.2 requires. `wetext` is not declared either, and is reached only when the
+  It is published under Apache-2.0, but only as cp38 and cp310 `linux_x86_64` wheels and nothing on
+  PyPI, so there is no specifier to put in an extra and it does not build for this project's Python.
+  Having no source release, being a compiled binary, it cannot be traced the way CLAUDE.md section 2.2
+  requires. `wetext` is not declared either, and is reached only when the
   caller installs it, but it covers the categories measured in "The text normalizer" above; whether
   anything is left that only `ttsfrd` would fix has not been measured, because there is no way to run
   it. That is **still open**.
