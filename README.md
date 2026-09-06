@@ -132,13 +132,13 @@ Reproduce the voice of a reference recording.
 | [Higgs TTS 3](voicestudio/models/higgs_tts3) | 2026 | | [bosonai/higgs-tts-3-4b](https://huggingface.co/bosonai/higgs-tts-3-4b) | Verified |
 | [OmniVoice](voicestudio/models/ommivoice) | 2026 | [arXiv:2604.00688](https://arxiv.org/abs/2604.00688) | [k2-fsa/OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) | Verified |
 | [Qwen3-TTS](voicestudio/models/qwen3_tts) | 2026 | [arXiv:2601.15621](https://arxiv.org/abs/2601.15621) | [Qwen/Qwen3-TTS-12Hz-1.7B-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) | Verified, relay |
-| [CosyVoice v3](voicestudio/models/cosyvoice_v3) | 2025 | [arXiv:2505.17589](https://arxiv.org/abs/2505.17589) | [FunAudioLLM/Fun-CosyVoice3-0.5B-2512](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | Verified, objective gap |
+| [CosyVoice v3](voicestudio/models/cosyvoice_v3) | 2025 | [arXiv:2505.17589](https://arxiv.org/abs/2505.17589) | [FunAudioLLM/Fun-CosyVoice3-0.5B-2512](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | Verified, no discriminator |
 | [Dia](voicestudio/models/dia) | 2025 | | [nari-labs/Dia-1.6B-0626](https://huggingface.co/nari-labs/Dia-1.6B-0626) | Verified, relay |
-| [Dia2](voicestudio/models/dia2) | 2025 | | [nari-labs/Dia2-2B](https://huggingface.co/nari-labs/Dia2-2B) | Verified, objective gap |
+| [Dia2](voicestudio/models/dia2) | 2025 | | [nari-labs/Dia2-2B](https://huggingface.co/nari-labs/Dia2-2B) | Verified, loss weights inferred |
 | [Higgs TTS 2](voicestudio/models/higgs_tts2) | 2025 | | [bosonai/higgs-tts-2-3b-base](https://huggingface.co/bosonai/higgs-tts-2-3b-base) | Verified, relay |
 | [Spark-TTS](voicestudio/models/spark_tts) | 2025 | [arXiv:2503.01710](https://arxiv.org/abs/2503.01710) | [SparkAudio/Spark-TTS-0.5B](https://huggingface.co/SparkAudio/Spark-TTS-0.5B) | Verified |
-| [CosyVoice v1](voicestudio/models/cosyvoice_v1) | 2024 | [arXiv:2407.05407](https://arxiv.org/abs/2407.05407) | [FunAudioLLM/CosyVoice-300M](https://huggingface.co/FunAudioLLM/CosyVoice-300M) | Verified, objective gap |
-| [CosyVoice v2](voicestudio/models/cosyvoice_v2) | 2024 | [arXiv:2412.10117](https://arxiv.org/abs/2412.10117) | [FunAudioLLM/CosyVoice2-0.5B](https://huggingface.co/FunAudioLLM/CosyVoice2-0.5B) | Verified, objective gap |
+| [CosyVoice v1](voicestudio/models/cosyvoice_v1) | 2024 | [arXiv:2407.05407](https://arxiv.org/abs/2407.05407) | [FunAudioLLM/CosyVoice-300M](https://huggingface.co/FunAudioLLM/CosyVoice-300M) | Verified, no discriminator |
+| [CosyVoice v2](voicestudio/models/cosyvoice_v2) | 2024 | [arXiv:2412.10117](https://arxiv.org/abs/2412.10117) | [FunAudioLLM/CosyVoice2-0.5B](https://huggingface.co/FunAudioLLM/CosyVoice2-0.5B) | Verified, no discriminator |
 | [F5-TTS](voicestudio/models/f5_tts) | 2024 | [arXiv:2410.06885](https://arxiv.org/abs/2410.06885) | [SWivid/F5-TTS](https://huggingface.co/SWivid/F5-TTS) | Verified |
 | [VoxInstruct](voicestudio/models/vox_instruct) | 2024 | [arXiv:2408.15676](https://arxiv.org/abs/2408.15676) | [niobures/VoxInstruct](https://huggingface.co/niobures/VoxInstruct) | Verified |
 
@@ -151,13 +151,13 @@ Build a voice from a natural language description, with no reference recording.
 | [Breeze TTS 2](voicestudio/models/breeze_tts) | 2026 | | [BreezeBlue/Breeze-TTS-2](https://huggingface.co/BreezeBlue/Breeze-TTS-2) | Verified |
 | [OmniVoice](voicestudio/models/ommivoice) | 2026 | [arXiv:2604.00688](https://arxiv.org/abs/2604.00688) | [k2-fsa/OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) | Verified |
 | [Qwen3-TTS](voicestudio/models/qwen3_tts) | 2026 | [arXiv:2601.15621](https://arxiv.org/abs/2601.15621) | [Qwen/Qwen3-TTS-12Hz-1.7B-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) | Verified, relay |
-| [CosyVoice v3](voicestudio/models/cosyvoice_v3) | 2025 | [arXiv:2505.17589](https://arxiv.org/abs/2505.17589) | [FunAudioLLM/Fun-CosyVoice3-0.5B-2512](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | Verified, objective gap |
+| [CosyVoice v3](voicestudio/models/cosyvoice_v3) | 2025 | [arXiv:2505.17589](https://arxiv.org/abs/2505.17589) | [FunAudioLLM/Fun-CosyVoice3-0.5B-2512](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | Verified, no discriminator |
 | [Spark-TTS](voicestudio/models/spark_tts) | 2025 | [arXiv:2503.01710](https://arxiv.org/abs/2503.01710) | [SparkAudio/Spark-TTS-0.5B](https://huggingface.co/SparkAudio/Spark-TTS-0.5B) | Verified |
-| [CosyVoice v1](voicestudio/models/cosyvoice_v1) | 2024 | [arXiv:2407.05407](https://arxiv.org/abs/2407.05407) | [FunAudioLLM/CosyVoice-300M](https://huggingface.co/FunAudioLLM/CosyVoice-300M) | Verified, objective gap |
-| [CosyVoice v2](voicestudio/models/cosyvoice_v2) | 2024 | [arXiv:2412.10117](https://arxiv.org/abs/2412.10117) | [FunAudioLLM/CosyVoice2-0.5B](https://huggingface.co/FunAudioLLM/CosyVoice2-0.5B) | Verified, objective gap |
+| [CosyVoice v1](voicestudio/models/cosyvoice_v1) | 2024 | [arXiv:2407.05407](https://arxiv.org/abs/2407.05407) | [FunAudioLLM/CosyVoice-300M](https://huggingface.co/FunAudioLLM/CosyVoice-300M) | Verified, no discriminator |
+| [CosyVoice v2](voicestudio/models/cosyvoice_v2) | 2024 | [arXiv:2412.10117](https://arxiv.org/abs/2412.10117) | [FunAudioLLM/CosyVoice2-0.5B](https://huggingface.co/FunAudioLLM/CosyVoice2-0.5B) | Verified, no discriminator |
 | [Parler-TTS](voicestudio/models/parler_tts) | 2024 | [arXiv:2402.01912](https://arxiv.org/abs/2402.01912) | [parler-tts/parler-tts-mini-v1](https://huggingface.co/parler-tts/parler-tts-mini-v1) | Verified |
 | [VoxInstruct](voicestudio/models/vox_instruct) | 2024 | [arXiv:2408.15676](https://arxiv.org/abs/2408.15676) | [niobures/VoxInstruct](https://huggingface.co/niobures/VoxInstruct) | Verified |
-| [PromptTTS++](voicestudio/models/prompt_tts_pp) | 2023 | [arXiv:2309.08140](https://arxiv.org/abs/2309.08140) | [line-corporation/promptttspp](https://huggingface.co/spaces/line-corporation/promptttspp) | Verified, objective gap |
+| [PromptTTS++](voicestudio/models/prompt_tts_pp) | 2023 | [arXiv:2309.08140](https://arxiv.org/abs/2309.08140) | [line-corporation/promptttspp](https://huggingface.co/spaces/line-corporation/promptttspp) | Verified, no discriminator |
 
 PromptTTS++ publishes no model repository. Its only public weights are bundled inside the Space linked
 above, which is what its `weight_conversion.convert` downloads.
@@ -168,9 +168,9 @@ Change the voice of a recording, or rewrite part of it, while keeping the rest.
 
 | Model | Year | Paper | Hugging Face | Status |
 |---|---|---|---|---|
-| [CosyVoice v3](voicestudio/models/cosyvoice_v3) | 2025 | [arXiv:2505.17589](https://arxiv.org/abs/2505.17589) | [FunAudioLLM/Fun-CosyVoice3-0.5B-2512](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | Verified, objective gap |
-| [CosyVoice v1](voicestudio/models/cosyvoice_v1) | 2024 | [arXiv:2407.05407](https://arxiv.org/abs/2407.05407) | [FunAudioLLM/CosyVoice-300M](https://huggingface.co/FunAudioLLM/CosyVoice-300M) | Verified, objective gap |
-| [CosyVoice v2](voicestudio/models/cosyvoice_v2) | 2024 | [arXiv:2412.10117](https://arxiv.org/abs/2412.10117) | [FunAudioLLM/CosyVoice2-0.5B](https://huggingface.co/FunAudioLLM/CosyVoice2-0.5B) | Verified, objective gap |
+| [CosyVoice v3](voicestudio/models/cosyvoice_v3) | 2025 | [arXiv:2505.17589](https://arxiv.org/abs/2505.17589) | [FunAudioLLM/Fun-CosyVoice3-0.5B-2512](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | Verified, no discriminator |
+| [CosyVoice v1](voicestudio/models/cosyvoice_v1) | 2024 | [arXiv:2407.05407](https://arxiv.org/abs/2407.05407) | [FunAudioLLM/CosyVoice-300M](https://huggingface.co/FunAudioLLM/CosyVoice-300M) | Verified, no discriminator |
+| [CosyVoice v2](voicestudio/models/cosyvoice_v2) | 2024 | [arXiv:2412.10117](https://arxiv.org/abs/2412.10117) | [FunAudioLLM/CosyVoice2-0.5B](https://huggingface.co/FunAudioLLM/CosyVoice2-0.5B) | Verified, no discriminator |
 | [F5-TTS](voicestudio/models/f5_tts) | 2024 | [arXiv:2410.06885](https://arxiv.org/abs/2410.06885) | [SWivid/F5-TTS](https://huggingface.co/SWivid/F5-TTS) | Verified |
 
 F5-TTS infills a masked span of an existing recording through its `edit_mask` argument. All three
@@ -184,23 +184,23 @@ and the models above hold them as submodels.
 
 | Model | Year | Paper | Hugging Face | Status |
 |---|---|---|---|---|
-| [Spark-TTS BiCodec](voicestudio/models/spark_tts_bicodec) | 2025 | [arXiv:2503.01710](https://arxiv.org/abs/2503.01710) | [SparkAudio/Spark-TTS-0.5B](https://huggingface.co/SparkAudio/Spark-TTS-0.5B) | Verified, objective gap |
-| [Vocos](voicestudio/models/vocos) | 2023 | [arXiv:2306.00814](https://arxiv.org/abs/2306.00814) | [charactr/vocos-mel-24khz](https://huggingface.co/charactr/vocos-mel-24khz) | Verified, objective gap |
-| [BigVGAN](voicestudio/models/bigvgan) | 2022 | [arXiv:2206.04658](https://arxiv.org/abs/2206.04658) | [nvidia/bigvgan_v2_24khz_100band_256x](https://huggingface.co/nvidia/bigvgan_v2_24khz_100band_256x) | Verified, objective gap |
+| [Spark-TTS BiCodec](voicestudio/models/spark_tts_bicodec) | 2025 | [arXiv:2503.01710](https://arxiv.org/abs/2503.01710) | [SparkAudio/Spark-TTS-0.5B](https://huggingface.co/SparkAudio/Spark-TTS-0.5B) | Verified, no discriminator |
+| [Vocos](voicestudio/models/vocos) | 2023 | [arXiv:2306.00814](https://arxiv.org/abs/2306.00814) | [charactr/vocos-mel-24khz](https://huggingface.co/charactr/vocos-mel-24khz) | Verified, no discriminator |
+| [BigVGAN](voicestudio/models/bigvgan) | 2022 | [arXiv:2206.04658](https://arxiv.org/abs/2206.04658) | [nvidia/bigvgan_v2_24khz_100band_256x](https://huggingface.co/nvidia/bigvgan_v2_24khz_100band_256x) | Verified, no discriminator |
 
 ### Status legend
 
 | Value | Meaning |
 |---|---|
 | Verified | Loads its real published checkpoint, generates audio that transcribes back to the text it was given, and its `forward(labels=...)` implements upstream's own training objective term for term. |
-| Verified, objective gap | Verified in the same way, but part of upstream's training objective is not implemented and the omission is still open. In every case but one the missing part is a GAN discriminator, which no `transformers` model class carries. Dia2 is the exception: upstream publishes no training code at all, so its three loss terms are summed unweighted. |
+| Verified, no discriminator | Verified in the same way, and `forward(labels=...)` returns every term of upstream's objective that does not need a discriminator. The adversarial terms are deliberately absent, which is the `transformers` convention rather than a shortfall: across its 510 model folders no model class carries a GAN discriminator, every shipped vocoder takes no `labels` at all, and DAC, which is adversarially trained upstream, returns only its commitment and codebook terms. The consequence is worth knowing: training one of these vocoders from scratch through `forward` alone would not reproduce the released weights. |
+| Verified, loss weights inferred | Verified in the same way, and every term of upstream's objective is implemented. What is not knowable is how loudly each term counts, because upstream publishes no training code, optimizer state or paper. Dia2 pools its 31 acoustic codebooks into one term, following its closest sibling CSM; summing them per codebook the way Higgs Audio V2 does would make that term roughly 31 times heavier. That is a defensible lineage choice, not a fact about Dia2. |
 | Verified, relay | The model itself ships in `transformers`; the folder re-exports it, adding only a processor where one was missing. Verified against real weights in the same way. |
 
 Year is the year the model was first published. An empty Paper cell means the release has no arXiv
 paper, only code and a model card. `PROJECT.md` carries the per-model verification evidence and the
-full list of open items, including two the Status column does not cover: Higgs TTS 3 reports 528
-unexpected keys on load, all of them the codec copy bundled in its checkpoint, and Qwen3-TTS's audio
-tokenizer reports one missing key for a module that is never called.
+full list of open items, including one the Status column does not cover: Higgs TTS 3 reports 528
+unexpected keys on load, all of them the codec copy bundled in its checkpoint.
 
 ---
 
@@ -217,7 +217,10 @@ item recorded against a model.
 
 Areas where help is most useful:
 
-- The open objective gaps in the table above, all of which need a decision before they need code.
+- The items `PROJECT.md` records as open. The two needing a decision rather than code are CosyVoice
+  v3's text normalizer, where upstream's `ttsfrd` and `wetext` are a closed wheel and a compiled
+  grammar rather than inlinable logic, and its second released `llm.rl.pt` checkpoint, which trades
+  character error rate for speaker similarity and has no way to be selected yet.
 - Inference performance. Nothing here has been tuned for it, and the route is the `transformers` one,
   a static cache and a compiled graph selected through `GenerationConfig`, rather than a per-model
   capture. `PROJECT.md` has the detail.
