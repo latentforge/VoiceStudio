@@ -56,103 +56,6 @@ ADDED_TOKEN_PATTERN = re.compile(
 )
 
 
-ENGLISH_UNITS = ("", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
-
-ENGLISH_TEENS = (
-    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
-    "nineteen",
-)
-
-ENGLISH_TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
-
-ENGLISH_SCALES = (
-    "", " thousand", " million", " billion", " trillion", " quadrillion", " quintillion", " sextillion",
-    " septillion", " octillion", " nonillion", " decillion",
-)
-
-
-def spell_out_two_digits(tens: int, units: int) -> str:
-    """
-    Args:
-        tens (`int`):
-            Tens digit.
-        units (`int`):
-            Units digit.
-
-    Returns:
-        `str`: The two digits read out, hyphenated when both are nonzero and empty when both are
-        zero.
-    """
-    if tens == 1:
-        return ENGLISH_TEENS[units]
-    return ENGLISH_TENS[tens] + ("-" if tens and units else "") + ENGLISH_UNITS[units]
-
-
-def number_to_words(number: str) -> str:
-    """
-    Reads a run of decimal digits out in English, the way `inflect.engine().number_to_words` does at
-    its default settings: groups of three carrying a scale word and separated by commas, `and` after
-    a hundreds digit and before a trailing group that is a single word, tens and units hyphenated,
-    and leading zeros dropped.
-
-    Args:
-        number (`str`):
-            Run of decimal digits, with no sign, decimal point or group separator. A run of zeros
-            reads as `zero`.
-
-    Returns:
-        `str`: The reading.
-
-    Raises:
-        ValueError: If the run needs a scale word beyond `decillion`.
-    """
-    digits = number.lstrip("0")
-    if digits == "":
-        return "zero"
-    if int(digits) == 1:
-        return "one"
-    groups = []
-    while digits:
-        groups.append(int(digits[-3:]))
-        digits = digits[:-3]
-    if len(groups) > len(ENGLISH_SCALES):
-        raise ValueError(f"{number} is larger than the English scale words reach")
-    spelled = []
-    for index in range(len(groups) - 1, -1, -1):
-        hundreds, remainder = divmod(groups[index], 100)
-        if hundreds == 0 and remainder == 0:
-            continue
-        below_hundred = spell_out_two_digits(*divmod(remainder, 10))
-        if hundreds:
-            joiner = " and " if remainder else ""
-            spelled.append(f"{ENGLISH_UNITS[hundreds]} hundred{joiner}{below_hundred}{ENGLISH_SCALES[index]}")
-        else:
-            spelled.append(f"{below_hundred}{ENGLISH_SCALES[index]}")
-    words = ", ".join(spelled)
-    head, separator, tail = words.rpartition(", ")
-    if separator and " " not in tail:
-        words = f"{head} and {tail}"
-    return words
-
-
-class CosyVoiceV3NumberSpeller:
-    r"""
-    Constructs the engine [`~CosyVoiceV3Processor.normalize_text`] reads an English digit run out
-    with, exposing the one method of `inflect.engine` upstream's text front end calls.
-    """
-
-    def number_to_words(self, number: str) -> str:
-        """
-        Args:
-            number (`str`):
-                Run of decimal digits.
-
-        Returns:
-            `str`: The reading, from [`number_to_words`].
-        """
-        return number_to_words(number)
-
-
 def spell_out_number_outside_markup(text: str, number_speller) -> str:
     """
     Replaces every run of digits with its English reading, skipping the spans that hold a token of
@@ -161,7 +64,7 @@ def spell_out_number_outside_markup(text: str, number_speller) -> str:
     Args:
         text (`str`):
             Text to rewrite.
-        number_speller ([`CosyVoiceV3NumberSpeller`]):
+        number_speller ([`CosyVoiceV1NumberSpeller`]):
             Engine whose `number_to_words` reads a digit run out.
 
     Returns:
@@ -235,16 +138,6 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
             tokenizer, tokens=SPECIAL_TOKENS if tokens is None else tokens
         )
 
-    @property
-    def inflect_parser(self) -> CosyVoiceV3NumberSpeller:
-        """
-        Returns:
-            [`CosyVoiceV3NumberSpeller`]: The engine that reads an English digit run out.
-        """
-        if self._inflect_parser is None:
-            self._inflect_parser = CosyVoiceV3NumberSpeller()
-        return self._inflect_parser
-
     def normalize_text(
         self, text: str, split: bool = True, text_frontend: bool = True
     ) -> Union[str, list[str]]:
@@ -289,7 +182,7 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
             text = re.sub(r"[\uff0c,\u3001]+$", "\u3002", text)
             pieces = split_paragraph(text, tokenize, "zh", token_max_n=80, token_min_n=60, merge_len=20)
         else:
-            text = spell_out_number_outside_markup(text, self.inflect_parser)
+            text = spell_out_number_outside_markup(text, self.number_speller)
             pieces = split_paragraph(text, tokenize, "en", token_max_n=80, token_min_n=60, merge_len=20)
         pieces = [piece for piece in pieces if not is_only_punctuation(piece)]
         return pieces if split else text
@@ -299,9 +192,6 @@ __all__ = [
     "ADDED_TOKEN_PATTERN",
     "SPECIAL_TOKENS",
     "CosyVoiceV3FeatureExtractor",
-    "CosyVoiceV3NumberSpeller",
     "CosyVoiceV3Processor",
-    "number_to_words",
     "spell_out_number_outside_markup",
-    "spell_out_two_digits",
 ]

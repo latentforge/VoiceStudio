@@ -63,12 +63,11 @@ pieces = processor.normalize_text("I paid 1234 dollars in 2025 for 7 books.")
 # ['I paid one thousand, two hundred and thirty-four dollars in two thousand and twenty-five for seven books.']
 ```
 
-Two things are v3's rather than v1's. Upstream reads a digit run out with `inflect`; here that is
-inlined, so nothing has to be installed, and the reading agrees with `inflect` 7.3.1, the version
-upstream pins, on every one of 41,820 digit strings tested. And the run is skipped inside the
-markup of the added vocabulary, because `[AA1]` is one token whose trailing `1` is a stress mark
-rather than a number. Without that, upstream's own English branch rewrites it to `[AAone]` and the
-token is gone.
+One thing is v3's rather than v1's: the digit run is skipped inside the markup of the added
+vocabulary, because `[AA1]` is one token whose trailing `1` is a stress mark rather than a number.
+Without that, upstream's own English branch rewrites it to `[AAone]` and the token is gone. The
+reading itself is `number_to_words` in `voicestudio/models/cosyvoice_v1/`, inherited through v2, so
+nothing has to be installed for it and v1, v2 and v3 read a number the same way.
 
 That markup is what the 278 added embedding rows are for. It is written inline by the caller, to
 override a pronunciation, as in upstream's own `'...对报道[j][ǐ]予好评。'`, and `'[T][AH0][M][EY1][T][OW2]'`
@@ -465,14 +464,11 @@ LibriSpeech transcript verbatim, upper case and unpunctuated, collapsed the same
 and adding the full stop is the only difference between that and the table above. v1 and v2 generate
 the whole sentence either way, so this sensitivity is v3's.
 
-**The text frontend, against `inflect` and against the added vocabulary.** The inlined English
-number reading was compared with `inflect` 7.3.1, the version upstream's `requirements.txt` pins,
-over 41,820 digit strings: every integer from 0 to 10,000, every 97th from 10,000 to 1,000,000,
-20,000 uniformly drawn strings of 1 to 33 digits, and runs of leading zeros. **Zero mismatches.** A
-further 1,600 strings of 34 to 42 digits put the two on the same side of the largest scale word in
-every case, 600 agreeing on a reading and 1,000 raising on both sides. `inflect` was fetched into a
-scratch directory as an oracle and is not installed, not imported by this folder and not declared
-anywhere.
+**The text frontend, against the package upstream pins and against the added vocabulary.** The
+English number reading lives in `voicestudio/models/cosyvoice_v1/processing_cosyvoice_v1.py` and is
+measured there: 41,821 digit strings against the package upstream's `requirements.txt` pins, at
+its pinned version 7.3.1, with zero mismatches, and 1,600 strings of 34 to 41 digits agreeing on
+which side of the largest scale word they fall. See that folder's README for the corpus.
 
 All 278 tokens the released tokenizer gains are reached. Of the 280 entries in `SPECIAL_TOKENS`, 278
 are new to the tokenizer, which grows from 151,646 to 151,924, and none is unknown to it afterwards.
@@ -502,7 +498,9 @@ text the frontend produced:
 
 The digits row is the result: with the frontend on, two of three seeds read the numbers back word for
 word and the third dropped a clause; with it off, all three seeds mangle `1234` and `2025` and no
-seed recovers them. Seed 0's `TUNE` for `TWO` is the connectionist temporal classification decoder,
+seed recovers them. That row was measured again on the local GPU, same clip, same three seeds, same
+transcriber, and holds: WER 0.000 / 0.000 / 0.053 with the frontend on, where seed 2 drops one `and`,
+against 0.889 / 0.556 / 0.889 with it off, where no seed reads `1234` back. Seed 0's `TUNE` for `TWO` is the connectionist temporal classification decoder,
 not the model. The abbreviations row is the other result, and it is a negative one: the two settings
 are **identical waveform for waveform**, because expanding `Dr.` and `Dept.` is exactly the part that
 lives in `ttsfrd` or `wetext`. That row is the measurement behind the open dependency item below.
