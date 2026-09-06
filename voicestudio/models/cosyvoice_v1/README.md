@@ -43,7 +43,8 @@ zero shot mode; passing only the flow one is upstream's cross lingual mode; pass
 
 `processor.normalize_text(text)` is upstream's text front end: it rewrites the string and returns
 the sentences upstream synthesizes one at a time. `processor(text=..., normalize=True)` applies the
-rewriting to a single sequence without splitting.
+rewriting to a single sequence without splitting. Its first step is the `wetext` text normalizer,
+which is installed by the `frontend` extra and skipped when it is absent; see "The text normalizer".
 
 `processor.compute_f0(audio, sampling_rate)` returns the `pitch_feat` the vocoder objective
 regresses onto, and `model.hift.compute_loss(mel, waveform, pitch_feat)` scores the vocoder against
@@ -215,7 +216,8 @@ Upstream pins more than forty packages. What each turned into:
 | `openai-whisper` | Replaced by `WhisperTokenizer` for text and `WhisperFeatureExtractor` for the speech tokenizer's mel. `whisper.tokenizer.Tokenizer`, which upstream's `get_tokenizer` returns, is `CosyVoiceV1Tokenizer`. |
 | `inflect` | Removed. Upstream calls one method of it, `number_to_words`, to read an English digit run out; `number_to_words` in `processing_cosyvoice_v1.py` is that reading, inlined. See below. |
 | `pyworld` | Lazily imported. See below. |
-| `wetext`, `ttsfrd` | Text normalizers. See "Not carried over from upstream". |
+| `wetext` | Kept, as the `frontend` extra rather than a core dependency. It is the text normalizer upstream's own front end reaches for, and no part of it is math that could be inlined; see "The text normalizer". |
+| `ttsfrd` | Not reachable. See "Not carried over from upstream". |
 | `onnxruntime` | Removed. See below. |
 | `tensorrt`, `vllm`, `modelscope`, `gradio`, `fastapi`, `grpcio` | Serving paths, not part of the model. |
 | `transformers==4.51.3` | Replaced by the `transformers-tts` 5.x fork this repository targets. |
@@ -456,6 +458,94 @@ above, `The quick brown fox jumps over the lazy dog.`, was generated again throu
 three seeds on the local GPU, and transcribed with `facebook/wav2vec2-base-960h`: WER
 0.111 / 0.000 / 0.000, seed 0's only error being `QUIT` for `QUICK`.
 
+## The text normalizer
+
+Upstream's `CosyVoiceFrontEnd.__init__` tries three things in order: `ttsfrd`, then `wetext`, then
+nothing. Until now this folder was the third branch, reproduced exactly, and the categories a
+normalizer covers, dates, currency, units and abbreviations, were not expanded at all.
+
+`wetext` is now reachable, as the `frontend` extra rather than a core dependency, and
+`normalize_text` composes it the way upstream composes it: the Chinese branch runs
+`Normalizer(remove_erhua=False).normalize`, the English branch runs `Normalizer().normalize` and
+then reads whatever digit runs survive with `number_to_words`. With the extra absent, both branches
+skip the normalizer and the behaviour is what it was, upstream's third branch, so the default
+install is unchanged.
+
+**Which component owns numbers.** On the English path, `wetext` owns everything it rewrites and
+`number_to_words` owns the digit runs it leaves behind. There is no double expansion, because
+`number_to_words` only ever sees characters that are still digits, and this is upstream's own
+ordering rather than a choice made here. `I paid 1234 dollars in 2025 for 7 books.` with the extra
+installed comes out of `wetext` as `I paid twelve thirty four dollars in twenty twenty five for
+seven books.` with no digit left, so `spell_out_number` returns it unchanged, and without the extra
+`number_to_words` reads all three numbers itself. On the Chinese path `number_to_words` is never
+called at all, on either setting: `normalize_text` only reaches it through the `else` branch of
+`contains_chinese`. The `inflect` parity that `number_to_words` is measured against is unaffected
+by any of this and was re-run: **41,821 digit strings, zero mismatches** against `inflect` 7.3.1,
+with 627 of the 1,600 long strings agreeing on a reading and 973 raising on both sides.
+
+**A normalizer that is right for English is not always right.** `wetext` reads `1234` as
+`twelve thirty four`, which is a year reading rather than a quantity, and it drops the leading word
+of `$1,234.50`, giving `thousand two hundred and thirty four point five dollars`. Both are upstream's
+behaviour, reproduced rather than corrected, and both are visible in the tables below as a reference
+string that the model then speaks faithfully. Where this folder's own reading is better it is still
+available: leave the extra out.
+
+**`EnglishNormalizer` from `transformers.models.clvp` was measured and rejected.** It is already
+installed, so it engages no dependency question at all, and on the two cases where this folder's own
+front end is worst it is a real improvement. It was still rejected, for reasons that are in the
+numbers rather than in taste. Its abbreviation table has 18 entries, three of which are wrong for
+modern text: `ft.` becomes `fort` rather than `feet`, `mrs.` becomes `misess`, and `st.` becomes
+`saint` everywhere including a street name. Its ordinal rule is broken outright, `1st` to `onest`
+and `21st` to `twenty-onest`, and its `__call__` lower cases the text and strips it to ASCII, which
+would delete a Chinese sentence entirely. Everything it wins, `wetext` wins as well or better, and
+`wetext` is what upstream actually calls, so it can be traced under CLAUDE.md section 2.2 where a
+hand-picked rule set could not. The measurement is in the table below, under `clvp`.
+
+**What was measured.** Zero shot from the 5.86 s LibriSpeech clip used elsewhere in this README,
+three seeds, transcribed with `facebook/wav2vec2-base-960h`, word error rate against the text each
+setting handed to the model. `off` is `text_frontend` disabled, `today` is this folder without the
+extra, `clvp` is `today` plus the CLVP normalizer, `wetext` is this folder with the extra.
+
+| Case | off | today | clvp | wetext |
+|---|---|---|---|---|
+| `I paid 1234 dollars in 2025 for 7 books.` | 1.000 / 1.500 / 1.000 | 0.158 / 0.053 / 0.158 | not run | 0.077 / 0.077 / 0.077 |
+| `Dr. Smith works at the U.S. Dept. of Energy.` | 0.200 / 0.400 / 0.300 | 0.200 / 0.400 / 0.300 | not run | 0.222 / 0.222 / 0.222 |
+| `The book costs $1,234.50 and weighs 2.5 kilograms.` | not run | 0.133 / 0.200 / 0.200 | not run | 0.167 / 0.111 / 0.111 |
+| `The St. Louis Co. Ltd. shipped 5 ft. of cable.` | not run | 0.400 / 0.400 / 0.400 | not run | 0.200 / 0.100 / 0.100 |
+| `The quick brown fox jumps over the lazy dog.` | not run | 0.111 / 0.111 / 0.000 | not run | 0.111 / 0.111 / 0.000 |
+
+The `clvp` column was measured on v2 and v3 rather than on v1, because by the time the comparison
+mattered it was already decided by those two; `voicestudio/models/cosyvoice_v3/README.md` carries
+the full four way grid.
+
+Read the numbers with the reference in mind, because each column scores the model against its own
+text and a lower figure can mean a wrong expansion spoken faithfully. The units row is the one to
+read as a real gain: at `today` every seed says `FIVE FOOT` for `ft.`, at `wetext` every seed says
+`FIVE FEET`. The digits row is the one to read as a regression in meaning even though the figure
+falls, because `twelve thirty four` is not what `1234 dollars` says. The digit free row is the
+control, identical to three decimal places on both settings.
+
+**Chinese, which is where the normalizer earns the dependency.** Upstream's sft mode, the `中文女`
+speaker vector from `FunAudioLLM/CosyVoice-300M-SFT`, no reference waveform, three seeds,
+transcribed with `openai/whisper-large-v3-turbo`. Character error rate is against the **original**
+sentence rather than against each setting's own text, because the two settings write a number
+differently and the transcriber writes it a third way; scoring both against the same target is the
+only comparison that means anything here.
+
+| Case | today | wetext |
+|---|---|---|
+| `会议定在2025年3月8日下午3点30分开始。` | 0.091 / 0.273 / 0.227 | 0.000 / 0.091 / 0.000 |
+| `这本书卖1234.50元，比原价便宜25%。` | 0.722 / 0.778 / 0.611 | 0.056 / 0.167 / 0.056 |
+| `他跑了5公里，用了30分钟，体重是65kg。` | 0.579 / 0.737 / 0.737 | 0.105 / 0.105 / 0.474 |
+| `电话号码是13800138000，房间号是302。` | 0.478 / 0.435 / 0.261 | 0.261 / 0.000 / 0.261 |
+| `今天天气很好，我们一起去公园散步吧。` | 0.188 / 0.000 / 0.062 | 0.188 / 0.000 / 0.062 |
+
+Every row with a number in it improves, three of them by a factor of four or more, and the digit
+free control is **identical seed for seed**, which is what says the normalizer touched nothing it
+should not have. The transcripts behind the units row are the clearest case: at `today` the model
+says `他跑了5公里用了30分钟体重是Lux Mtelorum`, reading `65kg` as Latin sounding noise, and at
+`wetext` it says `他跑了5公里用了30分钟体重是65千克`.
+
 ## Not carried over from upstream
 
 Recorded per CLAUDE.md section 2.6.
@@ -503,15 +593,12 @@ Recorded per CLAUDE.md section 2.6.
   by `examples/libritts/cosyvoice2/run_dpo.sh` through `Executor.train_one_epoc_dpo`. It belongs to
   the CosyVoice 2 recipe, not to v1, and this folder deleted it with the rest of that file. Whether
   `voicestudio/models/cosyvoice_v2/` should carry it is that folder's decision, not this one's.
-- **Text normalization.** `CosyVoiceV1Processor.normalize_text` is upstream's
-  `CosyVoiceFrontEnd.text_normalize` with the two text normalizers left out. Upstream runs the
-  input through `ttsfrd` if the resource pack is installed, otherwise `wetext`, otherwise nothing,
-  before the rewriting and sentence splitting that this does implement. So the branch this
-  reproduces exactly is upstream's own "no frontend is avaliable" path, and numbers, dates and
-  abbreviations are not expanded the way an installed normalizer would expand them. English digit
-  runs are spelled out by `number_to_words`, which reads them the way `inflect` does.
-- **`ttsfrd`.** Upstream ships it as a wheel in `FunAudioLLM/CosyVoice-ttsfrd` with a 339 MB
-  resource pack. It is not on PyPI and has no source release.
+- **`ttsfrd`.** Upstream tries it before `wetext` and it is the one normalizer this folder does not
+  reach. Upstream ships it as a wheel in `FunAudioLLM/CosyVoice-ttsfrd` with a 339 MB resource pack.
+  It is not on PyPI, has no source release, and is closed source, so it cannot be traced the way
+  CLAUDE.md section 2.2 requires and cannot be declared under section 9.1. `wetext` covers the
+  categories measured in "The text normalizer" above; whether anything is left that only `ttsfrd`
+  would fix has not been measured, because there is no way to run it. That is **still open**.
 - **Streaming input text.** Upstream's `inference_bistream` accepts a text generator and
   interleaves text and speech tokens. It exists only on `Qwen2LM`, that is CosyVoice 2 and 3, and
   is not part of v1.

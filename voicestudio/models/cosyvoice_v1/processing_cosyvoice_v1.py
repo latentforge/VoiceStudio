@@ -205,6 +205,25 @@ class CosyVoiceV1NumberSpeller:
         return number_to_words(number)
 
 
+def load_text_normalizer(**kwargs):
+    """
+    Builds the weighted finite state transducer normalizer upstream's text front end rewrites a date,
+    a currency amount, a unit and an abbreviation with, from the optional `wetext` package.
+
+    Args:
+        kwargs:
+            Forwarded to `wetext.Normalizer`.
+
+    Returns:
+        `wetext.Normalizer` or `None`: The normalizer, or `None` when `wetext` is not installed.
+    """
+    try:
+        from wetext import Normalizer
+    except ImportError:
+        return None
+    return Normalizer(**kwargs)
+
+
 def spell_out_number(text: str, number_speller) -> str:
     """
     Replaces every run of digits with its English reading.
@@ -232,6 +251,29 @@ def spell_out_number(text: str, number_speller) -> str:
     if start is not None and start < len(text):
         spelled.append(number_speller.number_to_words(text[start:]))
     return "".join(spelled)
+
+
+def normalize_english(text: str, english_normalizer, number_speller) -> str:
+    """
+    Rewrites an English sentence the way upstream's front end reads it out: the text normalizer
+    first, then every digit run it leaves behind.
+
+    Args:
+        text (`str`):
+            Text to rewrite. A string that is empty or whitespace only skips the normalizer, which
+            asserts on one.
+        english_normalizer (`wetext.Normalizer` or `None`):
+            Normalizer rewriting a date, a currency amount, a unit and an abbreviation. `None` skips
+            that step.
+        number_speller ([`CosyVoiceV1NumberSpeller`]):
+            Engine whose `number_to_words` reads a digit run out.
+
+    Returns:
+        `str`: The rewritten text.
+    """
+    if english_normalizer is not None and text.strip():
+        text = english_normalizer.normalize(text)
+    return spell_out_number(text, number_speller)
 
 
 def is_only_punctuation(text: str) -> bool:
@@ -490,6 +532,7 @@ class CosyVoiceV1Processor(ProcessorMixin):
         self._speaker_encoder = None
         self._speaker_info = None
         self._number_speller = None
+        self._text_normalizers = {}
 
     @classmethod
     def _released_processor(cls, directory: "str | Path") -> "CosyVoiceV1Processor":
@@ -564,6 +607,28 @@ class CosyVoiceV1Processor(ProcessorMixin):
         if self._number_speller is None:
             self._number_speller = CosyVoiceV1NumberSpeller()
         return self._number_speller
+
+    @property
+    def english_normalizer(self):
+        """
+        Returns:
+            `wetext.Normalizer` or `None`: The normalizer of the English branch, or `None` when
+            `wetext` is not installed.
+        """
+        if "en" not in self._text_normalizers:
+            self._text_normalizers["en"] = load_text_normalizer()
+        return self._text_normalizers["en"]
+
+    @property
+    def chinese_normalizer(self):
+        """
+        Returns:
+            `wetext.Normalizer` or `None`: The normalizer of the Chinese branch, built the way
+            upstream builds it, or `None` when `wetext` is not installed.
+        """
+        if "zh" not in self._text_normalizers:
+            self._text_normalizers["zh"] = load_text_normalizer(remove_erhua=False)
+        return self._text_normalizers["zh"]
 
     @property
     def speech_token_feature_extractor(self):
@@ -725,12 +790,13 @@ class CosyVoiceV1Processor(ProcessorMixin):
         Rewrites a sentence the way upstream's text front end does, then optionally splits it into the
         pieces upstream synthesizes one at a time.
 
-        A Chinese sentence loses the spaces that do not sit inside an embedded English word, has its
+        Each branch opens with the `wetext` text normalizer, which rewrites a date, a currency
+        amount, a unit and an abbreviation, and is skipped when `wetext` is not installed. A Chinese
+        sentence then loses the spaces that do not sit inside an embedded English word, has its
         corner marks spelled out, its brackets removed, its full stops and dashes replaced by their
-        Chinese counterparts and a trailing run of commas turned into a full stop. Any other sentence
-        has its digit runs read out by [`number_to_words`]. Text carrying a `<|` `|>` marker is returned
-        untouched. Neither branch runs a text normalizer over numbers, dates or abbreviations, which is
-        what upstream reaches `ttsfrd` or `wetext` for.
+        Chinese counterparts and a trailing run of commas turned into a full stop. Any other
+        sentence has its remaining digit runs read out by [`number_to_words`]. Text carrying a
+        `<|` `|>` marker is returned untouched.
 
         Args:
             text (`str`):
@@ -749,6 +815,8 @@ class CosyVoiceV1Processor(ProcessorMixin):
             return self.tokenizer.encode(piece, add_special_tokens=False)
 
         if contains_chinese(text):
+            if self.chinese_normalizer is not None:
+                text = self.chinese_normalizer.normalize(text)
             text = text.replace("\n", "")
             text = replace_blank(text)
             text = replace_corner_mark(text)
@@ -758,7 +826,7 @@ class CosyVoiceV1Processor(ProcessorMixin):
             text = re.sub(r"[\uff0c,\u3001]+$", "\u3002", text)
             pieces = split_paragraph(text, tokenize, "zh", token_max_n=80, token_min_n=60, merge_len=20)
         else:
-            text = spell_out_number(text, self.number_speller)
+            text = normalize_english(text, self.english_normalizer, self.number_speller)
             pieces = split_paragraph(text, tokenize, "en", token_max_n=80, token_min_n=60, merge_len=20)
         pieces = [piece for piece in pieces if not is_only_punctuation(piece)]
         return pieces if split else text
@@ -883,6 +951,8 @@ __all__ = [
     "CosyVoiceV1Processor",
     "contains_chinese",
     "is_only_punctuation",
+    "load_text_normalizer",
+    "normalize_english",
     "number_to_words",
     "remove_bracket",
     "replace_blank",
