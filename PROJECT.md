@@ -235,7 +235,7 @@ pretrained checkpoint yet; see "Runtime-verified" for that.
 | CosyVoice v2 | Yes | Yes | Yes | `08e20c74`, special tokens fixed in `d888c4ab`. Its converter passed a bare `AutoTokenizer`, so 17 of upstream's 19 markers were absent and split into ordinary pieces: the model spoke `[laughter]` aloud, transcribing as `LAUTYR`, and no longer does. Only `<|im_start|>` and `<|im_end|>` were already present, as base Qwen2 chat tokens. No embedding resize is needed; the table is 151936 rows against a fixed tokenizer length of 151663. Subclasses v1. Every flow matching component is bit exact against upstream's own classes with streaming on and off, as are the sine generator and the neural source filter; the vocoder differs by 1.2e-05, the scipy against torch Hann window floor. |
 | CosyVoice v3 | Yes | Yes | Yes | `961705ce`. Subclasses v2, and takes `F5TTSTimestepEmbedding`, `F5TTSDecoderLayer`, `F5TTSAdaLayerNormFinal` and `F5TTSRotaryEmbedding` from f5_tts, which is the DiT lineage the sibling map predicted. |
 | OmniVoice (`ommivoice`) | Yes | Yes | Yes | `a452fcd5`. 90 files to 9. All 313 tensors and 612,577,280 parameters load with every source weight consumed, the fused embedding is bit identical to upstream's formula, and `forward` matches an independent reimplementation to 4.8e-07 against 20.17 on shuffled targets. wav2vec2 WER 0.000. The processor absorbs Whisper transcription of a missing reference transcript, which ends the pydub, soundfile and librosa dependencies. |
-| Vocos | Yes | Yes | n/a (lifted from f5_tts, no upstream tree was vendored) | `f3e409be` and `cf5b12bf`. Own model folder covering both published frontends. Checked against upstream's own classes from the same weights: 1.5e-08 mel, 1.8e-07 encodec, and bit-for-bit on real VoxInstruct codes. `charactr/vocos-encodec-24khz` carries `feature_extractor.codebook_weights`, a trained 16384x128 parameter that the inherited blanket `feature_extractor.` ignore rule would have discarded silently. The adversarial half of the objective is not implemented; see the open item below. |
+| Vocos | Yes | Yes | n/a (lifted from f5_tts, no upstream tree was vendored) | `f3e409be` and `cf5b12bf`. Own model folder covering both published frontends. Checked against upstream's own classes from the same weights: 1.5e-08 mel, 1.8e-07 encodec, and bit-for-bit on real VoxInstruct codes. `charactr/vocos-encodec-24khz` carries `feature_extractor.codebook_weights`, a trained 16384x128 parameter that the inherited blanket `feature_extractor.` ignore rule would have discarded silently. The adversarial half of the objective is not implemented, which follows the `transformers` convention and is settled; see below. |
 | audiotools dependency removal | Done | | | No reference to `audiotools` remains in `pyproject.toml` or `voicestudio/`; already dead after the model migrations, nothing to change. |
 | vocos dependency removal | Done | | | Dependency was declared in `pyproject.toml` but never imported anywhere in the codebase; `F5TTSProcessor.decode` already took a generic `vocoder` callable rather than importing `vocos` directly. Removed the unused `pyproject.toml` entry and reworded docstrings/README that named `vocos` as if required. No transformers-tts-native vocoder matches F5-TTS's mel config (24kHz, 100 mel channels), so a caller-supplied vocoder is still required at `decode()` time; repo not deleted per task instructions. |
 | speechbrain fork removal | Done | | | Unused in repo; dependency dropped entirely (not switched to upstream). |
@@ -488,21 +488,70 @@ its transcriber named is not a result.
 
 Where a model samples, record a seed sweep and name the transcriber, not one draw.
 
-## Decided: GAN discriminators stay unimplemented
+## Settled: GAN discriminators stay unimplemented
 
-Vocos and CosyVoice both train their vocoder against a discriminator, and neither discriminator is
-implemented here. Vocos is missing the MPD and MRD hinge losses and their feature matching, leaving
-only the mel reconstruction term; CosyVoice is missing the same three plus the whole discriminator
-turn, leaving the 45 times mel term and the f0 term. Spark-TTS BiCodec, PromptTTS++ and BigVGAN have
-the same shape.
+This one is closed. It follows the `transformers` convention, the convention is measured below, and
+it is not an open scope decision in any folder. Do not reopen it.
 
-This was accepted rather than resolved. The discriminators are training-only modules that appear in
-no published checkpoint, no `transformers` model carries a discriminator inside its model class, and
-they pull in dependencies the migrations otherwise removed. Nothing about inference or about fine
-tuning the rest of a model is affected. What is affected is training a vocoder from scratch, which
-would not reproduce the released weights against these objectives, and `pretrain_mel_steps` is 0 in
-both released Vocos configs, so upstream never optimizes the reconstruction term alone either. The
-folder READMEs name every dropped class.
+**What is missing, per model.** Vocos is missing the MPD and MRD hinge generator losses and their
+feature matching, leaving the mel reconstruction term. CosyVoice v1, v2 and v3 are missing
+`generator_loss`, the feature matching loss and `tpr_loss`, plus the whole discriminator turn,
+leaving the 45 times mel term and the f0 term. BigVGAN is missing `loss_gen_f`, `loss_gen_s`,
+`loss_fm_f` and `loss_fm_s`, leaving the multiscale mel term. Spark-TTS BiCodec has the same shape.
+PromptTTS++ is a different item and this does not settle it: its vocoder objective was never traced,
+so it returns no loss at all rather than the non adversarial half of one.
+
+**The convention, measured.** Over the 510 model directories of the installed `transformers-tts`
+5.16.1 tree:
+
+- `grep -rl "Discriminator" models/ --include="*.py"` returns exactly two files.
+  `ElectraDiscriminatorPredictions` at `electra/modeling_electra.py:465` and
+  `FunnelDiscriminatorPredictions` at `funnel/modeling_funnel.py:653` are ELECTRA style replaced
+  token detection heads, a dense layer over hidden states, not adversaries over a waveform. Adding
+  `-i` finds only `electra/configuration_electra.py` on top of those two.
+- `MultiPeriodDiscriminator`, `MultiResolutionDiscriminator`, `MultiScaleDiscriminator` and
+  `MultiScaleSTFT` return 0 hits over the whole package.
+- `feature_loss`, `discriminator_loss`, `generator_loss`, `adversarial` and `hinge_loss` return 0
+  files over the whole package. `transformers/loss/` holds eleven loss modules, all of them object
+  detection, segmentation, RNNT, TDT or the `LOSS_MAPPING` cross entropy family, and none of them is
+  adversarial or feature matching.
+- Every vocoder ships generator only and inference only. `SpeechT5HifiGan.forward(spectrogram)`,
+  `FastSpeech2ConformerHifiGan.forward(spectrogram)`,
+  `VitsHifiGan.forward(spectrogram, global_conditioning)`,
+  `SeamlessM4THifiGan.forward(inputs_embeds)`, `SeamlessM4Tv2HifiGan.forward(inputs_embeds)` and
+  `Qwen2_5OmniToken2WavBigVGANModel.forward(mel_spectrogram)` each return a bare waveform tensor,
+  take no `labels` and compute no loss. `SeamlessM4TCodeHifiGan` and `SeamlessM4Tv2CodeHifiGan` are
+  the same with a speaker and language id. `VitsModel.forward` does take `labels`, and the first
+  thing it does with them is `raise NotImplementedError("Training of VITS is not supported yet.")`
+  at `vits/modeling_vits.py:1305`, even though VITS is adversarially trained upstream.
+  `FastSpeech2ConformerModel` is the one audio model that computes a real synthesis loss, through
+  `self.criterion` over `spectrogram_labels`, `duration_labels`, `pitch_labels` and `energy_labels`,
+  and that is the acoustic model; the paired `FastSpeech2ConformerWithHifiGan.forward` passes those
+  through and adds no vocoder term.
+- Every codec ships the same way. `EncodecModel`, `MimiModel`, `XcodecModel`, `Xcodec2Model`,
+  `HiggsAudioV2TokenizerModel` and `VibeVoiceAcousticTokenizerModel` take no `labels` and compute no
+  loss, and the VibeVoice file contains neither word anywhere. `DacModel` is the sharpest case: DAC
+  is trained upstream against a multi scale STFT discriminator with mel, feature matching and
+  adversarial terms, and `DacOutput.loss` is
+  `commitment_loss_weight * commitment + codebook_loss_weight * codebook` at
+  `dac/modeling_dac.py:602` and nothing else. So the convention is not that a GAN trained model
+  carries no objective. It is that it carries the part of its objective that needs no
+  discriminator, and carries no discriminator.
+
+**What follows.** `voicestudio/models/bigvgan` and `voicestudio/models/vocos` return the mel
+reconstruction term from `forward(labels=...)`, and CosyVoice's vocoder returns the mel and f0 terms
+from `compute_loss`, so these folders offer more training support than any vocoder in `transformers`
+offers, not less. Nothing about inference or about fine tuning the rest of a model is affected.
+
+Two facts stay on the record and neither reopens this. Training a vocoder from scratch through
+`forward` alone would not reproduce the released weights, and there is no phase of upstream training
+that optimizes the reconstruction term alone to fall back on, since `pretrain_mel_steps` is 0 in
+both released Vocos configs and `--freeze_step` is 0 in BigVGAN's. And the checkpoint asymmetry: the
+Vocos and CosyVoice discriminators appear in no published checkpoint, but BigVGAN's do, since every
+`nvidia/bigvgan*` repository ships a `bigvgan_discriminator_optimizer.pt`, so weights to verify a
+BigVGAN discriminator against do exist.
+
+The folder READMEs name every dropped class.
 
 ## Sibling inheritance map
 
