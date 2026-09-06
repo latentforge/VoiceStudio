@@ -13,14 +13,12 @@ The released weights are not under the code's licence. `BreezeBlue/breeze-tts-2`
 ## Usage
 
 ```python
-from transformers import AutoModelForTextToWaveform
-
-from voicestudio.models.breeze_tts import BreezeTTSProcessor
+from voicestudio.models.breeze_tts import BreezeTTSForConditionalGeneration, BreezeTTSProcessor
 
 model_id = "BreezeBlue/breeze-tts-2"
 
 processor = BreezeTTSProcessor.from_pretrained(model_id)
-model = AutoModelForTextToWaveform.from_pretrained(model_id)
+model = BreezeTTSForConditionalGeneration.from_pretrained(model_id)
 model.to("cuda")
 processor.audio_tokenizer.to(model.device)
 ```
@@ -28,6 +26,16 @@ processor.audio_tokenizer.to(model.device)
 `AutoProcessor` does not reach this processor: `BreezeBlue/breeze-tts-2` declares
 `processor_class: Gemma3Processor` in its `tokenizer_config.json`, which `transformers` follows into
 an image processor the repository does not carry.
+
+The model half does have an `Auto` route, once `voicestudio.models` has been imported for the
+registration that aliases the checkpoint's `breeze` model type onto `BreezeTTSConfig`:
+
+```python
+import voicestudio.models  # noqa: F401
+from transformers import AutoModelForTextToWaveform
+
+model = AutoModelForTextToWaveform.from_pretrained(model_id)
+```
 
 Voice design, from a natural-language description of the voice alone:
 
@@ -87,7 +95,7 @@ instead, which the checkpoint carries as `codec_model`.
 
 The bundled audio tokenizer is a raw Qwen3-TTS-Tokenizer-12Hz checkpoint whose decoder quantizer is
 stored under `decoder.quantizer.rvq_first`/`rvq_rest`, which is not where
-`Qwen3TTSTokenizerMultiCodebookModel` looks for it. `AutoProcessor.from_pretrained` reads that layout as
+`Qwen3TTSTokenizerMultiCodebookModel` looks for it. `BreezeTTSProcessor.from_pretrained` reads that layout as
 it stands: the keys are renamed as the tokenizer loads, by the conversion mapping
 `voicestudio.models.qwen3_tts` registers for `Qwen3TTSTokenizerMultiCodebookConfig`, which is also what
 Qwen3-TTS itself loads its `speech_tokenizer` subfolder through.
