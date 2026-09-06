@@ -15,10 +15,10 @@ from ..cosyvoice_v1.processing_cosyvoice_v1 import (
 )
 from ..cosyvoice_v2.processing_cosyvoice_v2 import (
     SPECIAL_TOKENS as V2_SPECIAL_TOKENS,
-    CosyVoiceV2FeatureExtractor,
     CosyVoiceV2Processor,
 )
 from .configuration_cosyvoice_v3 import CosyVoiceV3Config
+from .feature_extraction_cosyvoice_v3 import CosyVoiceV3FeatureExtractor
 from .weight_conversion import SPEECH_TOKENIZER_FILE
 
 
@@ -105,17 +105,6 @@ def normalize_english_outside_markup(text: str, english_normalizer, number_spell
     return rewrite_outside_markup(
         text, lambda piece: normalize_english(piece, english_normalizer, number_speller)
     )
-
-
-class CosyVoiceV3FeatureExtractor(CosyVoiceV2FeatureExtractor):
-    r"""
-    Constructs a CosyVoice v3 feature extractor, which is v2's unchanged: the flow matching model of
-    both versions is conditioned on the same 24 kHz, 80 bin log mel spectrogram.
-
-    Args:
-        kwargs:
-            Forwarded to [`CosyVoiceV2FeatureExtractor`].
-    """
 
 
 class CosyVoiceV3Processor(CosyVoiceV2Processor):
@@ -225,7 +214,6 @@ class CosyVoiceV3Processor(CosyVoiceV2Processor):
 __all__ = [
     "ADDED_TOKEN_PATTERN",
     "SPECIAL_TOKENS",
-    "CosyVoiceV3FeatureExtractor",
     "CosyVoiceV3Processor",
     "normalize_english_outside_markup",
     "rewrite_outside_markup",

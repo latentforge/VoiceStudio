@@ -692,7 +692,7 @@ rewrote 199 of that file's 327 lines and only the language table survived intact
 |---|---|
 | `cosyvoice/llm/llm.py` | `modeling_cosyvoice_v1.py`. `TransformerLM` became `CosyVoiceV1SpeechTokenLM` plus `CosyVoiceV1ForConditionalGeneration`. |
 | `cosyvoice/cli/model.py` | `generation_cosyvoice_v1.py`. `CosyVoiceModel.token2wav` and `CosyVoiceModel.tts` became `CosyVoiceV1GenerationMixin`. |
-| `cosyvoice/cli/frontend.py` | `processing_cosyvoice_v1.py`. |
+| `cosyvoice/cli/frontend.py` | `processing_cosyvoice_v1.py`, except the mel spectrogram extraction, which is `feature_extraction_cosyvoice_v1.py`. |
 | `cosyvoice/cli/cosyvoice.py` | `weight_conversion.py`. Its `load` method became the reading of a released directory, which `from_pretrained` calls when the published layout is what it was given. |
 | `cosyvoice.yaml` | `configuration_cosyvoice_v1.py`. |
 | `cosyvoice/__init__.py` | `__init__.py`. |

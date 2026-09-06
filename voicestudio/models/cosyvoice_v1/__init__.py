@@ -15,6 +15,7 @@ from transformers.utils.auto_docstring import HARDCODED_CONFIG_FOR_MODELS
 HARDCODED_CONFIG_FOR_MODELS["cosyvoice-v1"] = "CosyVoiceV1Config"
 
 from .configuration_cosyvoice_v1 import CosyVoiceV1Config
+from .feature_extraction_cosyvoice_v1 import CosyVoiceV1FeatureExtractor
 from .generation_cosyvoice_v1 import (
     CosyVoiceV1GenerationMixin,
     fade_in_out,
@@ -39,7 +40,7 @@ from .modeling_cosyvoice_v1 import (
     CosyVoiceV1VocoderOutput,
     build_speech_token_labels,
 )
-from .processing_cosyvoice_v1 import CosyVoiceV1FeatureExtractor, CosyVoiceV1Processor
+from .processing_cosyvoice_v1 import CosyVoiceV1Processor
 from .tokenization_cosyvoice_v1 import CosyVoiceV1Tokenizer
 
 

@@ -15,6 +15,7 @@ from transformers.utils.auto_docstring import HARDCODED_CONFIG_FOR_MODELS
 HARDCODED_CONFIG_FOR_MODELS["cosyvoice-v3"] = "CosyVoiceV3Config"
 
 from .configuration_cosyvoice_v3 import CosyVoiceV3Config
+from .feature_extraction_cosyvoice_v3 import CosyVoiceV3FeatureExtractor
 from .generation_cosyvoice_v3 import CosyVoiceV3GenerationMixin
 from .modeling_cosyvoice_v3 import (
     CosyVoiceV3AdaLayerNormFinal,
@@ -40,11 +41,7 @@ from .modeling_cosyvoice_v3 import (
     CosyVoiceV3TimestepEmbedding,
     build_chunk_mask,
 )
-from .processing_cosyvoice_v3 import (
-    SPECIAL_TOKENS,
-    CosyVoiceV3FeatureExtractor,
-    CosyVoiceV3Processor,
-)
+from .processing_cosyvoice_v3 import SPECIAL_TOKENS, CosyVoiceV3Processor
 
 
 AutoConfig.register(CosyVoiceV3Config.model_type, CosyVoiceV3Config, exist_ok=True)

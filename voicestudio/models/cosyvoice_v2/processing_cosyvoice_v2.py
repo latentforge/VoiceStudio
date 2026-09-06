@@ -9,9 +9,10 @@ import torch
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.auto.tokenization_auto import AutoTokenizer
 
-from ..cosyvoice_v1.processing_cosyvoice_v1 import CosyVoiceV1FeatureExtractor, CosyVoiceV1Processor
+from ..cosyvoice_v1.processing_cosyvoice_v1 import CosyVoiceV1Processor
 from ..cosyvoice_v1.weight_conversion import resolve_checkpoint
 from .configuration_cosyvoice_v2 import CosyVoiceV2Config
+from .feature_extraction_cosyvoice_v2 import CosyVoiceV2FeatureExtractor
 from .modeling_cosyvoice_v2 import CosyVoiceV2SpeechTokenizer
 from .weight_conversion import SPEECH_TOKENIZER_FILE, TEXT_MODEL_SUBDIR
 
@@ -26,59 +27,6 @@ SPECIAL_TOKENS = [
     "[hissing]", "[sigh]", "[vocalized-noise]",
     "[lipsmack]", "[mn]",
 ]
-
-
-class CosyVoiceV2FeatureExtractor(CosyVoiceV1FeatureExtractor):
-    r"""
-    Constructs a CosyVoice v2 feature extractor, which turns a waveform into the 24 kHz log mel
-    spectrogram the flow matching model is conditioned on and trained against.
-
-    Args:
-        feature_size (`int`, *optional*, defaults to 80):
-            Number of mel bins.
-        sampling_rate (`int`, *optional*, defaults to 24000):
-            Rate the incoming waveform is resampled to before the mel spectrogram is taken.
-        mel_sampling_rate (`int`, *optional*, defaults to 24000):
-            Rate the mel filter bank is built for.
-        n_fft (`int`, *optional*, defaults to 1920):
-            Size of the Fourier transform.
-        hop_length (`int`, *optional*, defaults to 480):
-            Hop between two consecutive frames.
-        win_length (`int`, *optional*, defaults to 1920):
-            Size of the analysis window.
-        fmin (`float`, *optional*, defaults to 0.0):
-            Lowest frequency of the mel filter bank.
-        fmax (`float`, *optional*, defaults to 8000.0):
-            Highest frequency of the mel filter bank.
-        padding_value (`float`, *optional*, defaults to 0.0):
-            Value used to pad batches of spectrograms.
-    """
-
-    def __init__(
-        self,
-        feature_size: int = 80,
-        sampling_rate: int = 24000,
-        mel_sampling_rate: int = 24000,
-        n_fft: int = 1920,
-        hop_length: int = 480,
-        win_length: int = 1920,
-        fmin: float = 0.0,
-        fmax: float = 8000.0,
-        padding_value: float = 0.0,
-        **kwargs,
-    ):
-        super().__init__(
-            feature_size=feature_size,
-            sampling_rate=sampling_rate,
-            mel_sampling_rate=mel_sampling_rate,
-            n_fft=n_fft,
-            hop_length=hop_length,
-            win_length=win_length,
-            fmin=fmin,
-            fmax=fmax,
-            padding_value=padding_value,
-            **kwargs,
-        )
 
 
 class CosyVoiceV2Processor(CosyVoiceV1Processor):
@@ -241,4 +189,4 @@ class CosyVoiceV2Processor(CosyVoiceV1Processor):
         return data
 
 
-__all__ = ["SPECIAL_TOKENS", "CosyVoiceV2FeatureExtractor", "CosyVoiceV2Processor"]
+__all__ = ["SPECIAL_TOKENS", "CosyVoiceV2Processor"]

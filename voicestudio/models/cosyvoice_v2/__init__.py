@@ -15,6 +15,7 @@ from transformers.utils.auto_docstring import HARDCODED_CONFIG_FOR_MODELS
 HARDCODED_CONFIG_FOR_MODELS["cosyvoice-v2"] = "CosyVoiceV2Config"
 
 from .configuration_cosyvoice_v2 import CosyVoiceV2Config
+from .feature_extraction_cosyvoice_v2 import CosyVoiceV2FeatureExtractor
 from .generation_cosyvoice_v2 import CosyVoiceV2GenerationMixin
 from .modeling_cosyvoice_v2 import (
     CosyVoiceV2CausalBlock1D,
@@ -35,7 +36,7 @@ from .modeling_cosyvoice_v2 import (
     CosyVoiceV2Upsample1D,
     CosyVoiceV2UpsampleEncoder,
 )
-from .processing_cosyvoice_v2 import CosyVoiceV2FeatureExtractor, CosyVoiceV2Processor
+from .processing_cosyvoice_v2 import CosyVoiceV2Processor
 
 
 AutoConfig.register(CosyVoiceV2Config.model_type, CosyVoiceV2Config, exist_ok=True)
