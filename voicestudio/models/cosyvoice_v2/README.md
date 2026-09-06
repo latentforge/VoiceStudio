@@ -170,7 +170,7 @@ Everything v1 removed stays removed. What v2 adds on top, and what each turned i
 | `transformers.Qwen2ForCausalLM` inside `Qwen2Encoder` | Native `Qwen2Model`, already in `transformers-tts`. |
 | `diffusers`, `matcha-tts`, `einops`, `omegaconf`, `hyperpyyaml`, `torchdiffeq` | Removed the same way v1 removed them. |
 | `onnxruntime` | Removed. See below. |
-| `wetext` | Kept, as the `frontend` extra rather than a core dependency, on the same terms as v1. See "The text normalizer". |
+| `wetext` | Lazily imported, and not declared, on the same terms as v1. See "The text normalizer". |
 
 `onnxruntime` was the last one, and it is gone. CosyVoice v2's speech tokenizer
 (`speech_tokenizer_v2.onnx`, 496 MB) and speaker encoder (`campplus.onnx`, 28 MB) are both PyTorch
@@ -400,13 +400,15 @@ adapter absorbs is that upstream reads the cache length as `cache[0][0].size(2)`
 ## The text normalizer
 
 `normalize_text` is v1's, and how it composes `wetext` with `number_to_words` is described in
-`voicestudio/models/cosyvoice_v1/README.md`. What is v2's is the measurement, and v2 is the model
-where the Chinese half matters most.
+`voicestudio/models/cosyvoice_v1/README.md`, along with the warning it raises when `wetext` is
+absent. `wetext` is a package the caller installs rather than one this project declares:
+`pyproject.toml` names it nowhere. What is v2's is the measurement, and v2 is the model where the
+Chinese half matters most.
 
 English, zero shot from the 5.86 s LibriSpeech clip, three seeds, `facebook/wav2vec2-base-960h`,
 word error rate against the text each setting handed to the model. `today` is this repository
-without the `frontend` extra, `clvp` is `today` plus `EnglishNormalizer` from
-`transformers.models.clvp`, which was measured and rejected, and `wetext` is the extra installed.
+without `wetext` installed, `clvp` is `today` plus `EnglishNormalizer` from
+`transformers.models.clvp`, which was measured and rejected, and `wetext` is it installed.
 
 | Case | off | today | clvp | wetext |
 |---|---|---|---|---|
@@ -493,8 +495,8 @@ Recorded per CLAUDE.md section 2.6.
   probabilities over the positions where the target **is** `IGNORE_ID` rather than where it is not,
   which reads like a sign error in upstream and is recorded here rather than corrected.
 - **`ttsfrd`.** `CosyVoiceV2Processor` inherits `CosyVoiceV1Processor.normalize_text`, which now
-  reaches `wetext` when the `frontend` extra is installed and reproduces upstream's third branch when
-  it is not; see "The text normalizer" below. `ttsfrd`, which upstream tries first, is still out of
+  reaches `wetext` when the caller has installed it and reproduces upstream's third branch when it is
+  not; see "The text normalizer" below. `ttsfrd`, which upstream tries first, is still out of
   reach and the reasons are in `voicestudio/models/cosyvoice_v1/README.md`. Whether anything is left
   that only `ttsfrd` would fix is unmeasured, because it cannot be run, and that is **still open**.
 - **A speaker table.** The released v2 directory ships no `spk2info.pt`, ModelScope's
