@@ -14,19 +14,54 @@
 """Processor class for Qwen3-TTS."""
 
 import json
-import os
 from typing import Literal, Union
 
-from huggingface_hub import snapshot_download
 from transformers import AutoConfig
+from transformers.conversion_mapping import (
+    WeightRenaming,
+    get_checkpoint_conversion_mapping,
+    register_checkpoint_conversion_mapping,
+)
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.qwen3_tts.processing_qwen3_tts import Qwen3TTSProcessor as _Qwen3TTSProcessor
-from transformers.models.qwen3_tts_tokenizer_multi_codebook.convert_qwen3_tts_tokenizer_multi_codebook_to_hf import (
-    convert as _convert_qwen3_tts_tokenizer_multi_codebook,
+from transformers.models.qwen3_tts_tokenizer_multi_codebook.configuration_qwen3_tts_tokenizer_multi_codebook import (
+    Qwen3TTSTokenizerMultiCodebookConfig,
 )
 from transformers.models.qwen3_tts_tokenizer_multi_codebook.modeling_qwen3_tts_tokenizer_multi_codebook import (
     Qwen3TTSTokenizerMultiCodebookModel,
 )
+from transformers.utils import CONFIG_NAME
+from transformers.utils.hub import cached_file
+
+
+# `model_type` a checkpoint carries while it is still in the layout Qwen3-TTS-Tokenizer-12Hz publishes,
+# whose configuration is of a schema [`Qwen3TTSTokenizerMultiCodebookConfig`] does not read.
+_ORIGINAL_MODEL_TYPE = "qwen3_tts_tokenizer_12hz"
+
+# Keyword arguments of [`~transformers.utils.hub.cached_file`] that select which copy of a repository is read.
+_DOWNLOAD_KWARGS = ("revision", "token", "cache_dir", "local_files_only")
+
+# The original layout keeps the decoder's two residual quantizers under `rvq_first` and `rvq_rest`, each
+# codebook behind a `vq` module, and the codebook's running sum under `embedding_sum`. Loading it unrenamed
+# leaves the whole decoder quantizer at its initialization, which is correctly shaped and meaningless: the
+# codes a reference waveform encodes to and the waveform codes decode to are both wrong.
+if get_checkpoint_conversion_mapping(Qwen3TTSTokenizerMultiCodebookConfig.model_type) is None:
+    register_checkpoint_conversion_mapping(
+        Qwen3TTSTokenizerMultiCodebookConfig.model_type,
+        [
+            WeightRenaming(
+                source_patterns=r"decoder\.quantizer\.rvq_first\.",
+                target_patterns="decoder.quantizer.semantic_residual_vector_quantizer.",
+            ),
+            WeightRenaming(
+                source_patterns=r"decoder\.quantizer\.rvq_rest\.",
+                target_patterns="decoder.quantizer.acoustic_residual_vector_quantizer.",
+            ),
+            WeightRenaming(source_patterns=r"\.vq\.layers\.", target_patterns=".layers."),
+            WeightRenaming(source_patterns=r"\._codebook\.", target_patterns=".codebook."),
+            WeightRenaming(source_patterns=r"\.embedding_sum", target_patterns=".embed_sum"),
+        ],
+    )
 
 
 # Maps the task implied by a call's arguments to the `tts_model_type` value a
@@ -51,37 +86,40 @@ _IMPLIED_TASK_TO_NON_STREAMING_MODE = {
 }
 
 
-def _load_audio_tokenizer(
+def load_audio_tokenizer(
     pretrained_model_name_or_path, subfolder: str, **kwargs
 ) -> Qwen3TTSTokenizerMultiCodebookModel:
+    r"""
+    Loads a bundled Qwen3-TTS-Tokenizer-12Hz as a [`Qwen3TTSTokenizerMultiCodebookModel`].
+
+    A checkpoint still in the layout Qwen3-TTS-Tokenizer-12Hz publishes describes itself with a configuration
+    [`Qwen3TTSTokenizerMultiCodebookConfig`] does not read, so the model is built from the defaults that layout
+    implies and its keys are renamed as it loads.
+
+    Args:
+        pretrained_model_name_or_path (`str` or `os.PathLike`):
+            Repository id or local directory holding the checkpoint.
+        subfolder (`str`):
+            Directory inside it the audio tokenizer sits in.
+        kwargs (`dict`, *optional*):
+            Keyword arguments of [`~PreTrainedModel.from_pretrained`].
+
+    Returns:
+        [`Qwen3TTSTokenizerMultiCodebookModel`]: The audio tokenizer.
     """
-    Loads the `speech_tokenizer` subfolder as a [`Qwen3TTSTokenizerMultiCodebookModel`], converting it
-    first if it is still in the original Qwen3-TTS-Tokenizer-12Hz checkpoint format (`model_type`
-    `"qwen3_tts_tokenizer_12hz"`, not `transformers`'s own `"qwen3_tts_tokenizer_multi_codebook"`).
-    """
-    if os.path.isdir(pretrained_model_name_or_path):
-        source_dir = os.path.join(pretrained_model_name_or_path, subfolder)
-    else:
-        snapshot_kwargs = {k: v for k, v in kwargs.items() if k in ("revision", "token", "cache_dir")}
-        source_dir = os.path.join(
-            snapshot_download(
-                pretrained_model_name_or_path, allow_patterns=f"{subfolder}/*", **snapshot_kwargs
-            ),
-            subfolder,
-        )
+    config_file = cached_file(
+        pretrained_model_name_or_path,
+        CONFIG_NAME,
+        subfolder=subfolder,
+        **{key: value for key, value in kwargs.items() if key in _DOWNLOAD_KWARGS},
+    )
+    with open(config_file) as file:
+        model_type = json.load(file).get("model_type")
 
-    with open(os.path.join(source_dir, "config.json")) as f:
-        model_type = json.load(f).get("model_type")
-
-    if model_type == Qwen3TTSTokenizerMultiCodebookModel.config_class.model_type:
-        return Qwen3TTSTokenizerMultiCodebookModel.from_pretrained(source_dir, **kwargs)
-
-    converted_dir = source_dir.rstrip("/") + "_converted"
-    if not os.path.isfile(os.path.join(converted_dir, "config.json")):
-        _convert_qwen3_tts_tokenizer_multi_codebook(
-            source_dir, converted_dir, push_to_hub=None, bfloat16=False, max_shard_size="5GB"
-        )
-    return Qwen3TTSTokenizerMultiCodebookModel.from_pretrained(converted_dir, **kwargs)
+    config = Qwen3TTSTokenizerMultiCodebookConfig() if model_type == _ORIGINAL_MODEL_TYPE else None
+    return Qwen3TTSTokenizerMultiCodebookModel.from_pretrained(
+        pretrained_model_name_or_path, subfolder=subfolder, config=config, **kwargs
+    )
 
 
 class Qwen3TTSProcessor(_Qwen3TTSProcessor):
@@ -119,7 +157,7 @@ class Qwen3TTSProcessor(_Qwen3TTSProcessor):
     ):
         processor = super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
         if getattr(processor, "audio_tokenizer", None) is None:
-            processor.audio_tokenizer = _load_audio_tokenizer(
+            processor.audio_tokenizer = load_audio_tokenizer(
                 pretrained_model_name_or_path, audio_tokenizer_subfolder, **kwargs
             )
         if task is None:
