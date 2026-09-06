@@ -37,7 +37,7 @@ research = [  # full-research setup
     "voicestudio[train]",
     "voicestudio[eval]",
 ]
-cloud = [  $ nvidia infra setup
+cloud = [  # nvidia infra setup
     "torch ; platform_system == 'Windows'",
     "torch>=2.8.0",
     "numpy>=2.3.5",

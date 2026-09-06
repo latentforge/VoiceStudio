@@ -1,6 +1,6 @@
 # VoiceStudio
 
-[![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.13%2B-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.8%2B-red.svg)](https://pytorch.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 
@@ -27,45 +27,53 @@ Comparing them is a loop. Fine tuning one is the training code you already have.
 - **Trainable, not inference only**: every model returns a loss, with the objective read out of the upstream project's own trainer rather than guessed from its shape
 - **Verified against published weights**: loaded from the real checkpoint, made to speak, and the audio transcribed back and compared to the text it was given
 - **Direct loading**: `from_pretrained` on the official repository id, with no conversion step for the caller to run
-- **Fewer dependencies**: a migration ends an upstream import rather than adding one, leaving `torch`, `transformers` and six others
+- **Fewer dependencies**: a migration ends an upstream import rather than adding one, leaving
+  `transformers` as the only required dependency and everything else behind an extra
 
 ---
 
 ## 🛠️ Installation
 
-Python 3.11 or newer, and PyTorch 2.8 or newer.
+Python 3.13 or newer, and PyTorch 2.8 or newer.
+
+The base install carries only `transformers[kernels]`. The runtime and the audio stack are extras,
+so pick the ones for the machine you are on.
 
 ### From source
 
 ```bash
 git clone https://github.com/LatentForge/VoiceStudio.git
 cd VoiceStudio
-uv sync
+uv sync --extra cloud --extra audio
 ```
 
-### For development
+### For research
 
 ```bash
 git clone https://github.com/LatentForge/VoiceStudio.git
 cd VoiceStudio
-uv sync --all-extras
+uv sync --extra research
 ```
 
-Use `uv sync` rather than `pip install`. Several dependencies are pinned to specific sources in
+Use `uv sync` rather than `pip install`. `torch` is pinned to a specific index for Windows in
 `[tool.uv.sources]`, and `pip` ignores that file. The `voicestudio` distribution on PyPI predates
 this work and does not carry the models below.
 
-Optional extras, selected with `uv sync --extra <name>` or all at once with `uv sync --all-extras`:
+Extras, selected with `uv sync --extra <name>` or all at once with `uv sync --all-extras`:
 
 | Extra | Pulls in | Needed for |
 |---|---|---|
-| `train` | `accelerate`, `wandb`, `matplotlib`, `notebook`, `ipywidgets` | training runs and notebooks |
-| `eval` | `pyworld`, `jiwer` | f0 extraction for CosyVoice's vocoder objective, and the word error rate check used to verify a model |
-| `kernels` | `transformers[kernels]` | flash attention and other fused kernels |
+| `research` | `cloud`, `audio`, `omni`, `train`, `eval` | the full research setup, everything but `native` and `web` |
+| `cloud` | `torch`, `numpy`, `hf-xet` | running on NVIDIA hardware, the usual runtime |
+| `native` | `torchnative` | on-device inference, in place of `cloud` |
+| `audio` | `torchaudio`, `torchcodec`, `librosa`, `soundfile` | reading and writing waveforms, which every processor here does |
 | `omni` | `pillow`, `torchvision` | Chroma, whose processor subclasses `Qwen2_5OmniProcessor` |
-| `native` | `torchnative` | on-device inference |
+| `train` | `accelerate`, `wandb`, `matplotlib`, `notebook`, `ipywidgets`, `tqdm` | training runs and notebooks |
+| `eval` | `pyworld`, `jiwer` | f0 extraction for CosyVoice's vocoder objective, and the word error rate check used to verify a model |
 | `web` | `fastapi` | the web front end |
-| `all` | `train`, `eval`, `kernels`, `omni`, `web` | everything except `native` |
+
+Flash attention and the other fused kernels come through `transformers[kernels]`, which the base
+install already carries, so there is no extra to select for them.
 
 ---
 
@@ -254,7 +262,7 @@ And the libraries the code is built out of:
 
 - [Hugging Face `transformers`](https://github.com/huggingface/transformers), whose model classes
   almost every file here inherits from.
-- [PyTorch](https://pytorch.org/), with `torchaudio` and `torchcodec`.
+- [PyTorch](https://pytorch.org/), with `torchaudio` and `torchcodec` behind the `audio` extra.
 - [librosa](https://github.com/librosa/librosa) and [NumPy](https://numpy.org/).
 
 ---
