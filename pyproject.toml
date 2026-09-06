@@ -27,30 +27,37 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
 dependencies = [
-    "numpy>=2.3.5",
-    "torch ; platform_system == 'Windows'",
-    "torch>=2.8.0",
-    "torchaudio ; platform_system == 'Windows'",
-    "torchaudio>=2.8.0",
-    "torchcodec>=0.9.1",
-    "librosa>=0.11.0",
-    "soundfile>=0.13.1",
-    "transformers>=5.16.0",
-    "hf-xet>=1.1.8",
-    "tqdm>=4.67.1",
+    "transformers[kernels]>=5.16.0",
 ]
 [project.optional-dependencies]
-all = [
+research = [  # full-research setup
+    "voicestudio[cloud]",
+    "voicestudio[audio]",
+    "voicestudio[omni]",
     "voicestudio[train]",
     "voicestudio[eval]",
-    "voicestudio[kernels]",
-    "voicestudio[omni]",
-    "voicestudio[web]",
 ]
-kernels = [
-    "transformers[kernels]",
+cloud = [  $ nvidia infra setup
+    "torch ; platform_system == 'Windows'",
+    "torch>=2.8.0",
+    "numpy>=2.3.5",
+    "hf-xet>=1.1.8",
+]
+native = [  # on-device setup
+    "torchnative",
+]
+audio = [  # audio processing
+    "torchaudio",
+    "torchcodec",
+    "librosa>=0.11.0",
+    "soundfile>=0.13.1",
+]
+omni = [  # multimodal processing
+    "pillow",
+    "torchvision",
 ]
 train = [
+    "tqdm>=4.67.1",
     "accelerate>=1.10.0",
     "matplotlib>=3.10.5",
     "wandb>=0.21.1",
@@ -61,22 +68,12 @@ eval = [
     "pyworld>=0.3.5",  # f0 extraction for CosyVoice's vocoder objective
     "jiwer>=4.0.0",  # word error rate, the transcription check in CLAUDE.md section 2.5
 ]
-omni = [
-    "pillow",
-    "torchvision",
-]
-native = [  # on-device inference
-    "torchnative",
-]
 web = [  # Voice Studio Web
     "fastapi>=0.126.0",
 ]
 
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-windows", marker = "platform_system == 'Windows'" },
-]
-torchaudio = [
     { index = "pytorch-windows", marker = "platform_system == 'Windows'" },
 ]
 
