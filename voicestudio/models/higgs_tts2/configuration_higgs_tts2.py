@@ -1,0 +1,1 @@
+from transformers.models.higgs_audio_v2.configuration_higgs_audio_v2 import HiggsAudioV2Config as HiggsTTS2Config

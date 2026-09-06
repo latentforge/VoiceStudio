@@ -1,4 +1,4 @@
-# Copyright (c) 2025 SparkAudio
+# Copyright 2025 SparkAudio, Xinsheng Wang and the LatentForge team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,334 +11,434 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Processor class for Spark-TTS."""
 
-"""SparkTTS audio processing."""
+import re
 
-from pathlib import Path
-from typing import Optional, Tuple, Union
-
-import numpy as np
-import soundfile as sf
-import soxr
 import torch
 
-from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2Model
-from transformers.processing_utils import ProcessorMixin
+from transformers.audio_utils import AudioInput, make_list_of_audio
+from transformers.feature_extraction_utils import BatchFeature
+from transformers.processing_utils import ProcessingKwargs, ProcessorMixin, Unpack
+from transformers.tokenization_utils_base import PreTokenizedInput, TextInput
 from transformers.utils import logging
+from transformers.utils.import_utils import requires
 
-from .modeling_spark_tts import BiCodecModel
+from ..cosyvoice_v1.processing_cosyvoice_v1 import contains_chinese
+from .weight_conversion import convert_published_checkpoint
 
 
 logger = logging.get_logger(__name__)
 
+TASK_TOKENS = {
+    "vc": "<|task_vc|>",
+    "tts": "<|task_tts|>",
+    "asr": "<|task_asr|>",
+    "s2s": "<|task_s2s|>",
+    "t2s": "<|task_t2s|>",
+    "understand": "<|task_understand|>",
+    "caption": "<|task_cap|>",
+    "controllable_tts": "<|task_controllable_tts|>",
+    "prompt_tts": "<|task_prompt_tts|>",
+    "speech_edit": "<|task_edit|>",
+}
 
+LEVELS = {"very_low": 0, "low": 1, "moderate": 2, "high": 3, "very_high": 4}
+
+GENDERS = {"female": 0, "male": 1}
+
+SEMANTIC_TOKEN_PATTERN = re.compile(r"^<\|bicodec_semantic_(\d+)\|>$")
+GLOBAL_TOKEN_PATTERN = re.compile(r"^<\|bicodec_global_(\d+)\|>$")
+
+
+class SparkTTSProcessorKwargs(ProcessingKwargs, total=False):
+    _defaults = {
+        "text_kwargs": {
+            "padding": True,
+            "padding_side": "left",
+            "add_special_tokens": False,
+        },
+        "audio_kwargs": {
+            "sampling_rate": 16000,
+        },
+    }
+
+
+@requires(backends=("torch",))
 class SparkTTSProcessor(ProcessorMixin):
-    """
-    Constructs a SparkTTS processor which wraps a Wav2Vec2 feature extractor and BiCodec audio tokenizer.
-    
-    This processor can be used to prepare audio for the model and tokenize/detokenize audio.
-    
+    r"""
+    Constructs a Spark-TTS processor which wraps a [`SparkTTSFeatureExtractor`], an [`AutoTokenizer`] and a
+    [`SparkTTSBiCodecModel`] into a single processor. See [`~SparkTTSProcessor.__call__`] and
+    [`~SparkTTSProcessor.decode`] for more information.
+
+    Spark-TTS drives two prompt layouts over one vocabulary. Passing `reference_audio` clones the voice of that clip
+    by prefixing its BiCodec global tokens; passing `gender`, `pitch` and `speed` instead builds a voice from
+    attribute labels, in which case the model emits its own global tokens.
+
     Args:
-        feature_extractor (`Wav2Vec2FeatureExtractor`): The feature extractor for Wav2Vec2.
-        bicodec (`BiCodecModel`): The BiCodec model for audio tokenization.
-        wav2vec2 (`Wav2Vec2Model`, *optional*): The Wav2Vec2 model for feature extraction.
-    
-    Example:
-    
-    ```python
-    >>> from voicestudio.models.spark_tts import SparkTTSProcessor, BiCodecModel
-    >>> from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2Model
-    
-    >>> # Load components
-    >>> feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained("facebook/wav2vec2-large-xlsr-53")
-    >>> bicodec = BiCodecModel.from_pretrained("SparkAudio/Spark-TTS-0.5B", subfolder="BiCodec")
-    >>> wav2vec2 = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-large-xlsr-53")
-    
-    >>> # Create processor
-    >>> processor = SparkTTSProcessor(feature_extractor=feature_extractor, bicodec=bicodec, wav2vec2=wav2vec2)
-    ```
+        feature_extractor ([`SparkTTSFeatureExtractor`]):
+            The feature extractor, a required input.
+        tokenizer ([`AutoTokenizer`]):
+            The tokenizer, a required input.
+        audio_tokenizer ([`SparkTTSBiCodecModel`]):
+            The BiCodec audio tokenizer, a required input.
+        chat_template (`str`, *optional*):
+            Template string used to format chat-style inputs.
     """
-    
-    attributes = ["feature_extractor"]
-    feature_extractor_class = "Wav2Vec2FeatureExtractor"
-    
-    def __init__(
-        self,
-        feature_extractor: Wav2Vec2FeatureExtractor,
-        bicodec: BiCodecModel,
-        wav2vec2: Optional[Wav2Vec2Model] = None,
-        sample_rate: int = 16000,
-        ref_segment_duration: float = 6.0,
-        latent_hop_length: int = 320,
-        volume_normalize: bool = True,
-    ):
-        super().__init__(feature_extractor)
-        self.bicodec = bicodec
-        self.wav2vec2 = wav2vec2
-        self.sample_rate = sample_rate
-        self.ref_segment_duration = ref_segment_duration
-        self.latent_hop_length = latent_hop_length
-        self.volume_normalize = volume_normalize
-        
-        if wav2vec2 is not None:
-            wav2vec2.config.output_hidden_states = True
-    
-    def load_audio(
-        self, 
-        audio_path: Union[str, Path], 
-        sampling_rate: Optional[int] = None
-    ) -> np.ndarray:
-        """
-        Load audio file and resample if necessary.
-        
+
+    attributes = ["feature_extractor", "tokenizer"]
+    tokenizer_class = "AutoTokenizer"
+    audio_tokenizer_class = "SparkTTSBiCodecModel"
+
+    def __init__(self, feature_extractor=None, tokenizer=None, audio_tokenizer=None, chat_template=None):
+        super().__init__(feature_extractor, tokenizer, chat_template=chat_template)
+        # `ProcessorMixin.__init__` type-checks `audio_tokenizer` against a hardcoded list of the audio tokenizer
+        # classes that ship in `transformers`, so a codec defined outside it has to be attached afterwards. Every
+        # other code path only needs the class to be registered in `AutoModelForAudioTokenization`.
+        self.audio_tokenizer = audio_tokenizer
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        r"""
+        Load a Spark-TTS processor, from either a converted checkpoint or the published
+        `SparkAudio/Spark-TTS-0.5B` layout, which holds the tokenizer, the mel settings and BiCodec in three
+        separate subfolders and which is converted on first use.
+
         Args:
-            audio_path (`str` or `Path`): Path to audio file.
-            sampling_rate (`int`, *optional*): Target sampling rate. Defaults to self.sample_rate.
-            
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                A Hugging Face repo id or a local directory.
+            args (`tuple`, *optional*):
+                Forwarded to [`~ProcessorMixin.from_pretrained`].
+            kwargs (`dict[str, Any]`, *optional*):
+                Forwarded to [`~ProcessorMixin.from_pretrained`].
+
         Returns:
-            `np.ndarray`: Audio waveform.
+            [`SparkTTSProcessor`]: The loaded processor, with BiCodec attached as its `audio_tokenizer`.
+
+        Raises:
+            OSError: If the checkpoint holds neither the files [`~ProcessorMixin.from_pretrained`] expects nor the
+                published Spark-TTS layout.
         """
-        sampling_rate = sampling_rate or self.sample_rate
-        
-        # Load audio
-        wav, sr = sf.read(str(audio_path))
-        
-        # Convert to mono if stereo
-        if wav.ndim > 1:
-            wav = wav.mean(axis=1)
-        
-        # Resample if necessary
-        if sr != sampling_rate:
-            wav = soxr.resample(wav, sr, sampling_rate)
-        
-        # Volume normalization
-        if self.volume_normalize:
-            wav = wav / (np.abs(wav).max() + 1e-6) * 0.95
-        
-        return wav.astype(np.float32)
-    
-    def get_reference_clip(self, wav: np.ndarray) -> np.ndarray:
-        """
-        Extract reference audio clip for speaker embedding.
-        
+        try:
+            return super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+        except OSError:
+            converted = convert_published_checkpoint(pretrained_model_name_or_path, **kwargs)
+            if converted is None:
+                raise
+        return super().from_pretrained(converted, *args, **kwargs)
+
+    @staticmethod
+    def _global_tokens(codes: torch.Tensor) -> str:
+        return "".join(f"<|bicodec_global_{code}|>" for code in codes.reshape(-1).tolist())
+
+    @staticmethod
+    def _semantic_tokens(codes: torch.Tensor) -> str:
+        return "".join(f"<|bicodec_semantic_{code}|>" for code in codes.reshape(-1).tolist())
+
+    @staticmethod
+    def _join_content(prompt_text: str, text: str) -> str:
+        r"""
+        Joins the reference transcript to the text to synthesize with the separator the script of `text` puts
+        between its own words, so that the first word of `text` carries the token it carries anywhere else.
+
         Args:
-            wav (`np.ndarray`): Input waveform.
-            
+            prompt_text (`str`):
+                Transcript of the reference clip.
+            text (`str`):
+                Text to synthesize.
+
         Returns:
-            `np.ndarray`: Reference audio clip.
+            `str`: The two texts, joined.
         """
-        ref_segment_length = (
-            int(self.sample_rate * self.ref_segment_duration)
-            // self.latent_hop_length
-            * self.latent_hop_length
+        if not text or not prompt_text or prompt_text[-1].isspace() or contains_chinese(text[0]):
+            return prompt_text + text
+        return prompt_text + " " + text
+
+    def _build_voice_cloning_prompt(self, text: str, global_codes: torch.Tensor, prompt_text: str | None) -> str:
+        prompt = [
+            TASK_TOKENS["tts"],
+            "<|start_content|>",
+            text if prompt_text is None else self._join_content(prompt_text, text),
+            "<|end_content|>",
+            "<|start_global_token|>",
+            self._global_tokens(global_codes),
+            "<|end_global_token|>",
+        ]
+        return "".join(prompt)
+
+    def _build_voice_creation_prompt(self, text: str, gender: str, pitch: str, speed: str) -> str:
+        if gender not in GENDERS:
+            raise ValueError(f"`gender` must be one of {sorted(GENDERS)}, got {gender!r}.")
+        if pitch not in LEVELS:
+            raise ValueError(f"`pitch` must be one of {sorted(LEVELS)}, got {pitch!r}.")
+        if speed not in LEVELS:
+            raise ValueError(f"`speed` must be one of {sorted(LEVELS)}, got {speed!r}.")
+
+        prompt = [
+            TASK_TOKENS["controllable_tts"],
+            "<|start_content|>",
+            text,
+            "<|end_content|>",
+            "<|start_style_label|>",
+            f"<|gender_{GENDERS[gender]}|>",
+            f"<|pitch_label_{LEVELS[pitch]}|>",
+            f"<|speed_label_{LEVELS[speed]}|>",
+            "<|end_style_label|>",
+        ]
+        return "".join(prompt)
+
+    def _build_voice_cloning_target(self, semantic_codes: torch.Tensor) -> str:
+        return "".join(
+            [
+                "<|start_semantic_token|>",
+                self._semantic_tokens(semantic_codes),
+                self.tokenizer.eos_token,
+            ]
         )
-        wav_length = len(wav)
-        
-        if ref_segment_length > wav_length:
-            # Repeat and truncate to handle insufficient length
-            wav = np.tile(wav, ref_segment_length // wav_length + 1)
-        
-        return wav[:ref_segment_length]
-    
-    def extract_wav2vec2_features(self, wavs: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
-        """
-        Extract Wav2Vec2 features from audio.
-        
-        Args:
-            wavs (`np.ndarray` or `torch.Tensor`): Input waveforms.
-            
-        Returns:
-            `torch.Tensor`: Extracted features.
-        """
-        if self.wav2vec2 is None:
-            raise ValueError("Wav2Vec2 model is required for feature extraction")
-        
-        # Convert to list if single waveform
-        if isinstance(wavs, (np.ndarray, torch.Tensor)) and wavs.ndim == 1:
-            wavs = [wavs]
-        
-        # Process with feature extractor
-        inputs = self.feature_extractor(
-            wavs,
-            sampling_rate=self.sample_rate,
-            return_tensors="pt",
-            padding=True,
+
+    def _build_voice_creation_target(
+        self,
+        global_codes: torch.Tensor,
+        semantic_codes: torch.Tensor,
+        pitch_value: int,
+        speed_value: int,
+    ) -> str:
+        return "".join(
+            [
+                "<|start_acoustic_token|>",
+                f"<|pitch_value_{min(max(int(pitch_value), 0), 1000)}|>",
+                f"<|speed_value_{min(max(int(speed_value), 0), 10)}|>",
+                "<|end_acoustic_token|>",
+                "<|start_global_token|>",
+                self._global_tokens(global_codes),
+                "<|end_global_token|>",
+                "<|start_semantic_token|>",
+                self._semantic_tokens(semantic_codes),
+                self.tokenizer.eos_token,
+            ]
         )
-        
-        # Extract features
-        with torch.no_grad():
-            outputs = self.wav2vec2(inputs.input_values.to(self.wav2vec2.device))
-            # Mix hidden states from layers 11, 14, 16
-            feats_mix = (
-                outputs.hidden_states[11] + 
-                outputs.hidden_states[14] + 
-                outputs.hidden_states[16]
-            ) / 3
-        
-        return feats_mix
-    
-    def tokenize(
-        self,
-        audio: Union[str, Path, np.ndarray, torch.Tensor],
-        reference_audio: Optional[Union[str, Path, np.ndarray, torch.Tensor]] = None,
-        return_tensors: str = "pt",
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+
+    def _pad(self, prompt_ids: list[list[int]], target_ids: list[list[int]]) -> dict[str, torch.Tensor]:
         """
-        Tokenize audio into semantic and global tokens.
-        
+        Concatenate each prompt with its supervised continuation and pad the batch, on the side the tokenizer is
+        configured for, into `input_ids`, `attention_mask` and `labels`. `labels` is `-100` over the prompt and over
+        the padding, so the cross entropy only sees the continuation.
+
         Args:
-            audio (`str`, `Path`, `np.ndarray`, or `torch.Tensor`): Input audio.
-            reference_audio (`str`, `Path`, `np.ndarray`, or `torch.Tensor`, *optional*): 
-                Reference audio for speaker embedding. If None, uses input audio.
-            return_tensors (`str`, *optional*, defaults to "pt"): Return tensor type.
-            
+            prompt_ids (`list[list[int]]`):
+                Token ids of the prompt of each example.
+            target_ids (`list[list[int]]`):
+                Token ids of the supervised continuation of each example.
+
         Returns:
-            `Tuple[torch.Tensor, torch.Tensor]`: Semantic tokens and global speaker tokens.
+            `dict[str, torch.Tensor]`: The padded batch.
         """
-        # Load audio if path
-        if isinstance(audio, (str, Path)):
-            audio = self.load_audio(audio)
-        
-        # Convert to tensor
-        if isinstance(audio, np.ndarray):
-            audio = torch.from_numpy(audio).float()
-        
-        # Get reference audio
-        if reference_audio is None:
-            reference_audio = audio
-        elif isinstance(reference_audio, (str, Path)):
-            reference_audio = self.load_audio(reference_audio)
-        
-        if isinstance(reference_audio, np.ndarray):
-            reference_audio = torch.from_numpy(reference_audio).float()
-        
-        # Get reference clip
-        ref_clip = self.get_reference_clip(reference_audio.cpu().numpy())
-        ref_clip = torch.from_numpy(ref_clip).unsqueeze(0).float()
-        
-        # Extract features
-        features = self.extract_wav2vec2_features(audio.cpu().numpy())
-        
-        # Tokenize
-        with torch.no_grad():
-            semantic_tokens, global_tokens = self.bicodec.tokenize(
-                features.to(self.bicodec.device),
-                ref_clip.to(self.bicodec.device)
-            )
-        
-        return semantic_tokens, global_tokens
-    
-    def detokenize(
-        self,
-        semantic_tokens: torch.Tensor,
-        global_tokens: torch.Tensor,
-        return_tensors: str = "pt",
-    ) -> torch.Tensor:
-        """
-        Detokenize semantic and global tokens into audio waveform.
-        
-        Args:
-            semantic_tokens (`torch.Tensor`): Semantic tokens.
-            global_tokens (`torch.Tensor`): Global speaker tokens.
-            return_tensors (`str`, *optional*, defaults to "pt"): Return tensor type.
-            
-        Returns:
-            `torch.Tensor`: Reconstructed waveform.
-        """
-        with torch.no_grad():
-            waveform = self.bicodec.detokenize(
-                semantic_tokens.to(self.bicodec.device),
-                global_tokens.to(self.bicodec.device)
-            )
-        
-        return waveform
-    
+        rows = [prompt + target for prompt, target in zip(prompt_ids, target_ids)]
+        width = max(len(row) for row in rows)
+        pad_id = self.tokenizer.pad_token_id
+        left = self.tokenizer.padding_side == "left"
+
+        input_ids, attention_mask, labels = [], [], []
+        for index, row in enumerate(rows):
+            padding = width - len(row)
+            supervised = [-100] * len(prompt_ids[index]) + target_ids[index]
+            if left:
+                input_ids.append([pad_id] * padding + row)
+                attention_mask.append([0] * padding + [1] * len(row))
+                labels.append([-100] * padding + supervised)
+            else:
+                input_ids.append(row + [pad_id] * padding)
+                attention_mask.append([1] * len(row) + [0] * padding)
+                labels.append(supervised + [-100] * padding)
+
+        return {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+            "labels": torch.tensor(labels, dtype=torch.long),
+        }
+
     def __call__(
         self,
-        audio: Union[str, Path, np.ndarray, torch.Tensor],
-        reference_audio: Optional[Union[str, Path, np.ndarray, torch.Tensor]] = None,
-        sampling_rate: Optional[int] = None,
-        return_tensors: str = "pt",
-        **kwargs,
-    ):
+        text: TextInput | PreTokenizedInput | list[TextInput] | list[PreTokenizedInput],
+        reference_audio: AudioInput | None = None,
+        prompt_text: str | None = None,
+        gender: str | None = None,
+        pitch: str | None = None,
+        speed: str | None = None,
+        output_labels: bool = False,
+        pitch_value: int | None = None,
+        speed_value: int | None = None,
+        **kwargs: Unpack[SparkTTSProcessorKwargs],
+    ) -> BatchFeature:
         """
-        Main method to process audio.
-        
+        Build the prompt for [`SparkTTSForConditionalGeneration`], either by cloning `reference_audio` or by naming
+        the speaker attributes to synthesize.
+
         Args:
-            audio (`str`, `Path`, `np.ndarray`, or `torch.Tensor`): Input audio.
-            reference_audio (`str`, `Path`, `np.ndarray`, or `torch.Tensor`, *optional*): 
-                Reference audio for speaker embedding.
-            sampling_rate (`int`, *optional*): Sampling rate.
-            return_tensors (`str`, *optional*, defaults to "pt"): Return tensor type.
-            
+            text (`str` or `list[str]`):
+                The text to synthesize.
+            reference_audio (`AudioInput`, *optional*):
+                Clip whose voice is cloned. Mutually exclusive with `gender`/`pitch`/`speed`, unless `output_labels`
+                is set, in which case the attribute layout needs it as the clip the target codes come from.
+            prompt_text (`str`, *optional*):
+                Transcript of `reference_audio`. When given, it goes in front of `text` and the reference clip's own
+                semantic tokens are appended to the prompt, so that generation continues the clip rather than
+                starting from silence. A `prompt_text` that does not already end in whitespace is separated from
+                `text` by a single space, unless `text` opens on a Chinese character, where the two are joined
+                directly.
+            gender (`str`, *optional*):
+                One of `"female"` or `"male"`.
+            pitch (`str`, *optional*):
+                One of `"very_low"`, `"low"`, `"moderate"`, `"high"` or `"very_high"`.
+            speed (`str`, *optional*):
+                One of `"very_low"`, `"low"`, `"moderate"`, `"high"` or `"very_high"`.
+            output_labels (`bool`, *optional*, defaults to `False`):
+                Whether to also encode `reference_audio` as the supervised continuation and return `labels` for
+                cross-entropy training, masked with `-100` over the prompt and the padding.
+            pitch_value (`int`, *optional*):
+                Fine-grained pitch of `reference_audio`, in `[0, 1000]`. Part of the attribute layout's supervised
+                continuation, so it is required by `output_labels` together with `gender`/`pitch`/`speed`.
+            speed_value (`int`, *optional*):
+                Fine-grained speaking rate of `reference_audio`, in `[0, 10]`, required alongside `pitch_value`.
+
         Returns:
-            Dictionary with processed audio features.
+            [`BatchFeature`]: With `input_ids` and `attention_mask`, ready to be passed to
+            [`SparkTTSForConditionalGeneration`], plus `labels` when `output_labels` is set.
+
+        Raises:
+            ValueError: If neither or both prompt layouts are requested, if the number of reference clips does not
+                match the number of prompts, if an attribute label is not one of the accepted values, or if
+                `output_labels` is set without the inputs the supervised continuation needs.
         """
-        # Load audio if path
-        if isinstance(audio, (str, Path)):
-            audio = self.load_audio(audio, sampling_rate)
-        
-        # Convert to tensor
-        if isinstance(audio, np.ndarray):
-            audio = torch.from_numpy(audio).float()
-        
-        # Get reference audio
-        if reference_audio is None:
-            reference_audio = audio
-        elif isinstance(reference_audio, (str, Path)):
-            reference_audio = self.load_audio(reference_audio, sampling_rate)
-        
-        if isinstance(reference_audio, np.ndarray):
-            reference_audio = torch.from_numpy(reference_audio).float()
-        
-        # Get reference clip
-        ref_clip = self.get_reference_clip(reference_audio.cpu().numpy())
-        ref_clip = torch.from_numpy(ref_clip).float()
-        
-        # Extract features
-        features = self.extract_wav2vec2_features(audio.cpu().numpy())
-        
-        return {
-            "input_features": features,
-            "reference_waveform": ref_clip,
-            "waveform": audio,
-        }
-    
-    @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
-        """
-        Load processor from pretrained model.
-        
-        Args:
-            pretrained_model_name_or_path (`str` or `Path`): Path to pretrained model.
-            
-        Returns:
-            `SparkTTSProcessor`: Loaded processor.
-        """
-        # Load feature extractor
-        wav2vec2_path = Path(pretrained_model_name_or_path) / "wav2vec2-large-xlsr-53"
-        feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(wav2vec2_path, **kwargs)
-        
-        # Load Wav2Vec2 model
-        wav2vec2 = Wav2Vec2Model.from_pretrained(wav2vec2_path, **kwargs)
-        
-        # Load BiCodec
-        from .configuration_spark_tts import SparkTTSConfig
-        config = SparkTTSConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
-        bicodec = BiCodecModel(config)
-        
-        # Load BiCodec weights
-        from safetensors.torch import load_file
-        bicodec_path = Path(pretrained_model_name_or_path) / config.bicodec_path
-        bicodec_weights = load_file(bicodec_path / "model.safetensors")
-        bicodec.load_state_dict(bicodec_weights, strict=False)
-        
-        return cls(
-            feature_extractor=feature_extractor,
-            bicodec=bicodec,
-            wav2vec2=wav2vec2,
-            sample_rate=config.sample_rate,
-            ref_segment_duration=config.ref_segment_duration,
-            latent_hop_length=config.latent_hop_length,
-            volume_normalize=config.volume_normalize,
+        output_kwargs = self._merge_kwargs(
+            SparkTTSProcessorKwargs,
+            tokenizer_init_kwargs=self.tokenizer.init_kwargs,
+            **kwargs,
         )
+        text_kwargs = output_kwargs["text_kwargs"]
+        audio_kwargs = output_kwargs["audio_kwargs"]
+
+        if isinstance(text, str):
+            text = [text]
+        elif not (isinstance(text, (list, tuple)) and all(isinstance(item, str) for item in text)):
+            raise ValueError("Invalid input text. Please provide a string, or a list of strings")
+
+        attributes_given = gender is not None or pitch is not None or speed is not None
+        if not attributes_given and reference_audio is None:
+            raise ValueError(
+                "Provide either `reference_audio`, to clone a voice, or all of `gender`/`pitch`/`speed`, to build "
+                "one from attribute labels."
+            )
+        if attributes_given and reference_audio is not None and not output_labels:
+            raise ValueError(
+                "`reference_audio` and `gender`/`pitch`/`speed` select different prompt layouts, so they can only "
+                "be combined when `output_labels` is set, where the attribute layout supervises the clip's codes."
+            )
+        if output_labels and reference_audio is None:
+            raise ValueError("`output_labels` needs `reference_audio`, the clip whose codes are the target.")
+        if output_labels and attributes_given and (pitch_value is None or speed_value is None):
+            raise ValueError(
+                "The attribute layout supervises fine-grained pitch and speed, so `output_labels` needs "
+                "`pitch_value` and `speed_value` alongside `gender`/`pitch`/`speed`."
+            )
+
+        encoded = None
+        if reference_audio is not None:
+            reference_audio = make_list_of_audio(reference_audio)
+            if len(reference_audio) != len(text):
+                raise ValueError(
+                    f"Got {len(reference_audio)} reference clips for {len(text)} prompts; pass one clip per prompt."
+                )
+            audio_inputs = self.feature_extractor(reference_audio, **audio_kwargs)
+            audio_inputs = audio_inputs.to(self.audio_tokenizer.device)
+            with torch.no_grad():
+                encoded = self.audio_tokenizer.encode(**audio_inputs)
+
+        prompts, targets = [], []
+        for index, prompt in enumerate(text):
+            if attributes_given:
+                prompts.append(self._build_voice_creation_prompt(prompt, gender, pitch, speed))
+                if output_labels:
+                    targets.append(
+                        self._build_voice_creation_target(
+                            encoded.global_codes[index], encoded.audio_codes[index], pitch_value, speed_value
+                        )
+                    )
+            else:
+                prompt = self._build_voice_cloning_prompt(prompt, encoded.global_codes[index], prompt_text)
+                if prompt_text is not None:
+                    prompt = prompt + "<|start_semantic_token|>" + self._semantic_tokens(encoded.audio_codes[index])
+                prompts.append(prompt)
+                if output_labels:
+                    targets.append(self._build_voice_cloning_target(encoded.audio_codes[index]))
+
+        if not output_labels:
+            data = dict(self.tokenizer(prompts, return_tensors="pt", **text_kwargs))
+            return BatchFeature(data=data, tensor_type="pt")
+
+        prompt_ids = self.tokenizer(prompts, add_special_tokens=False)["input_ids"]
+        target_ids = self.tokenizer(targets, add_special_tokens=False)["input_ids"]
+        return BatchFeature(data=self._pad(prompt_ids, target_ids), tensor_type="pt")
+
+    def decode(self, sequences: torch.LongTensor, input_length: int = 0) -> torch.Tensor:
+        """
+        Turn a generated token sequence back into a waveform.
+
+        Global tokens are read from the whole sequence, since a voice-cloning prompt carries them and a voice-creation
+        prompt makes the model emit them. Semantic tokens are read from the continuation only, so that the reference
+        clip's own semantic tokens do not leak into the output.
+
+        Args:
+            sequences (`torch.LongTensor` of shape `(1, sequence_length)`):
+                Prompt and continuation as returned by [`~SparkTTSForConditionalGeneration.generate`].
+            input_length (`int`, *optional*, defaults to 0):
+                Length of the prompt, i.e. `inputs["input_ids"].shape[-1]`.
+
+        Returns:
+            `torch.Tensor` of shape `(sequence_length,)`: The synthesized waveform.
+
+        Raises:
+            ValueError: If more than one sequence is passed, or if the sequence carries no global or semantic tokens.
+        """
+        if sequences.shape[0] != 1:
+            raise ValueError(
+                f"Expecting a single sequence to be decoded but received {sequences.shape[0]} sequences instead."
+            )
+
+        global_codes = self._parse_codes(sequences[0], GLOBAL_TOKEN_PATTERN)
+        audio_codes = self._parse_codes(sequences[0, input_length:], SEMANTIC_TOKEN_PATTERN)
+        if not global_codes:
+            raise ValueError("The sequence carries no `<|bicodec_global_*|>` tokens, so no voice can be rebuilt.")
+        if not audio_codes:
+            raise ValueError("The sequence carries no `<|bicodec_semantic_*|>` tokens, so there is nothing to decode.")
+
+        device = self.audio_tokenizer.device
+        global_codes = torch.tensor(global_codes, dtype=torch.long, device=device).reshape(1, 1, -1)
+        audio_codes = torch.tensor(audio_codes, dtype=torch.long, device=device).unsqueeze(0)
+
+        with torch.no_grad():
+            audio_values = self.audio_tokenizer.decode(audio_codes, global_codes).audio_values
+        return audio_values.reshape(-1).cpu()
+
+    def _parse_codes(self, sequence: torch.LongTensor, pattern: re.Pattern) -> list[int]:
+        """
+        Read the codes carried by every token of a sequence whose name matches `pattern`.
+
+        Args:
+            sequence (`torch.LongTensor` of shape `(sequence_length,)`):
+                Token ids to read.
+            pattern (`re.Pattern`):
+                Pattern whose first group is the code, matched against each token's string form.
+
+        Returns:
+            `list[int]`: The codes, in the order they appear.
+        """
+        tokens = self.tokenizer.convert_ids_to_tokens(sequence.tolist())
+        return [int(match.group(1)) for token in tokens if (match := pattern.match(token))]
+
+    @property
+    def model_input_names(self):
+        return self.tokenizer.model_input_names
+
+
+__all__ = ["SparkTTSProcessor"]

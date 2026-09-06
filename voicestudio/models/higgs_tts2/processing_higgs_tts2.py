@@ -1,0 +1,1 @@
+from transformers.models.higgs_audio_v2.processing_higgs_audio_v2 import HiggsAudioV2Processor as HiggsTTS2Processor

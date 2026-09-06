@@ -228,3 +228,6 @@ trainer_output/
 # AI Agents
 .claude
 .agents
+
+# Downloaded checkpoints, superseded by .cache
+ckpts/

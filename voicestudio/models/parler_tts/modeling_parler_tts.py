@@ -53,10 +53,8 @@ from transformers.modeling_outputs import (
 from transformers.modeling_utils import PreTrainedModel
 from transformers.generation import GenerationMixin
 from transformers.utils import (
-    add_start_docstrings,
-    add_start_docstrings_to_model_forward,
+    auto_docstring,
     logging,
-    replace_return_docstrings,
 )
 from transformers.utils.import_utils import is_flash_attn_2_available, is_flash_attn_greater_or_equal_2_10
 
@@ -75,7 +73,6 @@ if is_flash_attn_2_available():
 else:
     logger.warn("Flash attention 2 is not installed")
 
-_CONFIG_FOR_DOC = "ParlerTTSConfig"
 _CHECKPOINT_FOR_DOC = "parler-tts/parler-tts-mini-v1"
 
 MUSICGEN_PRETRAINED_MODEL_ARCHIVE_LIST = [
@@ -84,53 +81,54 @@ MUSICGEN_PRETRAINED_MODEL_ARCHIVE_LIST = [
 ]
 
 
+@auto_docstring
 @dataclass
 class ParlerTTSSeq2SeqLMOutput(ModelOutput):
-    """
-    Base class for sequence-to-sequence language models outputs.
+    r"""
+    loss (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided):
+        Language modeling loss.
+    logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`):
+        Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
+    past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
+        Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
+        `(batch_size, num_heads, sequence_length, embed_size_per_head)`) and 2 additional tensors of shape
+        `(batch_size, num_heads, encoder_sequence_length, embed_size_per_head)`.
 
-    Args:
-        loss (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided):
-            Language modeling loss.
-        logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`):
-            Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
-        past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
-            Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
-            `(batch_size, num_heads, sequence_length, embed_size_per_head)`) and 2 additional tensors of shape
-            `(batch_size, num_heads, encoder_sequence_length, embed_size_per_head)`.
+        Contains pre-computed hidden-states (key and values in the self-attention blocks and in the cross-attention
+        blocks) that can be used (see `past_key_values` input) to speed up sequential decoding.
+    decoder_hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+        Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+        one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
 
-            Contains pre-computed hidden-states (key and values in the self-attention blocks and in the cross-attention
-            blocks) that can be used (see `past_key_values` input) to speed up sequential decoding.
-        decoder_hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
-            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
-            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+        Hidden-states of the decoder at the output of each layer plus the initial embedding outputs.
+    decoder_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+        Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+        sequence_length)`.
 
-            Hidden-states of the decoder at the output of each layer plus the initial embedding outputs.
-        decoder_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
-            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
-            sequence_length)`.
+        Attentions weights of the decoder, after the attention softmax, used to compute the weighted average in the
+        self-attention heads.
+    cross_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+        Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+        sequence_length)`.
 
-            Attentions weights of the decoder, after the attention softmax, used to compute the weighted average in the
-            self-attention heads.
-        cross_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
-            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
-            sequence_length)`.
+        Attentions weights of the decoder's cross-attention layer, after the attention softmax, used to compute the
+        weighted average in the cross-attention heads.
+    encoder_last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+        Sequence of hidden-states at the output of the last layer of the encoder of the model.
+    encoder_hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+        Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+        one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
 
-            Attentions weights of the decoder's cross-attention layer, after the attention softmax, used to compute the
-            weighted average in the cross-attention heads.
-        encoder_last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
-            Sequence of hidden-states at the output of the last layer of the encoder of the model.
-        encoder_hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
-            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
-            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+        Hidden-states of the encoder at the output of each layer plus the initial embedding outputs.
+    encoder_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+        Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+        sequence_length)`.
 
-            Hidden-states of the encoder at the output of each layer plus the initial embedding outputs.
-        encoder_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
-            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
-            sequence_length)`.
-
-            Attentions weights of the encoder, after the attention softmax, used to compute the weighted average in the
-            self-attention heads.
+        Attentions weights of the encoder, after the attention softmax, used to compute the weighted average in the
+        self-attention heads.
+    per_codebook_losses (`List[torch.FloatTensor]`, *optional*, returned when `labels` is provided):
+        Unweighted cross-entropy loss for each codebook, before `config.decoder.codebook_weights` is applied to
+        form `loss`.
     """
 
     loss: Optional[torch.FloatTensor] = None
@@ -145,40 +143,41 @@ class ParlerTTSSeq2SeqLMOutput(ModelOutput):
     per_codebook_losses: Optional[List[torch.FloatTensor]] = None
 
 
+@auto_docstring
 @dataclass
 class ParlerTTSCausalLMOutputWithCrossAttentions(ModelOutput):
-    """
-    Base class for causal language model (or autoregressive) outputs.
+    r"""
+    loss (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided):
+        Language modeling loss (for next-token prediction).
+    logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`):
+        Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
+    hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+        Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+        one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
 
-    Args:
-        loss (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided):
-            Language modeling loss (for next-token prediction).
-        logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`):
-            Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
-        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
-            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
-            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+        Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
+    attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+        Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+        sequence_length)`.
 
-            Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
-        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
-            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
-            sequence_length)`.
+        Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
+        heads.
+    cross_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+        Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+        sequence_length)`.
 
-            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
-            heads.
-        cross_attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
-            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
-            sequence_length)`.
+        Cross attentions weights after the attention softmax, used to compute the weighted average in the
+        cross-attention heads.
+    past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
+        Tuple of `torch.FloatTensor` tuples of length `config.n_layers`, with each tuple containing the cached key,
+        value states of the self-attention and the cross-attention layers if model is used in encoder-decoder
+        setting. Only relevant if `config.is_decoder = True`.
 
-            Cross attentions weights after the attention softmax, used to compute the weighted average in the
-            cross-attention heads.
-        past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
-            Tuple of `torch.FloatTensor` tuples of length `config.n_layers`, with each tuple containing the cached key,
-            value states of the self-attention and the cross-attention layers if model is used in encoder-decoder
-            setting. Only relevant if `config.is_decoder = True`.
-
-            Contains pre-computed hidden-states (key and values in the attention blocks) that can be used (see
-            `past_key_values` input) to speed up sequential decoding.
+        Contains pre-computed hidden-states (key and values in the attention blocks) that can be used (see
+        `past_key_values` input) to speed up sequential decoding.
+    per_codebook_losses (`List[torch.FloatTensor]`, *optional*, returned when `labels` is provided):
+        Unweighted cross-entropy loss for each codebook, before `config.codebook_weights` is applied to form
+        `loss`.
     """
 
     loss: Optional[torch.FloatTensor] = None
@@ -277,15 +276,15 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
+@auto_docstring
 @dataclass
 class ParlerTTSUnconditionalInput(ModelOutput):
-    """
-    Args:
-        encoder_outputs  (`Tuple[torch.FloatTensor]` of length 1, with tensor shape `(batch_size, sequence_length, hidden_size)`):
-            Sequence of hidden-states at the output of the last layer of the text encoder model.
-        attention_mask (`torch.LongTensor`)  of shape `(batch_size, sequence_length)`, *optional*):
-            Encoder attention mask to avoid performing attention on padding token indices. Mask values selected in `[0,
-            1]`: 1 for tokens that are **not masked**, 0 for tokens that are **masked**.
+    r"""
+    encoder_outputs (`Tuple[torch.FloatTensor]` of length 1, with tensor shape `(batch_size, sequence_length, hidden_size)`):
+        Sequence of hidden-states at the output of the last layer of the text encoder model.
+    attention_mask (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+        Encoder attention mask to avoid performing attention on padding token indices. Mask values selected in
+        `[0, 1]`: 1 for tokens that are **not masked**, 0 for tokens that are **masked**.
     """
 
     encoder_outputs: Tuple[torch.FloatTensor] = None
@@ -1074,6 +1073,7 @@ class ParlerTTSDecoderLayer(nn.Module):
         return outputs
 
 
+@auto_docstring
 # Copied from transformers.models.musicgen.modeling_musicgen.MusicgenPreTrainedModel with Musicgen->ParlerTTS
 class ParlerTTSPreTrainedModel(PreTrainedModel):
     """
@@ -1081,10 +1081,10 @@ class ParlerTTSPreTrainedModel(PreTrainedModel):
     models.
     """
 
-    config_class = ParlerTTSDecoderConfig
+    config: ParlerTTSDecoderConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _supports_flash_attn_2 = True
+    _supports_flash_attn = True
     _supports_sdpa = True
     _no_split_modules = ["ParlerTTSDecoderLayer", "ParlerTTSAttention"]
     _supports_cache_class = True
@@ -1102,237 +1102,7 @@ class ParlerTTSPreTrainedModel(PreTrainedModel):
                 module.weight.data[module.padding_idx].zero_()
 
 
-MUSICGEN_START_DOCSTRING = r"""
 
-    The ParlerTTS model was proposed in [Simple and Controllable Music Generation](https://arxiv.org/abs/2306.05284) by
-    Jade Copet, Felix Kreuk, Itai Gat, Tal Remez, David Kant, Gabriel Synnaeve, Yossi Adi, Alexandre Défossez. It is an
-    encoder decoder transformer trained on the task of conditional music generation
-
-    This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
-    library implements for all its model (such as downloading or saving, resizing the input embeddings, pruning heads
-    etc.)
-
-    This model is also a PyTorch [torch.nn.Module](https://pytorch.org/docs/stable/nn.html#torch.nn.Module) subclass.
-    Use it as a regular PyTorch Module and refer to the PyTorch documentation for all matter related to general usage
-    and behavior.
-
-    Parameters:
-        config ([`ParlerTTSConfig`]): Model configuration class with all the parameters of the model.
-            Initializing with a config file does not load the weights associated with the model, only the
-            configuration. Check out the [`~PreTrainedModel.from_pretrained`] method to load the model weights.
-"""
-
-MUSICGEN_INPUTS_DOCSTRING = r"""
-    Args:
-        input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
-            Indices of input sequence tokens in the vocabulary. Padding will be ignored by default should you provide
-            it.
-
-            Indices can be obtained using [`AutoTokenizer`]. See [`PreTrainedTokenizer.encode`] and
-            [`PreTrainedTokenizer.__call__`] for details.
-
-            [What are input IDs?](../glossary#input-ids)
-        attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
-
-            - 1 for tokens that are **not masked**,
-            - 0 for tokens that are **masked**.
-
-            [What are attention masks?](../glossary#attention-mask)
-        decoder_input_ids (`torch.LongTensor` of shape `(batch_size * num_codebooks, target_sequence_length)`, *optional*):
-            Indices of decoder input sequence tokens in the vocabulary, corresponding to the sequence of audio codes.
-
-            Indices can be obtained by encoding an audio prompt with an audio encoder model to predict audio codes,
-            such as with the [`EncodecModel`]. See [`EncodecModel.encode`] for details.
-
-            [What are decoder input IDs?](../glossary#decoder-input-ids)
-
-            <Tip warning={true}>
-
-            The `decoder_input_ids` will automatically be converted from shape `(batch_size * num_codebooks,
-            target_sequence_length)` to `(batch_size, num_codebooks, target_sequence_length)` in the forward pass. If
-            you obtain audio codes from an audio encoding model, such as [`EncodecModel`], ensure that the number of
-            frames is equal to 1, and that you reshape the audio codes from `(frames, batch_size, num_codebooks,
-            target_sequence_length)` to `(batch_size * num_codebooks, target_sequence_length)` prior to passing them as
-            `decoder_input_ids`.
-
-            </Tip>
-
-        decoder_attention_mask (`torch.LongTensor` of shape `(batch_size, target_sequence_length)`, *optional*):
-            Default behavior: generate a tensor that ignores pad tokens in `decoder_input_ids`. Causal mask will also
-            be used by default.
-        head_mask (`torch.Tensor` of shape `(encoder_layers, encoder_attention_heads)`, *optional*):
-            Mask to nullify selected heads of the attention modules in the encoder. Mask values selected in `[0, 1]`:
-
-            - 1 indicates the head is **not masked**,
-            - 0 indicates the head is **masked**.
-
-        decoder_head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
-            Mask to nullify selected heads of the attention modules in the decoder. Mask values selected in `[0, 1]`:
-
-            - 1 indicates the head is **not masked**,
-            - 0 indicates the head is **masked**.
-
-        cross_attn_head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
-            Mask to nullify selected heads of the cross-attention modules in the decoder. Mask values selected in `[0,
-            1]`:
-
-            - 1 indicates the head is **not masked**,
-            - 0 indicates the head is **masked**.
-
-        encoder_outputs (`tuple(tuple(torch.FloatTensor)`, *optional*):
-            Tuple consists of (`last_hidden_state`, *optional*: `hidden_states`, *optional*: `attentions`)
-            `last_hidden_state` of shape `(batch_size, sequence_length, hidden_size)`, *optional*) is a sequence of
-            hidden-states at the output of the last layer of the encoder. Used in the cross-attention of the decoder.
-            TODO: it's passed through enc_to_dec_proj and optionnally we concat the prompt hidden states in certain cases.
-        past_key_values (`EncoderDecoderCache` or `tuple(tuple(torch.FloatTensor))`, *optional*):
-            Pre-computed hidden-states that can be used to speed up auto-regressive (sequential) decoding. There are
-            four sets of pre-computed hidden-states: key and values states in the self-attention blocks (2) and
-            in the cross-attention blocks (2). The `past_key_values` are returned when `use_cache=True` is passed or
-            when `config.use_cache=True`
-
-            Two formats are allowed:
-            - An [`~cache_utils.EncoderDecoderCache`] instance;
-            - Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
-            `(batch_size, num_heads, sequence_length, embed_size_per_head)`) and 2 additional tensors of shape
-            `(batch_size, num_heads, encoder_sequence_length, embed_size_per_head)`.
-
-            If `past_key_values` are used, the user can optionally input only the last `decoder_input_ids` (those that
-            don't have their past key value states given to this model) of shape `(batch_size, 1)` instead of all
-            `decoder_input_ids` of shape `(batch_size, sequence_length)`.
-        inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
-            Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation.
-            This is useful if you want more control over how to convert `input_ids` indices into associated vectors
-            than the model's internal embedding lookup matrix.
-        decoder_inputs_embeds (`torch.FloatTensor` of shape `(batch_size, target_sequence_length, hidden_size)`, *optional*):
-            Optionally, instead of passing `decoder_input_ids` you can choose to directly pass an embedded
-            representation. If `past_key_values` is used, optionally only the last `decoder_inputs_embeds` have to be
-            input (see `past_key_values`). This is useful if you want more control over how to convert
-            `decoder_input_ids` indices into associated vectors than the model's internal embedding lookup matrix.
-
-            If `decoder_input_ids` and `decoder_inputs_embeds` are both unset, `decoder_inputs_embeds` takes the value
-            of `inputs_embeds`.
-        prompt_input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
-            Indices of input prompt sequence tokens in the vocabulary. Padding will be ignored by default should you provide
-            it.
-
-            Indices can be obtained using [`AutoTokenizer`]. See [`PreTrainedTokenizer.encode`] and
-            [`PreTrainedTokenizer.__call__`] for details.
-
-            [What are input IDs?](../glossary#input-ids)
-        prompt_attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Mask to avoid performing attention on padding prompt token indices. Mask values selected in `[0, 1]`:
-
-            - 1 for tokens that are **not masked**,
-            - 0 for tokens that are **masked**.
-
-            [What are attention masks?](../glossary#attention-mask)
-        prompt_inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
-            Optionally, instead of passing `prompt_input_ids` you can choose to directly pass an embedded representation.
-            This is useful if you want more control over how to convert `prompt_input_ids` indices into associated vectors
-            than the model's internal embedding lookup matrix.
-        use_cache (`bool`, *optional*):
-            If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding (see
-            `past_key_values`).
-        output_attentions (`bool`, *optional*):
-            Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
-            tensors for more detail.
-        output_hidden_states (`bool`, *optional*):
-            Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
-            more detail.
-        return_dict (`bool`, *optional*):
-            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
-        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
-            Indices depicting the position of the input sequence tokens in the sequence. It is used to update the cache
-            in the correct position and to infer the complete sequence length.
-"""
-
-MUSICGEN_DECODER_INPUTS_DOCSTRING = r"""
-    Args:
-        input_ids (`torch.LongTensor` of shape `(batch_size * num_codebooks, sequence_length)`):
-            Indices of input sequence tokens in the vocabulary, corresponding to the sequence of audio codes.
-
-            Indices can be obtained by encoding an audio prompt with an audio encoder model to predict audio codes,
-            such as with the [`EncodecModel`]. See [`EncodecModel.encode`] for details.
-
-            [What are input IDs?](../glossary#input-ids)
-
-            <Tip warning={true}>
-
-            The `input_ids` will automatically be converted from shape `(batch_size * num_codebooks,
-            target_sequence_length)` to `(batch_size, num_codebooks, target_sequence_length)` in the forward pass. If
-            you obtain audio codes from an audio encoding model, such as [`EncodecModel`], ensure that the number of
-            frames is equal to 1, and that you reshape the audio codes from `(frames, batch_size, num_codebooks,
-            target_sequence_length)` to `(batch_size * num_codebooks, target_sequence_length)` prior to passing them as
-            `input_ids`.
-
-            </Tip>
-
-        attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
-
-            - 1 for tokens that are **not masked**,
-            - 0 for tokens that are **masked**.
-
-            [What are attention masks?](../glossary#attention-mask)
-        encoder_hidden_states (`torch.FloatTensor` of shape `(batch_size, encoder_sequence_length, hidden_size)`, *optional*):
-            Sequence of hidden-states at the output of the last layer of the encoder. Used in the cross-attention of
-            the decoder.
-        encoder_attention_mask (`torch.LongTensor` of shape `(batch_size, encoder_sequence_length)`, *optional*):
-            Mask to avoid performing cross-attention on padding tokens indices of encoder input_ids. Mask values
-            selected in `[0, 1]`:
-
-            - 1 for tokens that are **not masked**,
-            - 0 for tokens that are **masked**.
-
-            [What are attention masks?](../glossary#attention-mask)
-        prompt_hidden_states (`torch.FloatTensor` of shape `(batch_size, encoder_sequence_length, hidden_size)`, *optional*):
-            Sequence of prompt hidden-states at the output of the initial embedding layer. Concatenated to the input embeds.
-        prompt_attention_mask (`torch.LongTensor` of shape `(batch_size, encoder_sequence_length)`, *optional*):
-            Mask to avoid performing cross-attention on padding tokens indices of prompt input_ids. Mask values
-            selected in `[0, 1]`:
-
-            - 1 for tokens that are **not masked**,
-            - 0 for tokens that are **masked**.
-
-            [What are attention masks?](../glossary#attention-mask)
-        head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
-            Mask to nullify selected heads of the attention modules. Mask values selected in `[0, 1]`:
-
-            - 1 indicates the head is **not masked**,
-            - 0 indicates the head is **masked**.
-
-        cross_attn_head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
-            Mask to nullify selected heads of the cross-attention modules in the decoder to avoid performing
-            cross-attention on hidden heads. Mask values selected in `[0, 1]`:
-
-            - 1 indicates the head is **not masked**,
-            - 0 indicates the head is **masked**.
-
-        past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
-            Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
-            `(batch_size, num_heads, sequence_length, embed_size_per_head)`) and 2 additional tensors of shape
-            `(batch_size, num_heads, encoder_sequence_length, embed_size_per_head)`.
-
-            Contains pre-computed hidden-states (key and values in the self-attention blocks and in the cross-attention
-            blocks) that can be used (see `past_key_values` input) to speed up sequential decoding.
-
-            If `past_key_values` are used, the user can optionally input only the last `decoder_input_ids` (those that
-            don't have their past key value states given to this model) of shape `(batch_size, 1)` instead of all
-            `decoder_input_ids` of shape `(batch_size, sequence_length)`.
-        inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
-            Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation.
-            This is useful if you want more control over how to convert `input_ids` indices into associated vectors
-            than the model's internal embedding lookup matrix.
-        output_attentions (`bool`, *optional*):
-            Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
-            tensors for more detail.
-        output_hidden_states (`bool`, *optional*):
-            Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
-            more detail.
-        return_dict (`bool`, *optional*):
-            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
-"""
 
 
 class ParlerTTSDecoder(ParlerTTSPreTrainedModel):
@@ -1389,7 +1159,7 @@ class ParlerTTSDecoder(ParlerTTSPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-    @add_start_docstrings_to_model_forward(MUSICGEN_DECODER_INPUTS_DOCSTRING)
+    @auto_docstring
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -1409,6 +1179,27 @@ class ParlerTTSDecoder(ParlerTTSPreTrainedModel):
         return_dict: Optional[bool] = None,
         cache_position=None,
     ) -> Union[Tuple, BaseModelOutputWithPastAndCrossAttentions]:
+        r"""
+        input_ids (`torch.LongTensor` of shape `(batch_size * num_codebooks, sequence_length)`):
+            Indices of input sequence tokens in the vocabulary, corresponding to the sequence of audio codes.
+
+            Indices can be obtained by encoding an audio prompt with an audio encoder model to predict audio
+            codes. See [`~PreTrainedModel.generate`] for details.
+        prompt_hidden_states (`torch.FloatTensor` of shape `(batch_size, encoder_sequence_length, hidden_size)`, *optional*):
+            Sequence of prompt hidden states at the output of the initial embedding layer, concatenated to the
+            input embeds.
+        prompt_attention_mask (`torch.LongTensor` of shape `(batch_size, encoder_sequence_length)`, *optional*):
+            Mask to avoid performing cross-attention on padding tokens indices of the prompt input ids.
+        head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
+            Mask to nullify selected heads of the self-attention modules. Mask values selected in `[0, 1]`: 1
+            indicates the head is **not masked**, 0 indicates the head is **masked**.
+        cross_attn_head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
+            Mask to nullify selected heads of the cross-attention modules. Mask values selected in `[0, 1]`: 1
+            indicates the head is **not masked**, 0 indicates the head is **masked**.
+        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+            Indices depicting the position of the input sequence tokens in the sequence. It is used to update
+            the cache in the correct position and to infer the complete sequence length.
+        """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -1439,20 +1230,13 @@ class ParlerTTSDecoder(ParlerTTSPreTrainedModel):
             prepended_sequence_length = prompt_hidden_states.shape[-2]
             inputs_embeds = torch.cat([prompt_hidden_states, inputs_embeds], dim=1)
 
-        return_legacy_cache = False
         return_self_attention_cache = False
         if use_cache or past_key_values is not None:
             if isinstance(past_key_values, Cache) and not isinstance(past_key_values, EncoderDecoderCache):
                 return_self_attention_cache = True
                 past_key_values = EncoderDecoderCache(past_key_values, DynamicCache())
-            elif not isinstance(past_key_values, EncoderDecoderCache):
-                return_legacy_cache = True
-                logger.warning_once(
-                    "Passing a tuple of `past_key_values` is deprecated and will be removed in Transformers v4.43.0. "
-                    "You should pass an instance of `EncoderDecoderCache` instead, e.g. "
-                    "`past_key_values=EncoderDecoderCache.from_legacy_cache(past_key_values)`."
-                )
-                past_key_values = EncoderDecoderCache.from_legacy_cache(past_key_values)
+            elif past_key_values is None:
+                past_key_values = EncoderDecoderCache(DynamicCache(), DynamicCache())
 
         past_key_values_length = 0
         if cache_position is not None:
@@ -1639,8 +1423,6 @@ class ParlerTTSDecoder(ParlerTTSPreTrainedModel):
         next_cache = past_key_values if use_cache else None
         if return_self_attention_cache:
             next_cache = past_key_values.self_attention_cache
-        if return_legacy_cache:
-            next_cache = past_key_values.to_legacy_cache()
         if not return_dict:
             return tuple(
                 v
@@ -1737,10 +1519,7 @@ class ParlerTTSDecoder(ParlerTTSPreTrainedModel):
         return causal_mask
 
 
-@add_start_docstrings(
-    "The bare ParlerTTS decoder model outputting raw hidden-states without any specific head on top.",
-    MUSICGEN_START_DOCSTRING,
-)
+@auto_docstring
 # Copied from transformers.models.musicgen.modeling_musicgen.MusicgenModel with Musicgen->ParlerTTS
 class ParlerTTSModel(ParlerTTSPreTrainedModel):
     def __init__(self, config: ParlerTTSDecoderConfig):
@@ -1760,7 +1539,7 @@ class ParlerTTSModel(ParlerTTSPreTrainedModel):
     def get_decoder(self):
         return self.decoder
 
-    @add_start_docstrings_to_model_forward(MUSICGEN_DECODER_INPUTS_DOCSTRING)
+    @auto_docstring
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -1780,6 +1559,22 @@ class ParlerTTSModel(ParlerTTSPreTrainedModel):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPastAndCrossAttentions]:
+        r"""
+        prompt_hidden_states (`torch.FloatTensor` of shape `(batch_size, encoder_sequence_length, hidden_size)`, *optional*):
+            Sequence of prompt hidden states at the output of the initial embedding layer, concatenated to the
+            input embeds.
+        prompt_attention_mask (`torch.LongTensor` of shape `(batch_size, encoder_sequence_length)`, *optional*):
+            Mask to avoid performing cross-attention on padding tokens indices of the prompt input ids.
+        head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
+            Mask to nullify selected heads of the self-attention modules. Mask values selected in `[0, 1]`: 1
+            indicates the head is **not masked**, 0 indicates the head is **masked**.
+        cross_attn_head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
+            Mask to nullify selected heads of the cross-attention modules. Mask values selected in `[0, 1]`: 1
+            indicates the head is **not masked**, 0 indicates the head is **masked**.
+        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+            Indices depicting the position of the input sequence tokens in the sequence. It is used to update
+            the cache in the correct position and to infer the complete sequence length.
+        """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -1819,9 +1614,11 @@ class ParlerTTSModel(ParlerTTSPreTrainedModel):
         )
 
 
-@add_start_docstrings(
-    "The Parler-TTS decoder model with a language modelling head on top.",
-    MUSICGEN_START_DOCSTRING,
+@auto_docstring(
+    custom_intro="""
+    The Parler-TTS decoder model with a language modelling head on top.
+    """,
+    checkpoint=_CHECKPOINT_FOR_DOC,
 )
 class ParlerTTSForCausalLM(ParlerTTSPreTrainedModel, GenerationMixin):
     def __init__(self, config: ParlerTTSDecoderConfig):
@@ -1862,8 +1659,7 @@ class ParlerTTSForCausalLM(ParlerTTSPreTrainedModel, GenerationMixin):
     def get_decoder(self):
         return self.model.decoder
 
-    @add_start_docstrings_to_model_forward(MUSICGEN_DECODER_INPUTS_DOCSTRING)
-    @replace_return_docstrings(output_type=ParlerTTSCausalLMOutputWithCrossAttentions, config_class=_CONFIG_FOR_DOC)
+    @auto_docstring
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -1886,11 +1682,28 @@ class ParlerTTSForCausalLM(ParlerTTSPreTrainedModel, GenerationMixin):
         loss_reduction: str = "mean",
     ) -> Union[Tuple, ParlerTTSCausalLMOutputWithCrossAttentions]:
         r"""
+        input_ids (`torch.LongTensor` of shape `(batch_size * num_codebooks, sequence_length)`):
+            Indices of input sequence tokens in the vocabulary, corresponding to the sequence of audio codes.
+        prompt_hidden_states (`torch.FloatTensor` of shape `(batch_size, encoder_sequence_length, hidden_size)`, *optional*):
+            Sequence of prompt hidden states at the output of the initial embedding layer, concatenated to the
+            input embeds.
+        prompt_attention_mask (`torch.LongTensor` of shape `(batch_size, encoder_sequence_length)`, *optional*):
+            Mask to avoid performing cross-attention on padding tokens indices of the prompt input ids.
+        head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
+            Mask to nullify selected heads of the self-attention modules. Mask values selected in `[0, 1]`: 1
+            indicates the head is **not masked**, 0 indicates the head is **masked**.
+        cross_attn_head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
+            Mask to nullify selected heads of the cross-attention modules. Mask values selected in `[0, 1]`: 1
+            indicates the head is **not masked**, 0 indicates the head is **masked**.
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length, num_codebooks)`, *optional*):
             Labels for language modeling. Note that the labels **are shifted** inside the model, i.e. you can set
-            `labels = input_ids` Indices are selected in `[-100, 0, ..., config.vocab_size]` All labels set to `-100`
-            are ignored (masked), the loss is only computed for labels in `[0, ..., config.vocab_size]`
-        Returns:
+            `labels = input_ids`. Indices are selected in `[-100, 0, ..., config.vocab_size]`. All labels set to
+            `-100` are ignored (masked); the loss is only computed for labels in `[0, ..., config.vocab_size]`.
+        loss_reduction (`str`, *optional*, defaults to `"mean"`):
+            Reduction applied to the per-codebook cross-entropy loss, forwarded to `torch.nn.CrossEntropyLoss`.
+        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+            Indices depicting the position of the input sequence tokens in the sequence. It is used to update
+            the cache in the correct position and to infer the complete sequence length.
         """
 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
@@ -2300,17 +2113,19 @@ class ParlerTTSForCausalLM(ParlerTTSPreTrainedModel, GenerationMixin):
             return output_ids
 
 
-@add_start_docstrings(
-    "The composite Parler-TTS model with a text encoder, audio encoder and ParlerTTS decoder, "
-    "for music generation tasks with one or both of text and audio prompts.",
-    MUSICGEN_START_DOCSTRING,
+@auto_docstring(
+    custom_intro="""
+    The composite Parler-TTS model with a text encoder, an audio encoder and a Parler-TTS decoder, trained to
+    synthesize speech for a text transcript conditioned on a natural-language voice description.
+    """,
+    checkpoint=_CHECKPOINT_FOR_DOC,
 )
 class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
-    config_class = ParlerTTSConfig
+    config: ParlerTTSConfig
     base_model_prefix = "encoder_decoder"
     main_input_name = "input_ids"
     supports_gradient_checkpointing = True
-    _supports_flash_attn_2 = True
+    _supports_flash_attn = True
     _supports_sdpa = True
     _supports_cache_class = True
     _supports_static_cache = True
@@ -2325,6 +2140,14 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
         audio_encoder: Optional[PreTrainedModel] = None,
         decoder: Optional[ParlerTTSForCausalLM] = None,
     ):
+        r"""
+        text_encoder (`PreTrainedModel`, *optional*):
+            Pretrained text encoder used to build `config` from when `config` is not provided directly.
+        audio_encoder (`PreTrainedModel`, *optional*):
+            Pretrained audio codec used to build `config` from when `config` is not provided directly.
+        decoder (`ParlerTTSForCausalLM`, *optional*):
+            Pretrained Parler-TTS decoder used to build `config` from when `config` is not provided directly.
+        """
         if config is None and (text_encoder is None or audio_encoder is None or decoder is None):
             raise ValueError(
                 "Either a configuration has to be provided, or all three of text encoder, audio encoder and Parler-TTS decoder."
@@ -2421,6 +2244,9 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
         audio_encoder_signature = set(inspect.signature(self.audio_encoder.decode).parameters.keys())
         self.use_audio_scales = "audio_scales" in audio_encoder_signature
 
+        audio_encoder_forward_signature = set(inspect.signature(self.audio_encoder.forward).parameters.keys())
+        self.use_audio_padding_mask = "padding_mask" in audio_encoder_forward_signature
+
         self.use_4dim_audio_codes = False
         audio_type = audio_encoder.config.model_type
         if audio_type == "encodec":
@@ -2439,18 +2265,6 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
             module.weight.data.normal_(mean=0.0, std=std)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
-
-    def tie_weights(self, *args, **kwargs):
-        """Tie the weights between the input embeddings and the output embeddings."""
-        super().tie_weights(*args, **kwargs)
-
-        # tie text encoder & decoder if needed
-        if self.config.tie_encoder_decoder:
-            # tie text encoder and decoder base model
-            decoder_base_model_prefix = self.decoder.base_model_prefix
-            self._tie_encoder_decoder_weights(
-                self.text_encoder, self.decoder._modules[decoder_base_model_prefix], self.decoder.base_model_prefix
-            )
 
     def get_audio_encoder(self):
         return self.audio_encoder
@@ -2477,13 +2291,31 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
         r"""
+        Loads a Parler-TTS checkpoint, from a published repository as it stands or from a directory
+        [`~weight_conversion.convert`] wrote. A published checkpoint holds its audio codec as the
+        `descript-audio-codec` module Parler-TTS trained with, which is rewritten into [`DacModel`]'s weight
+        layout on the way in.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                `"parler-tts/parler-tts-mini-v1"`, any other published repository id, or a directory holding
+                either layout.
+            model_args (`tuple`, *optional*):
+                Positional arguments of [`~PreTrainedModel.from_pretrained`].
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~PreTrainedModel.from_pretrained`].
+
+        Returns:
+            [`ParlerTTSForConditionalGeneration`]: The loaded model.
+
         Example:
 
         ```python
-        >>> from parler_tts import ParlerTTSForConditionalGeneration
+        >>> from voicestudio.models.parler_tts import ParlerTTSForConditionalGeneration
 
         >>> model = ParlerTTSForConditionalGeneration.from_pretrained("parler-tts/parler-tts-mini-v1")
         ```"""
+        from .weight_conversion import converted_checkpoint, is_published_layout
 
         # At the moment fast initialization is not supported for composite models
         if kwargs.get("_fast_init", False):
@@ -2492,6 +2324,17 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
                 "Falling back to slow initialization..."
             )
         kwargs["_fast_init"] = False
+
+        if (
+            pretrained_model_name_or_path is not None
+            and kwargs.get("state_dict") is None
+            and is_published_layout(pretrained_model_name_or_path, **kwargs)
+        ):
+            subfolder = kwargs.pop("subfolder", None)
+            directory = converted_checkpoint(
+                pretrained_model_name_or_path, subfolder=subfolder, config=kwargs.pop("config", None), **kwargs
+            )
+            return super().from_pretrained(directory, *model_args, **kwargs)
 
         return super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
 
@@ -2698,8 +2541,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
         )
         return cls(text_encoder=text_encoder, audio_encoder=audio_encoder, decoder=decoder, config=config)
 
-    @add_start_docstrings_to_model_forward(MUSICGEN_INPUTS_DOCSTRING)
-    @replace_return_docstrings(output_type=ParlerTTSSeq2SeqLMOutput, config_class=_CONFIG_FOR_DOC)
+    @auto_docstring
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -2726,20 +2568,51 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
         **kwargs,
     ) -> Union[Tuple, ParlerTTSSeq2SeqLMOutput]:
         r"""
-        Returns:
+        input_values (`torch.FloatTensor` of shape `(batch_size, channels, sequence_length)`, *optional*):
+            Raw audio waveform, used as a training target for the audio encoder instead of `decoder_input_ids`
+            when the model is trained end to end on raw audio rather than on pre-computed codebooks.
+        padding_mask (`torch.BoolTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Mask indicating which parts of `input_values` are padding, passed to the audio encoder alongside
+            `input_values` when `config.use_audio_padding_mask` is set.
+        decoder_input_ids (`torch.LongTensor` of shape `(batch_size * num_codebooks, target_sequence_length)`, *optional*):
+            Indices of decoder input sequence tokens in the vocabulary, corresponding to the sequence of audio
+            codes. Built from `labels` with [`shift_tokens_right`] when not provided directly.
+        prompt_input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Indices of prompt transcript tokens, embedded through [`~ParlerTTSForConditionalGeneration.embed_prompts`]
+            into `prompt_hidden_states` when `prompt_hidden_states` is not passed directly.
+        prompt_attention_mask (`torch.LongTensor` of shape `(batch_size, encoder_sequence_length)`, *optional*):
+            Mask to avoid performing cross-attention on padding tokens indices of `prompt_input_ids`.
+        prompt_hidden_states (`torch.FloatTensor` of shape `(batch_size, encoder_sequence_length, hidden_size)`, *optional*):
+            Sequence of prompt hidden states at the output of the initial embedding layer, concatenated to the
+            decoder input embeds.
+        decoder_position_ids (`torch.LongTensor` of shape `(batch_size, target_sequence_length)`, *optional*):
+            Indices of positions of each decoder input sequence token in the position embeddings.
+        labels (`torch.LongTensor` of shape `(batch_size, target_sequence_length, num_codebooks)`, *optional*):
+            Labels for language modeling. Note that the labels **are shifted** inside the model, i.e. you can set
+            `labels = decoder_input_ids`. Indices are selected in `[-100, 0, ..., config.decoder.vocab_size]`. All
+            labels set to `-100` are ignored (masked); the loss is only computed for labels in
+            `[0, ..., config.decoder.vocab_size]`.
+        loss_reduction (`str`, *optional*, defaults to `"mean"`):
+            Reduction applied to the per-codebook cross-entropy loss, forwarded to `torch.nn.CrossEntropyLoss`.
+        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+            Indices depicting the position of the input sequence tokens in the sequence. It is used to update
+            the cache in the correct position and to infer the complete sequence length.
 
         Examples:
         ```python
-        >>> from transformers import AutoProcessor, ParlerTTSForConditionalGeneration
         >>> import torch
+        >>> from voicestudio.models.parler_tts import ParlerTTSForConditionalGeneration, ParlerTTSProcessor
 
-        >>> processor = AutoProcessor.from_pretrained("parler-tts/parler-tts-mini-v1")
-        >>> model = ParlerTTSForConditionalGeneration.from_pretrained("parler-tts/parler-tts-mini-v1")
+        >>> model_id = "parler-tts/parler-tts-mini-v1"
+        >>> processor = ParlerTTSProcessor.from_pretrained(model_id)
+        >>> model = ParlerTTSForConditionalGeneration.from_pretrained(model_id)
 
         >>> inputs = processor(
-        ...     text=["80s pop track with bassy drums and synth", "90s rock song with loud guitars and heavy drums"],
-        ...     padding=True,
-        ...     return_tensors="pt",
+        ...     description=[
+        ...         "A calm, clear female voice with a close recording and almost no background noise.",
+        ...         "A calm, clear female voice with a close recording and almost no background noise.",
+        ...     ],
+        ...     transcript=["Hey, how are you doing today?", "The weather is nice this afternoon."],
         ... )
 
         >>> pad_token_id = model.generation_config.pad_token_id
@@ -2749,8 +2622,8 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
         ... )
 
         >>> logits = model(**inputs, decoder_input_ids=decoder_input_ids).logits
-        >>> logits.shape  # (bsz * num_codebooks, tgt_len, vocab_size)
-        torch.Size([8, 1, 2048])
+        >>> logits.shape  # (bsz * num_codebooks, prompt_len + tgt_len, vocab_size)
+        torch.Size([18, 10, 1088])
         ```"""
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -2831,24 +2704,25 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
             ).transpose(1, 2)
 
         elif decoder_input_ids is None and decoder_inputs_embeds is None:
+            if self.use_audio_padding_mask:
+                kwargs_audio_encoder["padding_mask"] = padding_mask
             audio_encoder_outputs = self.audio_encoder(
                 input_values=input_values,
-                padding_mask=padding_mask,
                 **kwargs_audio_encoder,
             )
             audio_codes = audio_encoder_outputs.audio_codes
-            frames, bsz, codebooks, seq_len = audio_codes.shape
-            if frames != 1:
-                raise ValueError(
-                    f"Expected 1 frame in the audio code outputs, got {frames} frames. Ensure chunking is "
-                    "disabled by setting `chunk_length=None` in the audio encoder."
-                )
+            if self.use_4dim_audio_codes:
+                frames, bsz, _, seq_len = audio_codes.shape
+                if frames != 1:
+                    raise ValueError(
+                        f"Expected 1 frame in the audio code outputs, got {frames} frames. Ensure chunking is "
+                        "disabled by setting `chunk_length=None` in the audio encoder."
+                    )
+                audio_codes = audio_codes[0]
+            else:
+                bsz, _, seq_len = audio_codes.shape
 
-            if self.config.decoder.audio_channels == 2 and audio_codes.shape[2] == self.decoder.num_codebooks // 2:
-                # mono input through encodec that we convert to stereo
-                audio_codes = audio_codes.repeat_interleave(2, dim=2)
-
-            decoder_input_ids = audio_codes[0, ...].reshape(bsz * self.decoder.num_codebooks, seq_len)
+            decoder_input_ids = audio_codes.reshape(bsz * self.decoder.num_codebooks, seq_len)
 
         # Decode
         decoder_outputs = self.decoder(
@@ -3413,13 +3287,17 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
                     - [`~generation.GenerateBeamEncoderDecoderOutput`]
         """
         # 1. Handle `generation_config` and kwargs that might update it, and validate the resulting objects
-        if generation_config is None:
-            generation_config = self.generation_config
+        generation_mode_kwargs = self._extract_generation_mode_kwargs(None, kwargs, synced_gpus, None, streamer)
+        generation_config, model_kwargs = self._prepare_generation_config(generation_config, **kwargs)
+        generation_mode = generation_config.get_generation_mode()
+        if generation_mode not in (GenerationMode.SAMPLE, GenerationMode.GREEDY_SEARCH):
+            raise ValueError(
+                "Got incompatible mode for generation, should be one of greedy or sampling. "
+                "Ensure that beam search is de-activated by setting `num_beams=1` and `num_beam_groups=1`."
+            )
 
-        generation_config = copy.deepcopy(generation_config)
-        model_kwargs = generation_config.update(**kwargs)  # All unused kwargs must be model kwargs
-        generation_config.validate()
         self._validate_model_kwargs(model_kwargs.copy())
+        self._validate_generation_mode(generation_mode, generation_config, generation_mode_kwargs)
 
         if model_kwargs.get("encoder_outputs") is not None and type(model_kwargs["encoder_outputs"]) == tuple:
             # wrap the unconditional outputs as a BaseModelOutput for compatibility with the rest of generate
@@ -3520,8 +3398,6 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
                     "This model does not support the quantized cache. If you want your model to support quantized "
                     "cache, please open an issue on the Parler-TTS repository https://github.com/huggingface/parler-tts"
                 )
-        # Use DynamicCache() instance by default. This will avoid back and forth from legacy format that
-        # keeps copying the cache thus using much more memory
         elif generation_config.cache_implementation is None and self._supports_default_dynamic_cache():
             past = model_kwargs.get("past_key_values", None)
             requires_cross_attention_cache = (
@@ -3532,12 +3408,6 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
                     DynamicCache()
                     if not requires_cross_attention_cache
                     else EncoderDecoderCache(DynamicCache(), DynamicCache())
-                )
-            elif isinstance(past, tuple):
-                model_kwargs["past_key_values"] = (
-                    DynamicCache.from_legacy_cache(past)
-                    if not requires_cross_attention_cache
-                    else EncoderDecoderCache.from_legacy_cache(past)
                 )
 
         # build the delay pattern mask for offsetting each codebook prediction by 1 (this behaviour is specific to Parler-TTS)
@@ -3554,10 +3424,7 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
         if streamer is not None:
             streamer.put(delayed_input_ids.cpu())
 
-        # 7. determine generation mode
-        generation_mode = generation_config.get_generation_mode()
-
-        # 8. prepare distribution pre_processing samplers
+        # 7. prepare distribution pre_processing samplers
         logits_processor = self._get_logits_processor(
             generation_config=generation_config,
             input_ids_seq_length=input_ids_length,
@@ -3567,36 +3434,28 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
             device=delayed_input_ids.device,
         )
 
-        # 9. prepare stopping criteria
+        # 8. prepare stopping criteria
         stopping_criteria = self._get_stopping_criteria(
             generation_config=generation_config, stopping_criteria=stopping_criteria
         )
 
-        if generation_mode in (GenerationMode.SAMPLE, GenerationMode.GREEDY_SEARCH):
-            # expand input_ids with `num_return_sequences` additional sequences per batch
-            delayed_input_ids, model_kwargs = self._expand_inputs_for_generation(
-                input_ids=delayed_input_ids,
-                expand_size=generation_config.num_return_sequences,
-                is_encoder_decoder=self.config.is_encoder_decoder,
-                **model_kwargs,
-            )
+        # expand input_ids with `num_return_sequences` additional sequences per batch
+        delayed_input_ids, model_kwargs = self._expand_inputs_for_generation(
+            input_ids=delayed_input_ids,
+            expand_size=generation_config.num_return_sequences,
+            is_encoder_decoder=self.config.is_encoder_decoder,
+            **model_kwargs,
+        )
 
-            # 10. run sample
-            outputs = self._sample(
-                delayed_input_ids,
-                logits_processor=logits_processor,
-                stopping_criteria=stopping_criteria,
-                generation_config=generation_config,
-                synced_gpus=synced_gpus,
-                streamer=streamer,
-                **model_kwargs,
-            )
-
-        else:
-            raise ValueError(
-                "Got incompatible mode for generation, should be one of greedy or sampling. "
-                "Ensure that beam search is de-activated by setting `num_beams=1` and `num_beam_groups=1`."
-            )
+        # 9. run sample
+        outputs = self._sample(
+            delayed_input_ids,
+            logits_processor=logits_processor,
+            stopping_criteria=stopping_criteria,
+            generation_config=generation_config,
+            **generation_mode_kwargs,
+            **model_kwargs,
+        )
 
         if generation_config.return_dict_in_generate:
             output_ids = outputs.sequences
@@ -3672,3 +3531,6 @@ class ParlerTTSForConditionalGeneration(PreTrainedModel, GenerationMixin):
             return outputs
         else:
             return output_values
+
+
+__all__ = ["ParlerTTSForCausalLM", "ParlerTTSForConditionalGeneration"]
