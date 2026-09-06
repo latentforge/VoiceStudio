@@ -595,7 +595,7 @@ not produce a NaN and would not show in a gradient norm, and would surface only 
 in audio detail or loses word timing. So the equal-weight sum is a defensible inherited-lineage choice, not
 a fact about Dia2, and the README says so rather than calling it upstream's objective.
 
-## Open: one item that needs a decision, not code
+## Settled: the text frontend, including what stays unimplemented
 
 **Settled: the text normalizer reaches `wetext` through an optional extra.** The user granted an H11
 exception for it, conditional on the measurement, and the measurement carried it. `e0efb9b9`, `6ae69b3e`,
@@ -645,10 +645,17 @@ Ordering, since two components now expand numbers: on the English path `wetext` 
 path `number_to_words` is never reached, sitting in the `else` of `contains_chinese`. The 41,821-string
 `inflect` parity was re-run after the change at zero mismatches.
 
-**Still open: `ttsfrd`.** It is the closed-source Alibaba wheel whose rules ship as a separate
-`CosyVoice-ttsfrd` resource pack, and it was deliberately not touched even under the H11 exception. The one
-concrete case naming it is `Dept.`, which is in neither `wetext`'s tables nor CLVP's, so
-`Dr. Smith works at the U.S. Dept. of Energy.` is still not read correctly by anything available here.
+**Settled: `ttsfrd` stays unimplemented.** It is the closed-source Alibaba wheel whose rules ship as a
+separate `CosyVoice-ttsfrd` resource pack, and it was deliberately not touched even under the H11
+exception. Three measurements close it rather than one preference. What it alone would add is `Dept.`,
+absent from both `wetext`'s grammar and CLVP's table, since `Dr.` and `U.S.` are already read correctly
+unaided and dates, currency, units and phone numbers are what `wetext` took. And it would not fix the
+sentence that started this: on v3, `Dr. Smith works at the U.S. Dept. of Energy.` truncates to `OF ENERGY`
+on most seeds whatever the setting, which is a decode failure rather than a text one, so expanding the
+abbreviation would leave it as it is.
+
+That truncation is the residual worth knowing about, and it is untouched: nobody has looked at why v3
+drops that sentence, and it is a different problem from anything the text frontend can reach.
 
 One correction to the record it replaces: the old entry said the frontend emits the ARPAbet and pinyin
 markup the 278 tokens exist for. Nothing in the open upstream source emits it. `ttsfrd` is its only
