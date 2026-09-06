@@ -25,16 +25,43 @@ from voicestudio.models.cosyvoice_v3 import CosyVoiceV3ForConditionalGeneration,
 model = CosyVoiceV3ForConditionalGeneration.from_pretrained("FunAudioLLM/Fun-CosyVoice3-0.5B-2512")
 processor = CosyVoiceV3Processor.from_pretrained("FunAudioLLM/Fun-CosyVoice3-0.5B-2512")
 
-inputs = processor(text="<|endofprompt|>The quick brown fox jumps over the lazy dog.")
+inputs = processor(
+    text="The quick brown fox jumps over the lazy dog.",
+    audio=reference,
+    sampling_rate=rate,
+    prompt_text="You are a helpful assistant.<|endofprompt|>" + reference_transcript,
+)
 
-waveform = model.generate(input_ids=inputs.input_ids, speaker_embedding=speaker_embedding)
+waveform = model.generate(
+    input_ids=inputs["input_ids"],
+    speaker_embedding=inputs["speaker_embedding"],
+    prompt_input_ids=inputs["prompt_input_ids"],
+    prompt_speech_token_ids=inputs["prompt_speech_token_ids"],
+    prompt_speech_feat=inputs["speech_feat"],
+)
 ```
 
 v3 requires the end of prompt token, id 151646, to appear in the text or the prompt text, and
-`generate` raises if it does not. Upstream uses it to separate an instruction prefix from the text to
-synthesize, as in `"用四川话说<|endofprompt|>扁担长..."`, so an empty instruction leaves the marker at
-the front. The same conditioning modes as v2 are available, and passing a speaker embedding alone is
-upstream's sft mode, the only one that needs no reference waveform.
+`generate` raises if it does not. Upstream uses it to separate an instruction prefix from everything
+that follows, as in `"用四川话说<|endofprompt|>扁担长..."`. **Where the marker sits decides what the
+model reads as an instruction, and that placement follows the conditioning mode.** Zero shot, above,
+puts it in `prompt_text` between the instruction and the reference transcript, so the transcript sits
+with the text as material to speak. With no reference waveform, upstream's cross lingual and sft
+modes, there is no transcript and the marker leads the text instead:
+
+```python
+inputs = processor(text="<|endofprompt|>The quick brown fox jumps over the lazy dog.")
+
+waveform = model.generate(input_ids=inputs["input_ids"], speaker_embedding=speaker_embedding)
+```
+
+Putting the marker at the front of the text **while also passing a reference transcript** builds a
+sequence upstream never builds, since its own cross lingual front end deletes the transcript
+outright. The transcript then falls ahead of the marker, in the instruction slot, and the model reads
+it as a system instruction rather than as the words the reference audio says. It costs intelligibility
+on any sentence the model finds hard, and "The end of prompt marker and the abbreviation case" below
+measures what that cost is. The same conditioning modes as v2 are available, and passing a speaker
+embedding alone is upstream's sft mode, the only one that needs no reference waveform.
 
 The released directory holds one `.pt` file per network rather than a single checkpoint, beside the
 `CosyVoice-BlankEN` directory the language model is built from. `from_pretrained` reads that layout
@@ -251,8 +278,8 @@ Neither is an omission in this folder and neither is a choice this migration mad
 
 ## Deliberate deviations from upstream
 
-Three, all of which reproduce the computation and change only a side effect or a source of
-irreproducibility.
+Four. Three reproduce the computation and change only a side effect or a source of irreproducibility.
+The fourth changes what the model decodes, and is set out last with the measurement behind it.
 
 - **The 29 MB `uv` noise tensor is not built.** Upstream's `SourceModuleHnNSF` draws it and returns
   it, and the vocoder discards it with `s, _, _`. It never reaches the output, so not building it
@@ -270,6 +297,21 @@ irreproducibility.
   `RuntimeError: Input type (float) and bias type (double) should be the same`; after the migrated
   `inference` the predictor is float32 and `forward` succeeds. The computation is identical, with the
   f0 contour at **exactly 0.0**.
+- **The minimum length floor masks the end of speech token rather than upstream's index.** Upstream's
+  `CosyVoice3LM` inherits `sampling_ids` from `TransformerLM`, which sets
+  `weighted_scores[self.speech_token_size]` to negative infinity while below `min_len`. On v3 that
+  index is **6561, the start of sequence token**, because v3 moved the end of speech token to
+  `speech_token_size + 1`, 6562. Upstream's floor therefore masks a token the model was never going to
+  draw and leaves the real one free, so on v3 it does not hold the decode open at all. `_decode` masks
+  6562. Measured against upstream's own `CosyVoice3LM.inference`, run unmodified on the same weights
+  through an adapter with both sides drawing from `repetition_aware_sampling` off the same seed: on
+  seed 1 upstream stops at **10 speech tokens** on `Dr. Smith works at the U.S. Dept. of Energy.` and
+  at **9** on `The quick brown fox jumps over the lazy dog.`, both silent, where this repository
+  produces 116 and 102 tokens that transcribe to the full sentence. On the other eight of the ten seed
+  and sentence pairs the two agree **token for token**, no first difference, so this index is the only
+  thing that separates them. Reproducing a masked wrong index is not fidelity, so the deviation
+  stands, but it is a deviation from published behaviour and **whether to keep it is open** rather
+  than settled here.
 
 ## Verification
 
@@ -541,55 +583,116 @@ English branch raises on 45 and the Chinese branch loses 45. Upstream normalizes
 both branches and has the same two defects, which is one more reason nothing in its open source can
 emit this markup.
 
-**English**, zero shot from the 5.86 s LibriSpeech clip, three seeds, `facebook/wav2vec2-base-960h`,
-word error rate against the text each setting handed to the model. `off` is `text_frontend=False`,
-`today` is this repository without `wetext` installed, `clvp` is `today` plus `EnglishNormalizer`
-from `transformers.models.clvp`, which was measured and rejected, and `wetext` is it installed.
+### The end of prompt marker and the abbreviation case
 
-| Case | off | today | clvp | wetext |
+Everything in this English table was remeasured after a defect was found in the harness that produced
+its first version, and the defect is worth stating before the numbers because it changes what several
+of them mean.
+
+The first harness passed `text="<|endofprompt|>" + sentence` **and** a reference transcript. That
+builds `[transcript] [<|endofprompt|>] [text]`, so the whole transcript falls ahead of the marker, in
+the slot upstream reserves for an instruction. Upstream never builds that sequence: its zero shot
+calls put the marker inside `prompt_text` between the instruction and the transcript, and its cross
+lingual front end, the mode where the marker leads the text, deletes the transcript outright. Under
+the wrong sequence the model reads the reference transcript as a system instruction rather than as
+the words the reference audio says.
+
+That is the whole of the `OF ENERGY` truncation the earlier table recorded as an unexplained decode
+failure. `Dr. Smith works at the U.S. Dept. of Energy.` under the wrong sequence returns
+1.000 / 0.200 / 0.800 / 0.800 / 0.800 across five seeds, most of them the two words `OF ENERGY` at
+1.5 to 3.0 s. Under upstream's zero shot placement, same seeds, same weights, same reference, it
+returns 0.200 / 0.200 / 0.200 / 0.400 / 0.200 at 3.2 to 4.0 s, every seed carrying the whole
+sentence, and `openai/whisper-large-v3-turbo` puts all five at 0.100. The residual error is `Dept.`
+alone.
+
+The failure is not the sentence's punctuation and not its abbreviations, both of which were bisected
+and cleared: a plain mid sentence full stop reads correctly on 5/5 seeds, `Dr Smith works at the US
+Dept of Energy.` with no mid sentence stop still truncates on 3/5, and `Smith works at the Dept of
+Energy.` reads correctly on 4/5. Nor is it v3's architecture. v2 reads the same sentence on 5/5 seeds
+at 0.200 and never truncates on any variant, but v2 has no end of prompt marker to misplace. And it
+is not this repository's decode: upstream's own `CosyVoice3LM.inference`, run unmodified on the same
+weights through an adapter, reproduces `OF ENERGY` **token for token** at 38 and 37 tokens on the
+seeds where this repository produces it.
+
+Three mechanisms were ruled out with measurements rather than argument. No length ceiling is reached:
+`max_length` is 20 times the text length, 300 tokens, against 37 to 120 produced. The v3 silence
+thinning drops **0** tokens on every run. And every decode terminates on the true end of speech token
+6562, never on one of the other 199 stop ids, with P(eos) never above 0.5 at any step.
+
+**English**, zero shot from the 5.86 s LibriSpeech clip under upstream's marker placement, three
+seeds, `facebook/wav2vec2-base-960h`, word error rate against the text each setting handed to the
+model. `off` is `text_frontend=False`, `today` is this repository without `wetext` installed, `clvp`
+is `EnglishNormalizer` from `transformers.models.clvp` in the normalizer slot in place of `wetext`,
+which was measured and rejected, and `wetext` is it installed.
+
+| Case | off | today | clvp | wetext, old layout |
 |---|---|---|---|---|
-| `I paid 1234 dollars in 2025 for 7 books.` | 0.667 / 0.833 / 0.833 | 0.053 / 0.579 / 0.000 | 0.053 / 0.579 / 0.000 | 0.000 / 0.000 / 0.538 |
-| `Dr. Smith works at the U.S. Dept. of Energy.` | 1.000 / 0.200 / 0.800 | 1.000 / 0.200 / 0.800 | 0.800 / 0.100 / 0.800 | 0.778 / 0.778 / 0.778 |
-| `The book costs $1,234.50 and weighs 2.5 kilograms.` | 2.333 / 1.833 / 1.333 | 0.467 / 0.733 / 0.733 | 0.158 / 0.000 / 0.053 | 0.056 / 0.056 / 0.111 |
-| `The St. Louis Co. Ltd. shipped 5 ft. of cable.` | 0.778 / 0.778 / 0.889 | 0.700 / 0.700 / 1.300 | 0.000 / 0.000 / 0.100 | 0.100 / 0.100 / 0.200 |
-| `The quick brown fox jumps over the lazy dog.` | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 |
+| `I paid 1234 dollars in 2025 for 7 books.` | 1.222 / 0.889 / 1.111 | 0.000 / 0.053 / 0.053 | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.538 |
+| `Dr. Smith works at the U.S. Dept. of Energy.` | 0.200 / 0.200 / 0.200 | 0.200 / 0.200 / 0.200 | 0.100 / 0.100 / 0.100 | 0.778 / 0.778 / 0.778 |
+| `The book costs $1,234.50 and weighs 2.5 kilograms.` | 1.273 / 1.364 / 1.364 | 0.267 / 0.400 / 0.200 | 0.056 / 0.056 / 0.056 | 0.056 / 0.056 / 0.111 |
+| `The St. Louis Co. Ltd. shipped 5 ft. of cable.` | 0.500 / 0.500 / 0.500 | 0.500 / 0.900 / 0.500 | 0.000 / 0.000 / 0.000 | 0.100 / 0.100 / 0.200 |
+| `The quick brown fox jumps over the lazy dog.` | 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 | 0.000 / 0.111 / 0.000 | 0.000 / 0.000 / 0.000 |
 
-Four things to read out of it.
+**The `wetext` column is the one column not remeasured, and it is marked so rather than quietly
+compared.** `wetext` is a package the caller installs, `pyproject.toml` names it nowhere, it is not
+installed in this environment and CLAUDE.md H11 forbids installing one to finish a migration. Its
+figures are therefore the old harness's, under the wrong sequence. What can be said about them
+without measuring is directional: the wrong sequence only ever hurts, every row that was remeasured
+improved or held, so `wetext`'s true figures are at worst the ones shown.
 
-The **digits** row shows `today` and `clvp` **identical seed for seed**, waveform for waveform,
-because CLVP rewrites nothing in that sentence: this repository's `number_to_words` had already
-consumed every digit. That identity is what makes CLVP's other columns a fair comparison rather than
-a coincidence. It also shows `wetext` scoring lower while saying something less correct, because it
-reads `1234` as `twelve thirty four`, a year reading of a quantity, and the model then says that
-faithfully. A lower figure in this table means the model matched its own reference, not that the
-reference was right.
+Five things to read out of it.
 
-The **money** row is where the frontend as it stands is worst and where it is not obvious from the
-text alone: `today` hands the model `The book costs $one,two hundred and thirty-four.fifty and
-weighs two.five kilograms.`, and `$1,234.50` comes back as `TWO BLANK QUELL BLADS TWO HUNDRED THIRTY
-FOUR FIFTY`. Both normalizers fix the synthesis. `clvp` is the semantically better of the two here,
-reading `one thousand, two hundred and thirty-four dollars, fifty cents`, where `wetext` drops the
-leading word and reads `thousand two hundred and thirty four point five dollars`.
+The **layout defect cost every row except the pangram**, which is why nothing caught it. Seed for
+seed, `today` goes from 0.053 / 0.579 / 0.000 to 0.000 / 0.053 / 0.053 on digits, 0.467 / 0.733 /
+0.733 to 0.267 / 0.400 / 0.200 on money, 0.700 / 0.700 / 1.300 to 0.500 / 0.900 / 0.500 on units, and
+1.000 / 0.200 / 0.800 to 0.200 on all three seeds on abbreviations. The pangram is 0.000 under both
+sequences under every setting. The wrong sequence is only visible on a sentence the model finds hard,
+so a harness that checks itself on an easy control cannot see it at all.
 
-The **units** row is the reverse and it is why CLVP was rejected. Its figures are the best in the
-table, 0.000 / 0.000 / 0.100, and its transcripts read `THE SAINT LOUIS COMPANY LIMITED SHIPPED FIVE
-FORT OF CABLE`. CLVP's abbreviation table maps `ft.` to `fort`, so the model is faithfully speaking
-a wrong word. `wetext` maps it to `feet` and its transcripts read `FIVE FEET`. Everything CLVP wins,
-`wetext` wins as well or better, and CLVP additionally gets `mrs.` wrong as `misess`, `st.` wrong as
-`saint` in a street name, and every ordinal wrong, `1st` to `onest` and `21st` to `twenty-onest`.
+The **English case for `wetext` survives, but it is smaller than the earlier table made it look.**
+The two rows it rests on are money, where `today` is now 0.267 / 0.400 / 0.200 rather than the
+recorded 0.467 / 0.733 / 0.733, and units, 0.500 / 0.900 / 0.500 rather than 0.700 / 0.700 / 1.300.
+`wetext` still wins both, and wins them by more than the shown figures since its column is the
+pessimistic one. The gap on money has more than halved.
 
-The **abbreviations** row is a negative result under all four settings, and it is the sentence this
-whole investigation started from. `Dr.` and `U.S.` are read correctly by v1 and v2 unaided; what
-fails is `Dept.`, which is absent from CLVP's 18 entry table and from `wetext`'s grammar alike. On
-v3 specifically the sentence also truncates, most seeds returning `OF ENERGY` regardless of setting,
-which is a decode failure rather than a text one. **This case is not closed and no setting closes
-it.**
+The **digits** row no longer shows `today` and `clvp` identical, and the earlier claim that it did,
+seed for seed and waveform for waveform, does not reproduce. CLVP in the normalizer slot rewrites the
+digits itself and hands the model `two thousand, twenty-five` where this repository's
+`number_to_words` writes `two thousand and twenty-five`, so the two settings do not send the same
+string. Composing CLVP **after** this repository's front end instead, which is the other reading of
+how that column was built, does leave digits nearly untouched, 0.053 / 0.000 / 0.000, but then money
+collapses to 0.533 / 0.333 / 0.333 because the currency amount has already been mangled into
+`$one,two hundred and thirty-four.fifty` before CLVP sees it. The column above is the normalizer slot
+wiring throughout.
+
+The **money** row is still where the frontend as it stands is worst: `today` hands the model `The
+book costs $one,two hundred and thirty-four.fifty and weighs two.five kilograms.` and the amount
+comes back as `DOLLAR ONE TWO HUNDRED AND THIRTY FOUR BA FIFTY`. Both normalizers fix the synthesis.
+`clvp` is the semantically better of the two here, reading `one thousand, two hundred thirty-four
+dollars, fifty cents`, where `wetext` drops the leading word and reads `thousand two hundred and
+thirty four point five dollars`.
+
+The **units** row is the reverse and it is why CLVP is still rejected. Its figures are the best in the
+table, 0.000 on all three seeds, and its transcripts read `THE SAINT LOUIS COMPANY LIMITED SHIPPED
+FIVE FORT OF CABLE`. CLVP's abbreviation table maps `ft.` to `fort`, so the model is faithfully
+speaking a wrong word, and the correct layout does not change that: it makes the wrong word cleaner.
+`wetext` maps it to `feet`. Everything CLVP wins, `wetext` wins as well or better, and CLVP
+additionally gets `mrs.` wrong as `misess`, `st.` wrong as `saint` in a street name, and every ordinal
+wrong, `1st` to `onest` and `21st` to `twenty-onest`.
+
+The **abbreviations** row is now a text result rather than a decode one. `Dr.` and `U.S.` are read
+correctly under every setting; what remains is `Dept.`, absent from CLVP's 18 entry table and from
+`wetext`'s grammar alike, spoken as `DEPON`, `DEPIT` or `DEPOT`. That gap is real and no setting
+closes it, and it is one concrete candidate for what `ttsfrd` would fix. The truncation that sat
+beside it is closed.
 
 **Chinese**, upstream's sft mode with the `中文女` speaker vector from
 `FunAudioLLM/CosyVoice-300M-SFT`, no reference waveform, three seeds,
 `openai/whisper-large-v3-turbo`, character error rate against the original sentence rather than each
 setting's own text, since the two settings write a number differently and the transcriber writes it
-a third way:
+a third way: These rows are untouched by the marker placement above: sft mode
+passes no reference waveform and therefore no transcript, so the marker at the head of the text is
+the only placement there is and it is upstream's own.
 
 | Case | today | wetext |
 |---|---|---|
