@@ -18,8 +18,6 @@ model = Qwen3TTSForConditionalGeneration.from_pretrained(model_id, dtype=torch.f
 processor.audio_tokenizer.to(model.device)
 ```
 
-The published weight layout loads as it stands. A conversion mapping registered against `Qwen3TTSForConditionalGeneration` drops the checkpoint's `talker.` prefix, renames its codec embedding and text projection, and concatenates its per-codebook output heads into the single fused head the code predictor declares. `Qwen3TTSConfig` reads the `rope_scaling` and `rope_theta` keys the checkpoint records, at every depth of the configuration, as the single `rope_parameters` mapping the classes it inherits from expect. Both the talker and its nested code predictor carry a rope base of 1000000 that way, which is the base the upstream `qwen_tts` package serves them at. The `speech_tokenizer` subfolder the processor reads is in the original Qwen3-TTS-Tokenizer-12Hz format, and it is converted on first use.
-
 `generate` returns one list of audio codes and one list of talker hidden states, one entry each per sample:
 
 ```python
