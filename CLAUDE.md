@@ -7,7 +7,7 @@ conversation.
 
 ---
 
-## 0. Hard Rules — Read First
+## 0. Hard Rules: Read First
 
 These are non-negotiable. If a task would require breaking one of these, stop and
 ask instead of proceeding.
@@ -87,12 +87,12 @@ stale code or spent their run merging.
 Follow these steps **in order** for every new model migration. Do not skip ahead to
 implementation before completing the source-trace and checkpoint search.
 
-### 2.1 Step 1 — Find the closest lineage
+### 2.1 Step 1: Find the closest lineage
 Before implementing anything from scratch, find the closest existing model lineage
 in `transformers` and inherit from it. A full from-scratch implementation is a last
 resort, not a default.
 
-If a model already ships in `transformers` itself, add an import relay only (§8) —
+If a model already ships in `transformers` itself, add an import relay only (§8),
 never a reimplementation.
 
 Inheritance is not limited to `transformers`. When a model already migrated under
@@ -121,7 +121,7 @@ depend on one consumer. Trace the original author's source instead.
 Check it before writing a class, and if you reimplement something on that list, say in
 the migration report why inheriting was rejected.
 
-### 2.2 Step 2 — Trace the real upstream source, line by line
+### 2.2 Step 2: Trace the real upstream source, line by line
 Never match a submodule (attention block, FFN, normalization, encoder layer, ...) to
 a vague architecture category ("this is a conformer", "this looks like a U-Net",
 "this is roughly a diffusion transformer") and substitute a similarly-labeled
@@ -138,7 +138,7 @@ definition and `forward` method line by line, checking specifically:
 Two components with the same one-line description can have materially different
 internals. Only a line-by-line reading of the real source catches that.
 
-### 2.3 Step 3 — Exhaustive checkpoint search
+### 2.3 Step 3: Exhaustive checkpoint search
 Never conclude "no public checkpoint exists" without checking **all** of:
 - The Hugging Face model hub
 - The upstream GitHub repo's README/releases
@@ -147,12 +147,12 @@ Never conclude "no public checkpoint exists" without checking **all** of:
 - Zenodo
 - The paper's own resources/appendix section
 
-Record exactly what was checked and where it came up empty in `PROJECT.md` — not
+Record exactly what was checked and where it came up empty in `PROJECT.md`, not
 just the negative conclusion. A wrong "no checkpoint" conclusion is not harmless: it
 licenses skipping real-weight verification and can lead to silently simplifying or
 omitting submodules on the mistaken belief nothing will ever catch the divergence.
 
-### 2.4 Step 4 — Implement
+### 2.4 Step 4: Implement
 - Inherit from the lineage found in Step 1.
 - Follow the trainability requirement (§4).
 - Follow file/module conventions (§5).
@@ -175,7 +175,7 @@ whole point of having merged that history. Fidelity: editing the real code makes
 divergence from it visible in the diff, while writing alongside makes it invisible,
 which is exactly how §2.7 happened.
 
-### 2.5 Step 5 — Verify
+### 2.5 Step 5: Verify
 A clean `from_pretrained` LOAD REPORT (no MISSING/UNEXPECTED keys) with real
 pretrained weights is a **confirmation step for Step 2**, not a substitute for it.
 
@@ -222,7 +222,7 @@ skip part of it. If the source-trace finds a submodule or training-time mechanis
 (an MDN, a reference encoder, a diffusion decoder, sample masking,
 auto-transcription, anything) that the migrated code does not implement:
 
-- That is a **scope decision**, not a finding — it does not get resolved by the same
+- That is a **scope decision**, not a finding, and it does not get resolved by the same
   pass that found it.
 - Do not land a commit or `PROJECT.md` status update that quietly omits a known real
   submodule on a self-supplied justification ("no checkpoint exists to verify it
@@ -234,7 +234,7 @@ auto-transcription, anything) that the migrated code does not implement:
 ### 2.7 Why this workflow exists: PromptTTS++
 This process was learned from a real failure. A source-trace pass on PromptTTS++
 correctly identified that the real model uses an MDN, a GST reference encoder, and a
-`GaussianDiffusion` decoder in place of the migrated `FastSpeech2Conformer` path —
+`GaussianDiffusion` decoder in place of the migrated `FastSpeech2Conformer` path,
 then unilaterally decided to leave the gap in place, believing no checkpoint existed
 to check against. That belief was wrong: the checkpoint was bundled inside the
 model's Hugging Face Space, and this was never independently verified before the
@@ -280,11 +280,11 @@ classes).
 ### 4.2 Determining which `<kind>` prefixes a model needs
 The set of `<kind>` prefixes a given model needs is whatever the real
 `transformers`/`transformers-tts` convention actually uses for a model with that
-shape — **not** a fixed shortlist.
+shape, and **not** a fixed shortlist.
 
 Besides `modeling_` / `configuration_`, real examples already present in
 `transformers-tts` include:
-- `generation_` (e.g. `csm`, `dia`, `higgs_audio_v2`, `qwen3_tts`, `whisper` — for a
+- `generation_` (e.g. `csm`, `dia`, `higgs_audio_v2`, `qwen3_tts`, `whisper`, for a
   model with a custom `GenerationMixin` override worth splitting out)
 - `processing_`
 - `tokenization_`
@@ -371,7 +371,7 @@ and `spark_tts_bicodec` from `xcodec2`, and it is correct.
 
 ### 5.1 Comments
 Comments follow `transformers` style: short, technical, explaining **non-obvious
-runtime behavior of the code that is there right now** — an invariant, a workaround
+runtime behavior of the code that is there right now**: an invariant, a workaround
 for a specific bug, a constraint the reader could not otherwise infer.
 
 A comment must **never**:
@@ -385,7 +385,7 @@ No `"instead of X"`, `"previously did Y"`, `"not needed here"`, `"this replaces 
 `"see PROJECT.md for why"`.
 
 That kind of information belongs in the commit message, never in the file. If a line
-only makes sense as a note to whoever is reading the diff, delete it — write no
+only makes sense as a note to whoever is reading the diff, delete it, and write no
 comment on that line at all rather than a softened version of it.
 
 Docstrings describe what a function/class does and its parameters, never the history
@@ -394,13 +394,13 @@ of how it got that way.
 ### 5.2 Docstring format
 Match the exact docstring shape `transformers` itself uses, not a paraphrase of it.
 
-**Module docstring** — one line only, no prose paragraphs:
+**Module docstring**, one line only, no prose paragraphs:
 ```python
 """Processor class for Qwen3-TTS."""
 """Configuration class for Qwen3-TTS."""
 ```
 
-**Class docstring** — `r"""` block starting with "Constructs a ..." / "This is the
+**Class docstring**, an `r"""` block starting with "Constructs a ..." / "This is the
 configuration class to store the configuration of a ...", followed by an `Args:`
 section documenting `__init__` parameters, each as:
 ```
@@ -410,7 +410,7 @@ name (`type`, *optional*):
 Cross-reference other classes/methods with `` [`ClassName`] `` / ``
 [`~ClassName.method`] ``.
 
-**Method docstring** — `Args:`, `Returns:`, and `Raises:` sections in that shape, not
+**Method docstring**, with `Args:`, `Returns:` and `Raises:` sections in that shape, not
 a single descriptive sentence.
 
 Reference: use `AGENTS.md` in the `transformers-tts` checkout and its
