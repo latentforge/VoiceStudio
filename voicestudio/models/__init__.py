@@ -1,3 +1,10 @@
+from ..backport import install as install_backport
+
+
+# Runs before the model imports below, several of which import `transformers.models.qwen3_tts` and
+# its tokenizers at import time.
+install_backport()
+
 from .bigvgan import *
 from .breeze_tts import *
 from .chroma import *
