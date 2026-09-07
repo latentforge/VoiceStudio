@@ -71,8 +71,13 @@ class EcapaTdnnConv1d(nn.Conv1d):
         super().__init__(in_channels, out_channels, kernel_size, dilation=dilation, groups=groups)
         self.reflect_padding = dilation * (kernel_size - 1) // 2
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, reflection_index: torch.Tensor | None = None) -> torch.Tensor:
         if self.reflect_padding:
+            # `F.pad` reflects at the end of the tensor it is handed, which for a padded batch is the
+            # end of its longest item. Reading each item through its own reflection first is what that
+            # item would have seen on its own, and is what keeps a batched result equal to a lone one.
+            if reflection_index is not None:
+                hidden_states = hidden_states.gather(2, reflection_index.expand(-1, hidden_states.shape[1], -1))
             hidden_states = F.pad(hidden_states, (self.reflect_padding, self.reflect_padding), mode="reflect")
         return self._conv_forward(hidden_states, self.weight, self.bias)
 
@@ -110,8 +115,8 @@ class EcapaTdnnTdnnBlock(nn.Module):
         self.norm = nn.BatchNorm1d(out_channels, eps=config.batch_norm_eps, momentum=config.batch_norm_momentum)
         self.dropout = nn.Dropout1d(p=config.dropout)
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return self.dropout(self.norm(F.relu(self.conv(hidden_states))))
+    def forward(self, hidden_states: torch.Tensor, reflection_index: torch.Tensor | None = None) -> torch.Tensor:
+        return self.dropout(self.norm(F.relu(self.conv(hidden_states, reflection_index))))
 
 
 class EcapaTdnnRes2NetBlock(nn.Module):
@@ -140,15 +145,15 @@ class EcapaTdnnRes2NetBlock(nn.Module):
             EcapaTdnnTdnnBlock(config, group, group, kernel_size, dilation) for _ in range(self.scale - 1)
         )
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, reflection_index: torch.Tensor | None = None) -> torch.Tensor:
         outputs = []
         for index, group in enumerate(torch.chunk(hidden_states, self.scale, dim=1)):
             if index == 0:
                 output = group
             elif index == 1:
-                output = self.blocks[0](group)
+                output = self.blocks[0](group, reflection_index)
             else:
-                output = self.blocks[index - 1](group + output)
+                output = self.blocks[index - 1](group + output, reflection_index)
             outputs.append(output)
         return torch.cat(outputs, dim=1)
 
@@ -263,11 +268,16 @@ class EcapaTdnnSeRes2NetBlock(nn.Module):
             nn.Conv1d(in_channels, out_channels, kernel_size=1) if in_channels != out_channels else None
         )
 
-    def forward(self, hidden_states: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        reflection_index: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         residual = self.shortcut(hidden_states) if self.shortcut is not None else hidden_states
-        hidden_states = self.tdnn1(hidden_states)
-        hidden_states = self.res2net_block(hidden_states)
-        hidden_states = self.tdnn2(hidden_states)
+        hidden_states = self.tdnn1(hidden_states, reflection_index)
+        hidden_states = self.res2net_block(hidden_states, reflection_index)
+        hidden_states = self.tdnn2(hidden_states, reflection_index)
         hidden_states = self.se_block(hidden_states, mask)
         return hidden_states + residual
 
@@ -353,6 +363,26 @@ class EcapaTdnnModel(EcapaTdnnPreTrainedModel):
         self.fc = nn.Conv1d(channels[-1] * 2, config.xvector_output_dim, kernel_size=1)
         self.post_init()
 
+    @staticmethod
+    def _reflection_index(mask: torch.Tensor) -> torch.Tensor:
+        r"""
+        Builds the index that reads each item of a padded batch through the reflection of its own frames.
+
+        Args:
+            mask (`torch.Tensor` of shape `(batch_size, 1, num_frames)`):
+                Mask marking the unpadded frames of each item.
+
+        Returns:
+            `torch.Tensor` of shape `(batch_size, 1, num_frames)`: The frame each position reads from, which is
+            the position itself inside the item and its reflection beyond the item's end.
+        """
+        num_frames = mask.shape[-1]
+        lengths = mask.sum(dim=2, keepdim=True).long()
+        position = torch.arange(num_frames, device=mask.device)[None, None, :]
+        period = (2 * lengths - 2).clamp(min=1)
+        folded = position.remainder(period)
+        return torch.minimum(folded, period - folded)
+
     @auto_docstring(checkpoint="speechbrain/spkrec-ecapa-voxceleb")
     def forward(
         self,
@@ -377,14 +407,17 @@ class EcapaTdnnModel(EcapaTdnnPreTrainedModel):
             else hidden_states.new_ones(hidden_states.shape[0], 1, num_frames)
         )
 
+        reflection_index = self._reflection_index(mask) if attention_mask is not None else None
         outputs = []
         for block in self.blocks:
             hidden_states = (
-                block(hidden_states) if isinstance(block, EcapaTdnnTdnnBlock) else block(hidden_states, mask)
+                block(hidden_states, reflection_index)
+                if isinstance(block, EcapaTdnnTdnnBlock)
+                else block(hidden_states, mask, reflection_index)
             )
             outputs.append(hidden_states)
 
-        hidden_states = self.mfa(torch.cat(outputs[1:], dim=1))
+        hidden_states = self.mfa(torch.cat(outputs[1:], dim=1), reflection_index)
         hidden_states = self.asp_bn(self.asp(hidden_states, mask))
         embeddings = self.fc(hidden_states.unsqueeze(2)).squeeze(2)
         return EcapaTdnnOutput(embeddings=embeddings)
