@@ -21,9 +21,17 @@ Args:
     predictions (`list[str]`): Paths to the audio to score.
 
 Returns:
-    utmos (`float`): Mean predicted score across every clip, on the five point opinion scale.
-    utterances (`list[float]`): Per-clip mean over its draws, in input order.
-    deviation (`list[float]`): Per-clip standard deviation over its draws, in input order.
+    utmos (`float`): Mean predicted score over the clips that could be scored, on the five point
+        opinion scale. Read it beside `scored`, since a mean over a subset says nothing about the
+        clips left out of it.
+    utterances (`list[float]`): Per-clip mean over its draws, in input order, `nan` where the clip
+        could not be scored.
+    deviation (`list[float]`): Per-clip standard deviation over its draws, in input order, `nan`
+        where the clip could not be scored.
+    scored (`int`): Clips behind `utmos`.
+    unscorable (`int`): Clips that held no speech to score. An opinion score rates speech that was
+        heard, so silence has no place on the scale and is reported as its own count rather than
+        given a number.
     draws (`int`): Draws averaged per clip.
     domain (`str`): Listening test the prediction imitates.
 """
@@ -109,13 +117,23 @@ class Utmos(evaluate.Metric):
                 Paths to the audio to score.
 
         Returns:
-            `torch.Tensor`: Every score, shaped `(clips, draws)`.
+            `torch.Tensor`: Every score, shaped `(clips, draws)`, `nan` for a clip holding no speech.
         """
         self.load_scorer()
         sampling_rate = self._extractor.sampling_rate
-        waveforms = [load_audio(path, sampling_rate).numpy() for path in audio_paths]
+        loaded = [load_audio(path, sampling_rate).numpy() for path in audio_paths]
 
-        scores = torch.empty(len(waveforms), self.draws)
+        # The scorer reads an excerpt of what is left once the quiet stretches are dropped, and a clip
+        # that is quiet throughout leaves nothing to excerpt. Asking the same question the extractor
+        # asks keeps the two from disagreeing about what counts as silence.
+        speaking = [self._extractor.remove_silent_sections(clip).shape[0] > 0 for clip in loaded]
+        waveforms = [clip for clip, heard in zip(loaded, speaking) if heard]
+        scores = torch.full((len(loaded), self.draws), float("nan"))
+        if not waveforms:
+            return scores
+        rows = [index for index, heard in enumerate(speaking) if heard]
+
+        drawn = torch.empty(len(waveforms), self.draws)
         for draw in range(self.draws):
             # A seeded run advances the source per draw, so the draws differ from one another while
             # the run as a whole repeats.
@@ -127,7 +145,8 @@ class Utmos(evaluate.Metric):
                 ).to(self.device)
                 with torch.no_grad():
                     logits = self._model(**inputs).logits
-                scores[start : start + len(batch), draw] = logits.reshape(-1).float().cpu()
+                drawn[start : start + len(batch), draw] = logits.reshape(-1).float().cpu()
+        scores[rows] = drawn
         return scores
 
     def _compute(self, predictions: list[str]) -> dict:
@@ -138,10 +157,13 @@ class Utmos(evaluate.Metric):
 
         drawn = torch.stack([by_path[path] for path in predictions])
         means = drawn.mean(1)
+        scorable = means.isfinite()
         return {
-            "utmos": float(means.mean()),
+            "utmos": float(means[scorable].mean()) if bool(scorable.any()) else float("nan"),
             "utterances": means.tolist(),
             "deviation": drawn.std(1).tolist(),
+            "scored": int(scorable.sum()),
+            "unscorable": int((~scorable).sum()),
             "draws": self.draws,
             "domain": self.domain,
         }
