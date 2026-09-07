@@ -13,6 +13,7 @@ from .cosyvoice_v2 import *
 from .cosyvoice_v3 import *
 from .dia import *
 from .dia2 import *
+from .ecapa_tdnn import *
 from .f5_tts import *
 from .higgs_tts2 import *
 from .higgs_tts3 import *
