@@ -123,6 +123,9 @@ class WorldF0Estimator:
         prefer_pyworld (`bool`, *optional*, defaults to `True`):
             Whether to delegate to `pyworld` when it is installed. Pass `False` to run the ported
             implementation regardless.
+        device (`str` or `torch.device`, *optional*):
+            Device the refinement runs on. Defaults to CUDA where it is available and to the CPU
+            otherwise.
     """
 
     _LOG2 = 0.69314718055994529
@@ -155,11 +158,15 @@ class WorldF0Estimator:
         f0_floor: float = 71.0,
         f0_ceil: float = 800.0,
         prefer_pyworld: bool = True,
+        device: "str | torch.device | None" = None,
     ):
         self.sampling_rate = sampling_rate
         self.f0_floor = f0_floor
         self.f0_ceil = f0_ceil
         self.pyworld = _load_pyworld() if prefer_pyworld else None
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = torch.device(device)
 
     def harvest(self, waveform: np.ndarray, frame_period: float = 5.0) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -192,6 +199,50 @@ class WorldF0Estimator:
         positions = np.arange(f0_length, dtype=np.float64) * frame_period / 1000.0
         index = np.minimum(basic_f0.shape[0] - 1, self._matlab_round_array(positions * 1000.0))
         return basic_f0[index], positions
+
+    def harvest_batch(
+        self, waveforms: list[np.ndarray], frame_period: float = 5.0
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
+        """
+        Estimates the f0 contour of several clips with Harvest in one pass.
+
+        Candidates from every clip that share an analysis transform length are refined together, so
+        the refinement cost follows the total number of candidates rather than the number of clips.
+
+        Args:
+            waveforms (`list[np.ndarray]`):
+                Mono waveforms, one per clip.
+            frame_period (`float`, *optional*, defaults to 5.0):
+                Spacing between analysis frames, in milliseconds.
+
+        Returns:
+            `list[tuple[np.ndarray, np.ndarray]]`: per clip, the f0 contour in Hz and the frame
+            positions in seconds.
+        """
+        xs = [np.ascontiguousarray(waveform, dtype=np.float64) for waveform in waveforms]
+        if self.pyworld is not None:
+            return [self.harvest(x, frame_period=frame_period) for x in xs]
+        if not xs:
+            return []
+
+        fs = self.sampling_rate
+        channels_in_octave = 40.0
+        dimension_ratio = self._matlab_round(fs / 8000.0)
+        prepared = [self._harvest_candidates(x, fs, 1, channels_in_octave, dimension_ratio) for x in xs]
+        basic_positions, decimated, rates, grids = (list(entry) for entry in zip(*prepared))
+        refined = self._refine_f0_candidates_batch(decimated, rates[0], basic_positions, grids)
+
+        results = []
+        for x, basic_position, (candidates, scores) in zip(xs, basic_positions, refined):
+            basic_f0 = self._harvest_contour(candidates, scores)
+            if frame_period == 1.0:
+                results.append((basic_f0, basic_position))
+                continue
+            f0_length = self._samples_for_harvest(fs, x.shape[0], frame_period)
+            positions = np.arange(f0_length, dtype=np.float64) * frame_period / 1000.0
+            index = np.minimum(basic_f0.shape[0] - 1, self._matlab_round_array(positions * 1000.0))
+            results.append((basic_f0[index], positions))
+        return results
 
     def dio(
         self,
@@ -275,31 +326,88 @@ class WorldF0Estimator:
         Returns:
             `np.ndarray`: the refined contour, in Hz.
         """
-        x = np.ascontiguousarray(waveform, dtype=np.float64)
-        f0 = np.ascontiguousarray(f0, dtype=np.float64)
-        positions = np.ascontiguousarray(temporal_positions, dtype=np.float64)
         if self.pyworld is not None:
+            x = np.ascontiguousarray(waveform, dtype=np.float64)
+            f0 = np.ascontiguousarray(f0, dtype=np.float64)
+            positions = np.ascontiguousarray(temporal_positions, dtype=np.float64)
             return self.pyworld.stonemask(x, f0, positions, self.sampling_rate)
+        return self.stonemask_batch([waveform], [temporal_positions], [f0])[0]
 
+    def stonemask_batch(
+        self,
+        waveforms: list[np.ndarray],
+        temporal_positions: list[np.ndarray],
+        f0s: list[np.ndarray],
+    ) -> list[np.ndarray]:
+        """
+        Refines several f0 contours by instantaneous frequency in one pass.
+
+        Frames from every clip that share an analysis transform length are refined together, so the
+        cost follows the total number of voiced frames rather than the number of clips.
+
+        Args:
+            waveforms (`list[np.ndarray]`):
+                Mono waveforms, one per clip.
+            temporal_positions (`list[np.ndarray]`):
+                Frame positions of each contour, in seconds.
+            f0s (`list[np.ndarray]`):
+                Contours to refine, in Hz.
+
+        Returns:
+            `list[np.ndarray]`: the refined contours, in Hz.
+        """
         fs = self.sampling_rate
-        refined = np.zeros_like(f0)
-        frames = np.flatnonzero((f0 > self._FLOOR_F0_STONEMASK) & (f0 <= fs / 12.0))
-        if frames.shape[0] == 0:
-            return refined
+        xs = [np.ascontiguousarray(waveform, dtype=np.float64) for waveform in waveforms]
+        contours = [np.ascontiguousarray(f0, dtype=np.float64) for f0 in f0s]
+        positions = [np.ascontiguousarray(position, dtype=np.float64) for position in temporal_positions]
+        frame_counts = np.array([contour.shape[0] for contour in contours], dtype=np.int64)
+        refined = np.zeros(int(frame_counts.sum()), dtype=np.float64)
+        if refined.shape[0] == 0:
+            return [np.zeros_like(contour) for contour in contours]
 
-        f0s = f0[frames]
-        half_window_lengths = (1.5 * fs / f0s + 1.0).astype(np.int64)
-        for half_window_length in np.unique(half_window_lengths):
-            selected = np.flatnonzero(half_window_lengths == half_window_length)
-            width = int(half_window_length) * 2 + 1
-            fft_size = int(pow(2.0, 2.0 + int(math.log(width) / self._LOG2)))
-            chunk = max(1, 2**25 // fft_size)
-            for begin in range(0, selected.shape[0], chunk):
-                rows = selected[begin : begin + chunk]
-                refined[frames[rows]] = self._stonemask_batch(
-                    x, fs, positions[frames[rows]], f0s[rows], int(half_window_length), fft_size
+        frame_offsets = np.concatenate(([0], np.cumsum(frame_counts)[:-1]))
+        sample_offsets = np.concatenate(([0], np.cumsum([x.shape[0] for x in xs])[:-1]))
+
+        selected, clips = [], []
+        for clip, contour in enumerate(contours):
+            frames = np.flatnonzero((contour > self._FLOOR_F0_STONEMASK) & (contour <= fs / 12.0))
+            selected.append(frames + frame_offsets[clip])
+            clips.append(np.full(frames.shape[0], clip, dtype=np.int64))
+        rows_global = np.concatenate(selected)
+        if rows_global.shape[0] == 0:
+            return np.split(refined, np.cumsum(frame_counts)[:-1])
+
+        clip_index = np.concatenate(clips)
+        f0_values = np.concatenate(contours)[rows_global]
+        position_values = np.concatenate(positions)[rows_global]
+        half_window_lengths = (1.5 * fs / f0_values + 1.0).astype(np.int64)
+        widths = half_window_lengths * 2 + 1
+        fft_sizes = np.left_shift(1, 2 + (np.log(widths.astype(np.float64)) / self._LOG2).astype(np.int64))
+
+        device = self.device
+        samples = torch.from_numpy(np.concatenate(xs)).to(device)
+        starts = sample_offsets[clip_index]
+        lengths = np.array([x.shape[0] for x in xs], dtype=np.int64)[clip_index]
+
+        for fft_size in np.unique(fft_sizes):
+            group = np.flatnonzero(fft_sizes == fft_size)
+            # The transforms of one chunk stay inside a few tens of megabytes at every window length.
+            chunk = max(1, 2**22 // int(fft_size))
+            for begin in range(0, group.shape[0], chunk):
+                rows = group[begin : begin + chunk]
+                estimate = self._stonemask_batch(
+                    samples,
+                    torch.from_numpy(starts[rows]).to(device),
+                    torch.from_numpy(lengths[rows]).to(device),
+                    torch.from_numpy(position_values[rows]).to(device),
+                    torch.from_numpy(f0_values[rows]).to(device),
+                    torch.from_numpy(half_window_lengths[rows]).to(device),
+                    int(fft_size),
+                    int(widths[rows].max()),
                 )
-        return refined
+                refined[rows_global[rows]] = estimate.cpu().numpy()
+
+        return np.split(refined, np.cumsum(frame_counts)[:-1])
 
     def _matlab_round(self, x):
         return int(x + 0.5) if x > 0 else int(x - 0.5)
@@ -447,91 +555,130 @@ class WorldF0Estimator:
             candidates[: f0_length - shift, block] = candidates[shift:, :number_of_candidates]
         return candidates
 
-    def _refine_f0_batch(self, x, fs, positions, f0s, half_window_length, fft_size):
-        """Refines one batch of candidates sharing a window length, by instantaneous frequency."""
-        width = half_window_length * 2 + 1
-        window_length_in_time = width / fs
+    def _refine_f0_batch(self, x, fs, starts, lengths, positions, f0s, half_window_lengths, fft_size, width):
+        """Refines candidates taken from anywhere in the concatenated waveform `x` at one transform length."""
+        device = x.device
+        widths = half_window_lengths * 2 + 1
+        window_length_in_time = widths.to(torch.float64) / fs
+
+        offsets = torch.arange(width, dtype=torch.int64, device=device)
+        basic_index = self._matlab_round_tensor(
+            (positions - half_window_lengths.to(torch.float64) / fs) * fs + 0.001
+        )
+        base_index = basic_index[:, None] + offsets[None, :]
+
+        elapsed = (base_index.to(torch.float64) - 1.0) / fs - positions[:, None]
+        window = torch.cos(2.0 * self._PI * elapsed / window_length_in_time[:, None])
+        window *= 0.5
+        window += 0.42
+        window += 0.08 * torch.cos(4.0 * self._PI * elapsed / window_length_in_time[:, None])
+        # Rows are padded out to the widest window in the batch, and everything past a row's own
+        # width has to read as absent rather than as a further tap.
+        inside = offsets[None, :] < widths[:, None]
+        window = torch.where(inside, window, 0.0)
 
         # One zero column either side lets the interior difference formula also produce the two
         # endpoint values the upstream loop special-cases.
-        main_window = np.zeros((f0s.shape[0], width + 2), dtype=np.float64)
-        offsets = np.arange(width, dtype=np.int64)
+        main_window = torch.zeros((f0s.shape[0], width + 2), dtype=torch.float64, device=device)
+        main_window[:, 1 : width + 1] = window
+        diff_window = torch.where(inside, -(main_window[:, 2:] - main_window[:, :width]) / 2.0, 0.0)
 
-        basic_index = self._matlab_round_array((positions - half_window_length / fs) * fs + 0.001)
-        base_index = basic_index[:, None] + offsets[None, :]
-        elapsed = (base_index - 1.0) / fs - positions[:, None]
-        window = main_window[:, 1 : width + 1]
-        np.cos(2.0 * self._PI * elapsed / window_length_in_time, out=window)
-        window *= 0.5
-        window += 0.42
-        window += 0.08 * np.cos(4.0 * self._PI * elapsed / window_length_in_time)
-        diff_window = -(main_window[:, 2:] - main_window[:, :width]) / 2.0
+        clipped = torch.minimum((base_index - 1).clamp(min=0), (lengths - 1)[:, None])
+        gathered = x[starts[:, None] + clipped]
 
-        samples = x[np.clip(base_index - 1, 0, x.shape[0] - 1)]
+        padded = torch.zeros((f0s.shape[0], fft_size), dtype=torch.float64, device=device)
+        padded[:, :width] = gathered * window
+        main_spectrum = torch.fft.rfft(padded)
+        padded[:, :width] = gathered * diff_window
+        diff_spectrum = torch.fft.rfft(padded)
 
-        padded = np.zeros((f0s.shape[0], fft_size), dtype=np.float64)
-        np.multiply(samples, window, out=padded[:, :width])
-        main_spectrum = np.fft.rfft(padded, axis=-1)
-        np.multiply(samples, diff_window, out=padded[:, :width])
-        diff_spectrum = np.fft.rfft(padded, axis=-1)
-
-        harmonics = np.arange(1, 7, dtype=np.float64)
-        counts = np.minimum((fs / 2.0 / f0s).astype(np.int64), 6)
+        harmonics = torch.arange(1, 7, dtype=torch.float64, device=device)
+        counts = (fs / 2.0 / f0s).to(torch.int64).clamp(max=6)
         used = harmonics[None, :] <= counts[:, None]
-        index = self._matlab_round_array(f0s[:, None] * fft_size / fs * harmonics[None, :])
-        np.clip(index, 0, fft_size // 2, out=index)
+        index = self._matlab_round_tensor(f0s[:, None] * fft_size / fs * harmonics[None, :])
+        index = index.clamp_(0, fft_size // 2)
 
-        rows = np.arange(f0s.shape[0], dtype=np.int64)[:, None]
+        rows = torch.arange(f0s.shape[0], device=device)[:, None]
         # Only the bins the harmonics land on are read, so the gather comes before the arithmetic.
         main = main_spectrum[rows, index]
         diff = diff_spectrum[rows, index]
         numerator_i = main.real * diff.imag - main.imag * diff.real
         power = main.real**2 + main.imag**2
         silent = power == 0.0
-        instantaneous = np.where(
+        zero = torch.zeros((), dtype=torch.float64, device=device)
+        instantaneous = torch.where(
             silent,
-            0.0,
-            index * fs / fft_size + numerator_i / np.where(silent, 1.0, power) * fs / 2.0 / self._PI,
+            zero,
+            index * fs / fft_size + numerator_i / torch.where(silent, 1.0, power) * fs / 2.0 / self._PI,
         )
-        amplitude = np.sqrt(power)
+        amplitude = torch.sqrt(power)
 
-        numerator = np.sum(np.where(used, amplitude * instantaneous, 0.0), axis=-1)
-        denominator = np.sum(np.where(used, amplitude * harmonics[None, :], 0.0), axis=-1)
-        deviation = np.sum(
-            np.where(used, np.abs((instantaneous / harmonics[None, :] - f0s[:, None]) / f0s[:, None]), 0.0), axis=-1
-        )
+        numerator = torch.where(used, amplitude * instantaneous, zero).sum(dim=-1)
+        denominator = torch.where(used, amplitude * harmonics[None, :], zero).sum(dim=-1)
+        deviation = torch.where(
+            used, ((instantaneous / harmonics[None, :] - f0s[:, None]) / f0s[:, None]).abs(), zero
+        ).sum(dim=-1)
 
         refined = numerator / (denominator + self._SAFE_GUARD_MINIMUM)
         score = 1.0 / (deviation / counts + self._SAFE_GUARD_MINIMUM)
         rejected = (refined < self.f0_floor) | (refined > self.f0_ceil) | (score < 2.5)
-        refined[rejected] = 0.0
-        score[rejected] = 0.0
-        return refined, score
+        return torch.where(rejected, zero, refined), torch.where(rejected, zero, score)
 
     def _refine_f0_candidates(self, x, fs, temporal_positions, candidates):
-        scores = np.zeros_like(candidates)
-        frame, column = np.nonzero(candidates > 0.0)
+        return self._refine_f0_candidates_batch([x], fs, [temporal_positions], [candidates])[0]
+
+    def _refine_f0_candidates_batch(self, xs, fs, temporal_positions, candidates):
+        """Refines the candidate grids of several clips together, grouped by transform length."""
+        scores = [np.zeros_like(grid) for grid in candidates]
+        frames, columns, clips = [], [], []
+        for clip, grid in enumerate(candidates):
+            frame, column = np.nonzero(grid > 0.0)
+            frames.append(frame)
+            columns.append(column)
+            clips.append(np.full(frame.shape[0], clip, dtype=np.int64))
+        frame = np.concatenate(frames) if frames else np.empty(0, dtype=np.int64)
         if frame.shape[0] == 0:
-            return candidates, scores
+            return list(zip(candidates, scores))
 
-        f0s = candidates[frame, column]
-        positions = temporal_positions[frame]
-        half_window_lengths = (1.5 * fs / f0s + 1.0).astype(np.int64)
+        column = np.concatenate(columns)
+        clip_index = np.concatenate(clips)
+        f0_values = np.concatenate([grid[f, c] for grid, f, c in zip(candidates, frames, columns)])
+        position_values = np.concatenate([p[f] for p, f in zip(temporal_positions, frames)])
+        half_window_lengths = (1.5 * fs / f0_values + 1.0).astype(np.int64)
+        widths = half_window_lengths * 2 + 1
+        fft_sizes = np.left_shift(1, 2 + (np.log(widths.astype(np.float64)) / self._LOG2).astype(np.int64))
 
-        for half_window_length in np.unique(half_window_lengths):
-            selected = np.flatnonzero(half_window_lengths == half_window_length)
-            width = int(half_window_length) * 2 + 1
-            fft_size = int(pow(2.0, 2.0 + int(math.log(width) / self._LOG2)))
-            chunk = max(1, 2**25 // fft_size)
-            for start in range(0, selected.shape[0], chunk):
-                rows = selected[start : start + chunk]
+        device = self.device
+        samples = torch.from_numpy(np.concatenate(xs)).to(device)
+        sample_offsets = np.concatenate(([0], np.cumsum([x.shape[0] for x in xs])[:-1]))
+        starts = sample_offsets[clip_index]
+        lengths = np.array([x.shape[0] for x in xs], dtype=np.int64)[clip_index]
+
+        for fft_size in np.unique(fft_sizes):
+            group = np.flatnonzero(fft_sizes == fft_size)
+            # The transforms of one chunk stay inside a few tens of megabytes at every window length.
+            chunk = max(1, 2**22 // int(fft_size))
+            for begin in range(0, group.shape[0], chunk):
+                rows = group[begin : begin + chunk]
                 refined, score = self._refine_f0_batch(
-                    x, fs, positions[rows], f0s[rows], int(half_window_length), fft_size
+                    samples,
+                    fs,
+                    torch.from_numpy(starts[rows]).to(device),
+                    torch.from_numpy(lengths[rows]).to(device),
+                    torch.from_numpy(position_values[rows]).to(device),
+                    torch.from_numpy(f0_values[rows]).to(device),
+                    torch.from_numpy(half_window_lengths[rows]).to(device),
+                    int(fft_size),
+                    int(widths[rows].max()),
                 )
-                candidates[frame[rows], column[rows]] = refined
-                scores[frame[rows], column[rows]] = score
+                refined = refined.cpu().numpy()
+                score = score.cpu().numpy()
+                for clip in np.unique(clip_index[rows]):
+                    mine = clip_index[rows] == clip
+                    candidates[clip][frame[rows][mine], column[rows][mine]] = refined[mine]
+                    scores[clip][frame[rows][mine], column[rows][mine]] = score[mine]
 
-        return candidates, scores
+        return list(zip(candidates, scores))
 
     def _remove_unreliable_candidates(self, candidates, scores):
         """Zeroes a candidate that no neighbouring frame corroborates within five percent."""
@@ -799,7 +946,8 @@ class WorldF0Estimator:
         y[y_length:] = 0.0
         return y, np.fft.rfft(y)
 
-    def _harvest_general_body(self, x, fs, frame_period, channels_in_octave, speed):
+    def _harvest_candidates(self, x, fs, frame_period, channels_in_octave, speed):
+        """Runs Harvest up to the unrefined candidate grid, before any per-frame refinement."""
         adjusted_f0_floor = self.f0_floor * 0.9
         adjusted_f0_ceil = self.f0_ceil * 1.1
         number_of_channels = 1 + int(math.log(adjusted_f0_ceil / adjusted_f0_floor) / self._LOG2 * channels_in_octave)
@@ -828,72 +976,92 @@ class WorldF0Estimator:
         candidates = self._overlap_f0_candidates(candidates, detected)
         number_of_candidates = detected * overlap_parameter
 
-        candidates = candidates[:, :number_of_candidates]
-        candidates, scores = self._refine_f0_candidates(
-            y[:y_length], actual_fs, temporal_positions, candidates
-        )
-        candidates, scores = self._remove_unreliable_candidates(candidates, scores)
+        return temporal_positions, y[:y_length], actual_fs, candidates[:, :number_of_candidates]
 
-        contour = self._fix_f0_contour(candidates, scores)
-        return temporal_positions, self._smooth_f0_contour(contour)
+    def _harvest_contour(self, candidates, scores):
+        candidates, scores = self._remove_unreliable_candidates(candidates, scores)
+        return self._smooth_f0_contour(self._fix_f0_contour(candidates, scores))
+
+    def _harvest_general_body(self, x, fs, frame_period, channels_in_octave, speed):
+        positions, y, actual_fs, candidates = self._harvest_candidates(
+            x, fs, frame_period, channels_in_octave, speed
+        )
+        candidates, scores = self._refine_f0_candidates(y, actual_fs, positions, candidates)
+        return positions, self._harvest_contour(candidates, scores)
+
+    @staticmethod
+    def _matlab_round_tensor(x):
+        return torch.trunc(torch.where(x > 0.0, x + 0.5, x - 0.5)).to(torch.int64)
 
     def _fix_f0_stonemask(self, main_spectrum, diff_spectrum, fft_size, fs, f0s, number_of_harmonics):
         # Only the bins the harmonics land on are read, so the gather comes before the arithmetic.
-        harmonics = np.arange(1, number_of_harmonics + 1, dtype=np.float64)
-        index = self._matlab_round_array(f0s[:, None] * fft_size / fs * harmonics[None, :])
-        np.clip(index, 0, fft_size // 2, out=index)
+        harmonics = torch.arange(1, number_of_harmonics + 1, dtype=torch.float64, device=f0s.device)
+        index = self._matlab_round_tensor(f0s[:, None] * fft_size / fs * harmonics[None, :])
+        index = index.clamp_(0, fft_size // 2)
 
-        rows = np.arange(f0s.shape[0], dtype=np.int64)[:, None]
+        rows = torch.arange(f0s.shape[0], device=f0s.device)[:, None]
         main = main_spectrum[rows, index]
         diff = diff_spectrum[rows, index]
         numerator_i = main.real * diff.imag - main.imag * diff.real
         power = main.real**2 + main.imag**2
-        safe_power = np.where(power == 0.0, 1.0, power)
-        instantaneous = np.where(
-            power == 0.0,
-            0.0,
+        silent = power == 0.0
+        safe_power = torch.where(silent, 1.0, power)
+        instantaneous = torch.where(
+            silent,
+            torch.zeros((), dtype=torch.float64, device=f0s.device),
             index * fs / fft_size + numerator_i / safe_power * fs / 2.0 / self._PI,
         )
-        amplitude = np.sqrt(power)
-        numerator = np.sum(amplitude * instantaneous, axis=-1)
-        denominator = np.sum(amplitude * harmonics[None, :], axis=-1)
+        amplitude = torch.sqrt(power)
+        numerator = (amplitude * instantaneous).sum(dim=-1)
+        denominator = (amplitude * harmonics[None, :]).sum(dim=-1)
         return numerator / (denominator + self._SAFE_GUARD_MINIMUM)
 
-    def _stonemask_batch(self, x, fs, positions, f0s, half_window_length, fft_size):
-        width = half_window_length * 2 + 1
-        window_length_in_time = width / fs
+    def _stonemask_batch(self, x, starts, lengths, positions, f0s, half_window_lengths, fft_size, width):
+        """Refines frames taken from anywhere in the concatenated waveform `x` at one transform length."""
+        fs = self.sampling_rate
+        device = x.device
+        widths = half_window_lengths * 2 + 1
+        window_length_in_time = widths.to(torch.float64) / fs
 
-        offsets = np.arange(width, dtype=np.int64)
-        base_time = (offsets[None, :] - half_window_length) / fs
-        index_raw = self._matlab_round_array((positions[:, None] + base_time) * fs)
+        offsets = torch.arange(width, dtype=torch.int64, device=device)
+        base_time = (offsets[None, :] - half_window_lengths[:, None]).to(torch.float64) / fs
+        index_raw = self._matlab_round_tensor((positions[:, None] + base_time) * fs)
 
-        main_window = np.zeros((f0s.shape[0], width + 2), dtype=np.float64)
-        elapsed = (index_raw - 1.0) / fs - positions[:, None]
-        window = main_window[:, 1 : width + 1]
-        np.cos(2.0 * self._PI * elapsed / window_length_in_time, out=window)
+        elapsed = (index_raw.to(torch.float64) - 1.0) / fs - positions[:, None]
+        window = torch.cos(2.0 * self._PI * elapsed / window_length_in_time[:, None])
         window *= 0.5
         window += 0.42
-        window += 0.08 * np.cos(4.0 * self._PI * elapsed / window_length_in_time)
-        diff_window = -(main_window[:, 2:] - main_window[:, :width]) / 2.0
+        window += 0.08 * torch.cos(4.0 * self._PI * elapsed / window_length_in_time[:, None])
+        # Rows are padded out to the widest window in the batch, and everything past a row's own
+        # width has to read as absent rather than as a further tap.
+        inside = offsets[None, :] < widths[:, None]
+        window = torch.where(inside, window, 0.0)
 
-        samples = x[np.clip(index_raw - 1, 0, x.shape[0] - 1)]
-        padded = np.zeros((f0s.shape[0], fft_size), dtype=np.float64)
-        np.multiply(samples, window, out=padded[:, :width])
-        main_spectrum = np.fft.rfft(padded, axis=-1)
-        np.multiply(samples, diff_window, out=padded[:, :width])
-        diff_spectrum = np.fft.rfft(padded, axis=-1)
+        main_window = torch.zeros((f0s.shape[0], width + 2), dtype=torch.float64, device=device)
+        main_window[:, 1 : width + 1] = window
+        diff_window = torch.where(inside, -(main_window[:, 2:] - main_window[:, :width]) / 2.0, 0.0)
+
+        clipped = torch.minimum((index_raw - 1).clamp(min=0), (lengths - 1)[:, None])
+        gathered = x[starts[:, None] + clipped]
+
+        padded = torch.zeros((f0s.shape[0], fft_size), dtype=torch.float64, device=device)
+        padded[:, :width] = gathered * window
+        main_spectrum = torch.fft.rfft(padded)
+        padded[:, :width] = gathered * diff_window
+        diff_spectrum = torch.fft.rfft(padded)
 
         tentative = self._fix_f0_stonemask(main_spectrum, diff_spectrum, fft_size, fs, f0s, 2)
         accepted = (tentative > 0.0) & (tentative <= f0s * 2)
-        refined = np.zeros_like(f0s)
-        if accepted.any():
-            rows = np.flatnonzero(accepted)
-            refined[rows] = self._fix_f0_stonemask(
-                main_spectrum[rows], diff_spectrum[rows], fft_size, fs, tentative[rows], 6
-            )
+        # The refinement is independent per row, so the rejected rows are masked out afterwards
+        # rather than gathered beforehand, which would need the mask read back off the device.
+        refined = torch.where(
+            accepted,
+            self._fix_f0_stonemask(main_spectrum, diff_spectrum, fft_size, fs, tentative, 6),
+            torch.zeros((), dtype=torch.float64, device=device),
+        )
 
         # A correction beyond twenty percent is rejected in favour of the initial estimate.
-        return np.where(np.abs(refined - f0s) > f0s * 0.2, f0s, refined)
+        return torch.where((refined - f0s).abs() > f0s * 0.2, f0s, refined)
 
     def _spectrum_for_estimation(self, x, y_length, actual_fs, fft_size, decimation_ratio):
         y = np.zeros(fft_size, dtype=np.float64)
