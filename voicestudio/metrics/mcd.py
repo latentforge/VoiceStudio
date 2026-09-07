@@ -299,29 +299,30 @@ class Mcd(evaluate.Metric):
             with the zeroth coefficient already dropped.
         """
         if self._estimator is None:
-            self._estimator = WorldF0Estimator(sampling_rate=self.sampling_rate)
+            self._estimator = WorldF0Estimator(sampling_rate=self.sampling_rate, device=self.device)
             self._envelope = CheapTrickEnvelope(sampling_rate=self.sampling_rate, fft_size=self.n_fft)
             # `freqt` consumes the whole cepstrum, so the source runs to the transform length.
             self._warping = warping_matrix(self.n_fft - 1, self.order, self.alpha).to(self.device)
 
-        def analyse(path):
-            # CheapTrick reads the contour frame by frame, so the analysis runs at the metric's own
-            # frame period rather than the estimator's default.
-            samples = load_audio(path, self.sampling_rate).double().numpy()
-            contour, positions = self._estimator.dio(samples, frame_period=self.frame_period)
-            contour = self._estimator.stonemask(samples, positions, contour)
-            envelope = self._envelope.envelope(
-                torch.from_numpy(samples).to(self.device),
-                torch.from_numpy(contour).to(self.device),
-                torch.from_numpy(positions).to(self.device),
-            )
-            return (real_cepstrum(envelope, self.n_fft, self.n_fft - 1) @ self._warping)[:, 1:].cpu()
-
-        # The clips are independent and the analysis spends most of its time in numpy, which releases
-        # the interpreter while it runs.
+        # The f0 search is a clip at a time, so the clips are loaded and searched together and the
+        # refinement, which is the expensive half, runs over every clip's frames in one pass.
         unique_paths = list(dict.fromkeys(audio_paths))
         with ThreadPoolExecutor(self.workers) as pool:
-            cepstra = dict(zip(unique_paths, pool.map(analyse, unique_paths)))
+            samples = list(pool.map(lambda path: load_audio(path, self.sampling_rate).double().numpy(), unique_paths))
+            searched = list(
+                pool.map(lambda clip: self._estimator.dio(clip, frame_period=self.frame_period), samples)
+            )
+        positions = [found[1] for found in searched]
+        contours = self._estimator.stonemask_batch(samples, positions, [found[0] for found in searched])
+
+        cepstra = {}
+        for path, clip, contour, frames in zip(unique_paths, samples, contours, positions):
+            envelope = self._envelope.envelope(
+                torch.from_numpy(clip).to(self.device),
+                torch.from_numpy(contour).to(self.device),
+                torch.from_numpy(frames).to(self.device),
+            )
+            cepstra[path] = (real_cepstrum(envelope, self.n_fft, self.n_fft - 1) @ self._warping)[:, 1:].cpu()
 
         return cepstra
 
