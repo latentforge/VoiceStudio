@@ -54,6 +54,58 @@ def _load_pyworld():
     return pyworld
 
 
+_WORLD_PI = 3.1415926535897932384
+
+
+def _read_only(array):
+    array.flags.writeable = False
+    return array
+
+
+@functools.lru_cache(maxsize=256)
+def _nuttall_window(length):
+    """Returns the read-only `length`-point Nuttall window."""
+    tmp = np.arange(length, dtype=np.float64) / (length - 1.0)
+    return _read_only(
+        0.355768
+        - 0.487396 * np.cos(2.0 * _WORLD_PI * tmp)
+        + 0.144232 * np.cos(4.0 * _WORLD_PI * tmp)
+        - 0.012604 * np.cos(6.0 * _WORLD_PI * tmp)
+    )
+
+
+@functools.lru_cache(maxsize=256)
+def _band_pass_filter_spectrum(boundary_f0, fs, filter_length_half, fft_size):
+    """Returns the transform of the Nuttall-windowed band-pass filter centred on `boundary_f0`."""
+    band_pass_filter = np.zeros(fft_size, dtype=np.float64)
+    taps = _nuttall_window(filter_length_half * 2 + 1)
+    lags = np.arange(-filter_length_half, filter_length_half + 1, dtype=np.float64)
+    band_pass_filter[: filter_length_half * 2 + 1] = taps * np.cos(2 * _WORLD_PI * boundary_f0 * lags / fs)
+    return _read_only(np.fft.rfft(band_pass_filter))
+
+
+@functools.lru_cache(maxsize=256)
+def _low_pass_filter_spectrum(half_average_length, fft_size):
+    """Returns the transform of DIO's Nuttall low-pass of `half_average_length * 4` taps."""
+    low_pass_filter = np.zeros(fft_size, dtype=np.float64)
+    low_pass_filter[: half_average_length * 4] = _nuttall_window(half_average_length * 4)
+    return _read_only(np.fft.rfft(low_pass_filter))
+
+
+@functools.lru_cache(maxsize=256)
+def _low_cut_filter_spectrum(taps, fft_size):
+    """Returns the transform of the `taps`-point Hann-derived low-cut filter."""
+    filter_ = np.zeros(fft_size, dtype=np.float64)
+    positions = np.arange(1, taps + 1, dtype=np.float64)
+    filter_[:taps] = 0.5 - 0.5 * np.cos(positions * 2.0 * _WORLD_PI / (taps + 1))
+    filter_[:taps] = -filter_[:taps] / filter_[:taps].sum()
+    half = (taps - 1) // 2
+    filter_[fft_size - half :] = filter_[:half]
+    filter_[:taps] = filter_[half : half + taps].copy()
+    filter_[0] += 1.0
+    return _read_only(np.fft.rfft(filter_))
+
+
 class WorldF0Estimator:
     r"""
     Constructs the WORLD f0 estimator, exposing
@@ -258,15 +310,6 @@ class WorldF0Estimator:
     def _suitable_fft_size(self, sample):
         return int(pow(2.0, int(math.log(float(sample)) / self._LOG2) + 1))
 
-    def _nuttall_window(self, length):
-        tmp = np.arange(length, dtype=np.float64) / (length - 1.0)
-        return (
-            0.355768
-            - 0.487396 * np.cos(2.0 * self._PI * tmp)
-            + 0.144232 * np.cos(4.0 * self._PI * tmp)
-            - 0.012604 * np.cos(6.0 * self._PI * tmp)
-        )
-
     def _direct_form_2(self, x, a, b):
         """Runs a direct form II recursion whose state is `len(a)` samples wide."""
         denominator = torch.tensor((1.0, *(-coefficient for coefficient in a)), dtype=torch.float64)
@@ -334,12 +377,7 @@ class WorldF0Estimator:
     def _filtered_signal(self, boundary_f0, fft_size, fs, spectrum, y_length):
         """Convolves the analysed spectrum with a Nuttall-windowed band-pass filter."""
         filter_length_half = self._matlab_round(fs / boundary_f0 * 2.0)
-        band_pass_filter = np.zeros(fft_size, dtype=np.float64)
-        taps = self._nuttall_window(filter_length_half * 2 + 1)
-        lags = np.arange(-filter_length_half, filter_length_half + 1, dtype=np.float64)
-        band_pass_filter[: filter_length_half * 2 + 1] = taps * np.cos(2 * self._PI * boundary_f0 * lags / fs)
-
-        filter_spectrum = np.fft.rfft(band_pass_filter)
+        filter_spectrum = _band_pass_filter_spectrum(float(boundary_f0), fs, filter_length_half, fft_size)
         signal = np.fft.irfft(spectrum * filter_spectrum, n=fft_size) * fft_size
         index_bias = filter_length_half + 1
         return signal[index_bias : index_bias + y_length]
@@ -437,9 +475,6 @@ class WorldF0Estimator:
         np.multiply(samples, diff_window, out=padded[:, :width])
         diff_spectrum = np.fft.rfft(padded, axis=-1)
 
-        numerator_i = main_spectrum.real * diff_spectrum.imag - main_spectrum.imag * diff_spectrum.real
-        power_spectrum = main_spectrum.real**2 + main_spectrum.imag**2
-
         harmonics = np.arange(1, 7, dtype=np.float64)
         counts = np.minimum((fs / 2.0 / f0s).astype(np.int64), 6)
         used = harmonics[None, :] <= counts[:, None]
@@ -447,12 +482,16 @@ class WorldF0Estimator:
         np.clip(index, 0, fft_size // 2, out=index)
 
         rows = np.arange(f0s.shape[0], dtype=np.int64)[:, None]
-        power = power_spectrum[rows, index]
+        # Only the bins the harmonics land on are read, so the gather comes before the arithmetic.
+        main = main_spectrum[rows, index]
+        diff = diff_spectrum[rows, index]
+        numerator_i = main.real * diff.imag - main.imag * diff.real
+        power = main.real**2 + main.imag**2
         silent = power == 0.0
         instantaneous = np.where(
             silent,
             0.0,
-            index * fs / fft_size + numerator_i[rows, index] / np.where(silent, 1.0, power) * fs / 2.0 / self._PI,
+            index * fs / fft_size + numerator_i / np.where(silent, 1.0, power) * fs / 2.0 / self._PI,
         )
         amplitude = np.sqrt(power)
 
@@ -798,18 +837,22 @@ class WorldF0Estimator:
         contour = self._fix_f0_contour(candidates, scores)
         return temporal_positions, self._smooth_f0_contour(contour)
 
-    def _fix_f0_stonemask(self, power_spectrum, numerator_i, fft_size, fs, f0s, number_of_harmonics):
+    def _fix_f0_stonemask(self, main_spectrum, diff_spectrum, fft_size, fs, f0s, number_of_harmonics):
+        # Only the bins the harmonics land on are read, so the gather comes before the arithmetic.
         harmonics = np.arange(1, number_of_harmonics + 1, dtype=np.float64)
         index = self._matlab_round_array(f0s[:, None] * fft_size / fs * harmonics[None, :])
         np.clip(index, 0, fft_size // 2, out=index)
 
         rows = np.arange(f0s.shape[0], dtype=np.int64)[:, None]
-        power = power_spectrum[rows, index]
+        main = main_spectrum[rows, index]
+        diff = diff_spectrum[rows, index]
+        numerator_i = main.real * diff.imag - main.imag * diff.real
+        power = main.real**2 + main.imag**2
         safe_power = np.where(power == 0.0, 1.0, power)
         instantaneous = np.where(
             power == 0.0,
             0.0,
-            index * fs / fft_size + numerator_i[rows, index] / safe_power * fs / 2.0 / self._PI,
+            index * fs / fft_size + numerator_i / safe_power * fs / 2.0 / self._PI,
         )
         amplitude = np.sqrt(power)
         numerator = np.sum(amplitude * instantaneous, axis=-1)
@@ -840,31 +883,17 @@ class WorldF0Estimator:
         np.multiply(samples, diff_window, out=padded[:, :width])
         diff_spectrum = np.fft.rfft(padded, axis=-1)
 
-        numerator_i = main_spectrum.real * diff_spectrum.imag - main_spectrum.imag * diff_spectrum.real
-        power_spectrum = main_spectrum.real**2 + main_spectrum.imag**2
-
-        tentative = self._fix_f0_stonemask(power_spectrum, numerator_i, fft_size, fs, f0s, 2)
+        tentative = self._fix_f0_stonemask(main_spectrum, diff_spectrum, fft_size, fs, f0s, 2)
         accepted = (tentative > 0.0) & (tentative <= f0s * 2)
         refined = np.zeros_like(f0s)
         if accepted.any():
             rows = np.flatnonzero(accepted)
             refined[rows] = self._fix_f0_stonemask(
-                power_spectrum[rows], numerator_i[rows], fft_size, fs, tentative[rows], 6
+                main_spectrum[rows], diff_spectrum[rows], fft_size, fs, tentative[rows], 6
             )
 
         # A correction beyond twenty percent is rejected in favour of the initial estimate.
         return np.where(np.abs(refined - f0s) > f0s * 0.2, f0s, refined)
-
-    def _design_low_cut_filter(self, taps, fft_size):
-        filter_ = np.zeros(fft_size, dtype=np.float64)
-        positions = np.arange(1, taps + 1, dtype=np.float64)
-        filter_[:taps] = 0.5 - 0.5 * np.cos(positions * 2.0 * self._PI / (taps + 1))
-        filter_[:taps] = -filter_[:taps] / filter_[:taps].sum()
-        half = (taps - 1) // 2
-        filter_[fft_size - half :] = filter_[:half]
-        filter_[:taps] = filter_[half : half + taps].copy()
-        filter_[0] += 1.0
-        return filter_
 
     def _spectrum_for_estimation(self, x, y_length, actual_fs, fft_size, decimation_ratio):
         y = np.zeros(fft_size, dtype=np.float64)
@@ -879,14 +908,12 @@ class WorldF0Estimator:
         spectrum = np.fft.rfft(y)
 
         cutoff_in_sample = self._matlab_round(actual_fs / self._CUT_OFF)
-        low_cut_filter = self._design_low_cut_filter(cutoff_in_sample * 2 + 1, fft_size)
-        return spectrum * np.fft.rfft(low_cut_filter)
+        return spectrum * _low_cut_filter_spectrum(cutoff_in_sample * 2 + 1, fft_size)
 
     def _dio_filtered_signal(self, half_average_length, fft_size, spectrum, y_length):
         """Convolves the spectrum with a Nuttall low-pass whose cutoff follows its own length."""
-        low_pass_filter = np.zeros(fft_size, dtype=np.float64)
-        low_pass_filter[: half_average_length * 4] = self._nuttall_window(half_average_length * 4)
-        signal = np.fft.irfft(spectrum * np.fft.rfft(low_pass_filter), n=fft_size) * fft_size
+        filter_spectrum = _low_pass_filter_spectrum(half_average_length, fft_size)
+        signal = np.fft.irfft(spectrum * filter_spectrum, n=fft_size) * fft_size
         index_bias = half_average_length * 2
         return signal[index_bias : index_bias + y_length]
 
@@ -1033,6 +1060,7 @@ class CheapTrickEnvelope:
     """
 
     _DEFAULT_F0 = 500.0
+    _EPS = 2.220446049250313e-16
 
     def __init__(
         self,
@@ -1083,7 +1111,10 @@ class CheapTrickEnvelope:
         windowed = self._windowed_waveform(waveform, current, temporal_positions)
         power = self._power_spectrum(windowed, current)
         power = self._linear_smoothing(power, current * 2.0 / 3.0)
-        return self._smoothing_with_recovery(power, current)
+        # A frame of digital silence carries no power at all, and the cepstral stage takes a
+        # logarithm. WORLD guards this with a noise floor of the same magnitude; a fixed floor keeps
+        # the result reproducible and leaves the frame flat, which is what silence should look like.
+        return self._smoothing_with_recovery(power.clamp_min(self._EPS), current)
 
     @staticmethod
     def _matlab_round(values: torch.Tensor) -> torch.Tensor:
