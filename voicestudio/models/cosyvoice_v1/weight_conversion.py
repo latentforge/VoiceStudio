@@ -22,7 +22,7 @@ import torch
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import HFValidationError
 
-from ...utils.checkpoint_cache import CheckpointWriter, cached_conversion, file_identity
+from ...utils.checkpoint_utils import CheckpointWriter, cached_conversion, file_identity
 from .configuration_cosyvoice_v1 import CosyVoiceV1Config
 
 

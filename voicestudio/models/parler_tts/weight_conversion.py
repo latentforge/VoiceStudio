@@ -14,7 +14,7 @@ from transformers.utils import (
 )
 from transformers.utils.hub import cached_file
 
-from ...utils.checkpoint_cache import CheckpointWriter, cached_conversion, source_identity
+from ...utils.checkpoint_utils import CheckpointWriter, cached_conversion, source_identity
 from .configuration_parler_tts import ParlerTTSConfig, is_legacy_audio_encoder_config
 from .processing_parler_tts import AUDIO_TOKENIZER_SUBFOLDER
 

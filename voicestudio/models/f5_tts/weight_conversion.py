@@ -10,7 +10,7 @@ from safetensors.torch import load_file
 from transformers.utils import CONFIG_NAME
 from transformers.utils.hub import cached_file
 
-from ...utils.checkpoint_cache import CheckpointWriter, cached_conversion, file_identity, source_identity
+from ...utils.checkpoint_utils import CheckpointWriter, cached_conversion, file_identity, source_identity
 from ..bigvgan.weight_conversion import build_model_files as build_bigvgan_files
 from ..vocos.weight_conversion import build_model_files as build_vocos_files
 from .configuration_f5_tts import F5TTSConfig

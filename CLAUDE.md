@@ -485,7 +485,7 @@ Two ways to get there, in this order of preference:
    separately published files. Where that is genuinely true, `from_pretrained` still takes the
    official repo id. It probes the layout, converts into a directory under `HF_HOME` if the
    published one is what it finds, and hands that directory to the ordinary loading path.
-   `voicestudio/utils/checkpoint_cache.py` holds the shared writer and the cache; stream into it a
+   `voicestudio/utils/checkpoint_utils.py` holds the shared writer and the cache; stream into it a
    file at a time rather than building the whole state dict, and key the cache on the source
    repository and its resolved commit so a moved upstream tag does not serve a stale conversion.
 

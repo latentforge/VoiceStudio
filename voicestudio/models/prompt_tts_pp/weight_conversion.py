@@ -13,7 +13,7 @@ from transformers.models.auto.tokenization_auto import AutoTokenizer
 from transformers.utils import CONFIG_NAME
 from transformers.utils.hub import cached_file
 
-from ...utils.checkpoint_cache import CheckpointWriter, cached_conversion, file_identity
+from ...utils.checkpoint_utils import CheckpointWriter, cached_conversion, file_identity
 from .configuration_prompt_tts_pp import PromptTTSPPBigVGanConfig, PromptTTSPPConfig
 from .feature_extraction_prompt_tts_pp import PromptTTSPPFeatureExtractor
 from .processing_prompt_tts_pp import PromptTTSPPProcessor

@@ -20,7 +20,7 @@ from transformers.models.mt5.configuration_mt5 import MT5Config
 from transformers.utils import CONFIG_NAME
 from transformers.utils.hub import cached_file
 
-from ...utils.checkpoint_cache import CheckpointWriter, cached_conversion, file_identity
+from ...utils.checkpoint_utils import CheckpointWriter, cached_conversion, file_identity
 from ..vocos.weight_conversion import build_model_files as build_vocoder_files
 from .configuration_vox_instruct import VoxInstructARConfig, VoxInstructConfig, VoxInstructNARConfig
 from .feature_extraction_vox_instruct import VoxInstructFeatureExtractor

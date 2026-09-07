@@ -13,7 +13,7 @@ from huggingface_hub.errors import HFValidationError, RepositoryNotFoundError
 from safetensors.torch import load_file
 from transformers import AutoTokenizer, Qwen2Config, Wav2Vec2Model
 
-from ...utils.checkpoint_cache import CheckpointWriter, cached_conversion, file_identity
+from ...utils.checkpoint_utils import CheckpointWriter, cached_conversion, file_identity
 from ..spark_tts_bicodec.configuration_spark_tts_bicodec import SparkTTSBiCodecConfig
 from .configuration_spark_tts import SparkTTSConfig
 from .feature_extraction_spark_tts import SparkTTSFeatureExtractor

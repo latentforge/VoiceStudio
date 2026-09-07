@@ -9,7 +9,7 @@ from huggingface_hub import hf_hub_download
 from transformers.utils import CONFIG_NAME
 from transformers.utils.hub import cached_file
 
-from ...utils.checkpoint_cache import CheckpointWriter, cached_conversion, source_identity
+from ...utils.checkpoint_utils import CheckpointWriter, cached_conversion, source_identity
 from .configuration_bigvgan import BigVGANConfig
 from .feature_extraction_bigvgan import BigVGANFeatureExtractor
 
