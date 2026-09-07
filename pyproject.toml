@@ -49,7 +49,6 @@ native = [  # on-device setup
 audio = [  # audio processing
     "torchaudio",
     "torchcodec",
-    "librosa>=0.11.0",
     "soundfile>=0.13.1",
 ]
 omni = [  # multimodal processing
@@ -65,8 +64,8 @@ train = [
     "ipywidgets>=8.1.7",
 ]
 eval = [
-    "pyworld>=0.3.5",  # f0 extraction for CosyVoice's vocoder objective
-    "jiwer>=4.0.0",  # word error rate, the transcription check in CLAUDE.md section 2.5
+    "evaluate>=0.4.6",
+    "jiwer>=4.0.0",
 ]
 web = [  # Voice Studio Web
     "fastapi>=0.126.0",
