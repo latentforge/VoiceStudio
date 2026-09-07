@@ -279,6 +279,30 @@ class EcapaTdnnPreTrainedModel(PreTrainedModel):
     main_input_name = "input_features"
     supports_gradient_checkpointing = False
 
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        r"""
+        Loads an ECAPA-TDNN checkpoint, from a published SpeechBrain repository as it stands or from a directory
+        [`~weight_conversion.convert`] wrote.
+
+        Args:
+            pretrained_model_name_or_path (`str` or `os.PathLike`):
+                `"speechbrain/spkrec-ecapa-voxceleb"`, or any repository id or directory holding one of the two
+                layouts.
+            args (`tuple`, *optional*):
+                Positional arguments of [`~PreTrainedModel.from_pretrained`].
+            kwargs (`dict`, *optional*):
+                Keyword arguments of [`~PreTrainedModel.from_pretrained`].
+
+        Returns:
+            [`EcapaTdnnPreTrainedModel`]: The model, of whichever class this was called on.
+        """
+        from .weight_conversion import converted_checkpoint, is_published_layout
+
+        if pretrained_model_name_or_path is not None and is_published_layout(pretrained_model_name_or_path):
+            pretrained_model_name_or_path = converted_checkpoint(pretrained_model_name_or_path)
+        return super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+
     def _init_weights(self, module):
         if isinstance(module, nn.Conv1d):
             init.kaiming_normal_(module.weight)
@@ -381,30 +405,6 @@ class EcapaTdnnForXVector(EcapaTdnnPreTrainedModel):
         self.register_buffer("embedding_mean", torch.zeros(config.xvector_output_dim))
         self.classifier = nn.Parameter(torch.empty(config.num_labels, config.xvector_output_dim))
         self.post_init()
-
-    @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
-        r"""
-        Loads an ECAPA-TDNN checkpoint, from a published SpeechBrain repository as it stands or from a directory
-        [`~weight_conversion.convert`] wrote.
-
-        Args:
-            pretrained_model_name_or_path (`str` or `os.PathLike`):
-                `"speechbrain/spkrec-ecapa-voxceleb"`, or any repository id or directory holding one of the two
-                layouts.
-            args (`tuple`, *optional*):
-                Positional arguments of [`~PreTrainedModel.from_pretrained`].
-            kwargs (`dict`, *optional*):
-                Keyword arguments of [`~PreTrainedModel.from_pretrained`].
-
-        Returns:
-            [`EcapaTdnnForXVector`]: The model.
-        """
-        from .weight_conversion import converted_checkpoint, is_published_layout
-
-        if pretrained_model_name_or_path is not None and is_published_layout(pretrained_model_name_or_path):
-            pretrained_model_name_or_path = converted_checkpoint(pretrained_model_name_or_path)
-        return super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
 
     @auto_docstring(checkpoint="speechbrain/spkrec-ecapa-voxceleb")
     def forward(
