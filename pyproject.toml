@@ -40,11 +40,15 @@ research = [  # full-research setup
 cloud = [  # nvidia infra setup
     "torch ; platform_system == 'Windows'",
     "torch>=2.8.0",
-    "numpy>=2.3.5",
+    "accelerate>=1.10.0",
     "hf-xet>=1.1.8",
+    "numpy>=2.3.5",
 ]
 native = [  # on-device setup
     "torchnative",
+]
+desktop = [
+    "fastapi>=0.126.0",
 ]
 audio = [  # audio processing
     "torchaudio",
@@ -56,19 +60,20 @@ omni = [  # multimodal processing
     "torchvision",
 ]
 train = [
-    "tqdm>=4.67.1",
-    "accelerate>=1.10.0",
+    "torchao>=0.18.0",
     "matplotlib>=3.10.5",
     "wandb>=0.21.1",
+    "tqdm>=4.67.1",
     "notebook>=7.4.5",
     "ipywidgets>=8.1.7",
 ]
 eval = [
-    "evaluate>=0.4.6",
+    "voicestudio[audio]",
     "jiwer>=4.0.0",
 ]
-web = [  # Voice Studio Web
-    "fastapi>=0.126.0",
+bench = [
+    "inspect-ai>=0.3.263",
+    "vllm>=0.28.0",
 ]
 
 [tool.uv.sources]
