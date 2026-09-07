@@ -106,6 +106,19 @@ def _low_cut_filter_spectrum(taps, fft_size):
     return _read_only(np.fft.rfft(filter_))
 
 
+@functools.lru_cache(maxsize=4)
+def _band_pass_filter_bank(boundary_f0_list, filter_length_halves, fs, fft_size):
+    """Returns the stacked transforms of the band-pass filters of one channel list."""
+    return torch.from_numpy(
+        np.stack(
+            [
+                _band_pass_filter_spectrum(float(f0), fs, half, fft_size)
+                for f0, half in zip(boundary_f0_list, filter_length_halves)
+            ]
+        )
+    )
+
+
 class WorldF0Estimator:
     r"""
     Constructs the WORLD f0 estimator, exposing
@@ -482,40 +495,98 @@ class WorldF0Estimator:
         dip = self._zero_crossing_engine(-differentiated, length - 1, fs)
         return negative, positive, peak, dip
 
-    def _filtered_signal(self, boundary_f0, fft_size, fs, spectrum, y_length):
-        """Convolves the analysed spectrum with a Nuttall-windowed band-pass filter."""
-        filter_length_half = self._matlab_round(fs / boundary_f0 * 2.0)
-        filter_spectrum = _band_pass_filter_spectrum(float(boundary_f0), fs, filter_length_half, fft_size)
-        signal = np.fft.irfft(spectrum * filter_spectrum, n=fft_size) * fft_size
-        index_bias = filter_length_half + 1
-        return signal[index_bias : index_bias + y_length]
+    def _interp1_batch(self, locations, intervals, counts, queries):
+        """Linear interpolation with the clamped-interval extrapolation `histc` gives WORLD."""
+        index = torch.searchsorted(locations, queries, right=True).clamp(min=1)
+        index = torch.minimum(index, (counts - 1).clamp(min=1)[:, None])
+        lower = index - 1
+        lower_x = torch.gather(locations, 1, lower)
+        lower_y = torch.gather(intervals, 1, lower)
+        step = (queries - lower_x) / (torch.gather(locations, 1, index) - lower_x)
+        return lower_y + step * (torch.gather(intervals, 1, index) - lower_y)
 
-    def _f0_candidate_contour(self, crossings, boundary_f0, temporal_positions):
-        f0_length = temporal_positions.shape[0]
-        if any(locations.shape[0] < 3 for locations, _ in crossings):
-            return np.zeros(f0_length, dtype=np.float64)
+    def _zero_crossing_engine_batch(self, signal, length, fs):
+        """Returns the reciprocal intervals between successive downward zero crossings of each row.
 
-        candidate = np.zeros(f0_length, dtype=np.float64)
-        for locations, intervals in crossings:
-            candidate += self._interp1(locations, intervals, temporal_positions)
-        candidate /= 4.0
+        Rows hold a different number of crossings, so the two results are packed to the widest row
+        and padded with positive infinity, which keeps each row sorted for the interpolation search.
+        The count of usable intervals per row is returned alongside them.
+        """
+        head = signal[:, : length - 1]
+        tail = signal[:, 1:length]
+        found = (head > 0.0) & (tail <= 0.0)
+        counts = found.sum(dim=1)
+        packed = int(counts.max())
+        if packed < 2:
+            empty = signal.new_zeros((signal.shape[0], 1))
+            return empty, empty, torch.zeros_like(counts)
 
-        rejected = (
-            (candidate > boundary_f0 * 1.1)
-            | (candidate < boundary_f0 * 0.9)
-            | (candidate > self.f0_ceil)
-            | (candidate < self.f0_floor)
+        edges = torch.arange(1, length, dtype=torch.float64, device=signal.device)
+        infinity = torch.tensor(float("inf"), dtype=torch.float64, device=signal.device)
+        fine = torch.where(found, edges[None, :] - head / (tail - head), infinity)
+        rank = torch.where(found, found.cumsum(dim=1) - 1, packed)
+        sink = fine.new_full((signal.shape[0], packed + 1), float("inf"))
+        fine_edges = sink.scatter(1, rank, fine)[:, :packed]
+        intervals = fs / (fine_edges[:, 1:] - fine_edges[:, :-1])
+        locations = (fine_edges[:, :-1] + fine_edges[:, 1:]) / 2.0 / fs
+        return locations.contiguous(), intervals, (counts - 1).clamp(min=0)
+
+    def _four_zero_crossing_intervals_batch(self, signal, length, fs):
+        inverted = -signal
+        differentiated = inverted[:, : length - 1] - inverted[:, 1:length]
+        return (
+            self._zero_crossing_engine_batch(signal, length, fs),
+            self._zero_crossing_engine_batch(inverted, length, fs),
+            self._zero_crossing_engine_batch(differentiated, length - 1, fs),
+            self._zero_crossing_engine_batch(-differentiated, length - 1, fs),
         )
-        candidate[rejected] = 0.0
-        return candidate
+
+    def _filtered_signals(self, spectrum, bank, biases, y_length, fft_size):
+        """Convolves the analysed spectrum with a bank of filters and trims each by its own delay."""
+        signal = torch.fft.irfft(spectrum[None, :] * bank, n=fft_size) * fft_size
+        offsets = torch.arange(y_length, dtype=torch.int64, device=signal.device)
+        return torch.gather(signal, 1, biases[:, None] + offsets[None, :])
+
+    def _band_interpolations(self, signal, y_length, fs, temporal_positions):
+        """Interpolates each band's four crossing-interval contours onto the analysis frames."""
+        crossings = self._four_zero_crossing_intervals_batch(signal, y_length, fs)
+        queries = temporal_positions[None, :].expand(signal.shape[0], -1).contiguous()
+        usable = torch.ones(signal.shape[0], dtype=torch.bool, device=signal.device)
+        interpolated = []
+        for locations, intervals, counts in crossings:
+            usable &= counts >= 3
+            interpolated.append(self._interp1_batch(locations, intervals, counts, queries))
+        return interpolated, usable
 
     def _raw_f0_candidates(self, boundary_f0_list, actual_fs, y_length, temporal_positions, spectrum, fft_size):
-        raw = np.empty((boundary_f0_list.shape[0], temporal_positions.shape[0]), dtype=np.float64)
-        for band, boundary_f0 in enumerate(boundary_f0_list):
-            signal = self._filtered_signal(boundary_f0, fft_size, actual_fs, spectrum, y_length)
-            crossings = self._four_zero_crossing_intervals(signal, y_length, actual_fs)
-            raw[band] = self._f0_candidate_contour(crossings, boundary_f0, temporal_positions)
-        return raw
+        halves = tuple(self._matlab_round(actual_fs / f0 * 2.0) for f0 in boundary_f0_list)
+        bank = _band_pass_filter_bank(tuple(boundary_f0_list), halves, actual_fs, fft_size)
+        biases = np.array([half + 1 for half in halves], dtype=np.int64)
+        device = self.device
+        signal = self._filtered_signals(
+            torch.from_numpy(spectrum).to(device),
+            bank.to(device),
+            torch.from_numpy(biases).to(device),
+            y_length,
+            fft_size,
+        )
+        positions = torch.from_numpy(temporal_positions).to(device)
+        interpolated, usable = self._band_interpolations(signal, y_length, actual_fs, positions)
+
+        candidate = interpolated[0]
+        for contour in interpolated[1:]:
+            candidate = candidate + contour
+        candidate = candidate / 4.0
+
+        boundaries = torch.from_numpy(np.ascontiguousarray(boundary_f0_list)).to(device)[:, None]
+        rejected = (
+            (candidate > boundaries * 1.1)
+            | (candidate < boundaries * 0.9)
+            | (candidate > self.f0_ceil)
+            | (candidate < self.f0_floor)
+            | ~usable[:, None]
+        )
+        return candidate.masked_fill(rejected, 0.0).cpu().numpy()
 
     def _detect_official_f0_candidates(self, raw, max_candidates):
         """Averages each band-contiguous voiced run of the per-channel candidates into one candidate."""
