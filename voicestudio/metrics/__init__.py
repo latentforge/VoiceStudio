@@ -10,5 +10,6 @@ if _evaluate_available:
     from .cer import Cer
     from .ffe import Ffe
     from .mcd import Mcd
+    from .ssim import Ssim
     from .utmos import Utmos
     from .wer import Wer
