@@ -3,32 +3,16 @@
 import math
 from concurrent.futures import ThreadPoolExecutor
 
-import datasets
-import evaluate
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 import torch
 
-from ..utils.audio_utils import CheapTrickEnvelope, WorldF0Estimator
-from .base import load_audio
+from .base import Metric, MetricConfig
+from ..utils.audio_utils import CheapTrickEnvelope, WorldF0Estimator, load_audio
 
 
-_DESCRIPTION = """
-Mel cepstral distortion in dB between a reference recording and a generated one, averaged over a
-dynamic time warping alignment so that the two need not share a duration. The spectral envelope comes
-from CheapTrick, whose window follows the f0 so that harmonic structure does not reach the envelope,
-and the cepstrum of it is put through an all-pass frequency warping; the zeroth coefficient is dropped
-so that overall level does not enter the distance.
-"""
 
-_KWARGS_DESCRIPTION = """
-Args:
-    predictions (`list[str]`): Paths to the generated audio.
-    references (`list[str]`): Paths to the reference audio, one per generation.
-
-Returns:
-    mcd (`float`): Mean distortion in dB across every pair.
-    utterances (`list[float]`): Per-pair distortion in dB, in input order.
-    pairs (`int`): Pairs compared.
-"""
 
 # Converts a Euclidean cepstral distance into the dB figure MCD is quoted in.
 _DECIBEL_CONSTANT = 10.0 / math.log(10.0) * math.sqrt(2.0)
@@ -212,10 +196,10 @@ def pad_stack(sequences: list[torch.Tensor]) -> torch.Tensor:
     return stacked
 
 
-@evaluate.utils.file_utils.add_start_docstrings(_DESCRIPTION, _KWARGS_DESCRIPTION)
-class Mcd(evaluate.Metric):
+class Mcd(Metric):
     def __init__(
         self,
+        config: MetricConfig,
         sampling_rate: int = 16000,
         frame_period: float = 5.0,
         n_fft: int = 512,
@@ -229,6 +213,8 @@ class Mcd(evaluate.Metric):
     ):
         """
         Args:
+            config (`MetricConfig`):
+                What the metric is called, and where its model runs.
             sampling_rate (`int`, *optional*, defaults to 16000):
                 Rate both sides are resampled to before analysis.
             frame_period (`float`, *optional*, defaults to 5.0):
@@ -255,7 +241,7 @@ class Mcd(evaluate.Metric):
             device (`str`, *optional*):
                 Device the analysis runs on. Defaults to CUDA where it is available.
         """
-        super().__init__(**kwargs)
+        super().__init__(config)
         self.sampling_rate = sampling_rate
         self.frame_period = frame_period
         self.n_fft = n_fft
@@ -268,20 +254,6 @@ class Mcd(evaluate.Metric):
         self._estimator = None
         self._envelope = None
         self._warping = None
-
-    def _info(self) -> evaluate.MetricInfo:
-        return evaluate.MetricInfo(
-            module_type="metric",
-            description=_DESCRIPTION,
-            citation="",
-            inputs_description=_KWARGS_DESCRIPTION,
-            features=datasets.Features(
-                {
-                    "predictions": datasets.Value("string"),
-                    "references": datasets.Value("string"),
-                }
-            ),
-        )
 
     @property
     def hop_length(self) -> int:
@@ -376,18 +348,58 @@ class Mcd(evaluate.Metric):
                 scores[index] = float(_DECIBEL_CONSTANT * total[offset] / steps[offset])
         return scores
 
-    def _compute(self, predictions: list[str], references: list[str]) -> dict:
-        cepstra = self.extract_cepstra(list(predictions) + list(references))
-        utterances = self.distort(
-            [cepstra[reference] for reference in references],
-            [cepstra[prediction] for prediction in predictions],
-        )
-        finite = [value for value in utterances if value != float("inf")]
-        return {
-            "mcd": sum(finite) / len(finite) if finite else float("inf"),
-            "utterances": utterances,
-            "pairs": len(utterances),
-        }
+    def score(self, artifacts: Sequence[Any], **kwargs: Any) -> list[dict[str, Any]]:
+        """Aligns each pair's cepstra and reports the distortion between them.
 
+        Args:
+            artifacts (`Sequence[Any]`):
+                Artifacts carrying `audio` and `reference_audio`, both paths.
+            **kwargs:
+                Unused.
+
+        Returns:
+            `list[dict[str, Any]]`: One mapping per artifact, holding the distortion in decibels
+            and the pair it was measured over.
+        """
+        generated = [artifact["audio"] for artifact in artifacts]
+        reference = [artifact["reference_audio"] for artifact in artifacts]
+        cepstra = self.extract_cepstra(generated + reference)
+        distortions = self.distort(
+            [cepstra[path] for path in reference], [cepstra[path] for path in generated]
+        )
+        return [
+            {
+                "id": artifact.get("id"),
+                "mcd": distortion,
+                "audio": source,
+                "reference_audio": target,
+            }
+            for artifact, source, target, distortion in zip(
+                artifacts, generated, reference, distortions
+            )
+        ]
+
+    def pool(self, statistics: Sequence[Mapping[str, Any]]) -> dict[str, float]:
+        """Averages the distortions over the pairs an alignment could be found for.
+
+        A pair whose alignment failed reports `inf` rather than a number, and averaging that in
+        would take the corpus with it, so those are counted and left out.
+
+        Args:
+            statistics (`Sequence[Mapping[str, Any]]`):
+                Everything [`Mcd.score`] returned.
+
+        Returns:
+            `dict[str, float]`: The mean distortion under this metric's name, the pairs it covers,
+            and the pairs that could not be aligned. Read the mean beside `unaligned`, since a mean
+            over a subset says nothing about the rest.
+        """
+        values = [float(statistic["mcd"]) for statistic in statistics]
+        finite = [value for value in values if value != float("inf")]
+        return {
+            self.name: sum(finite) / len(finite) if finite else float("inf"),
+            "pairs": float(len(values)),
+            "unaligned": float(len(values) - len(finite)),
+        }
 
 __all__ = ["Mcd"]

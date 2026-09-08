@@ -1,41 +1,22 @@
 """Speaker similarity between a reference recording and a generated one."""
 
-import datasets
-import evaluate
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 import torch
 
 from ..models.ecapa_tdnn import EcapaTdnnFeatureExtractor, EcapaTdnnForXVector
-from .base import load_audio
+from .base import Metric, MetricConfig
+from ..utils.audio_utils import load_audio
 
 
-_DESCRIPTION = """
-Cosine similarity of the ECAPA-TDNN speaker embeddings of a reference recording and a generated one,
-which is what a speaker verification system compares. The embedding pools statistics over the whole
-utterance, so the padding that squares a batch off has to be masked out of that pooling; leaving it in
-moves an embedding by as much as 0.13 cosine and makes a clip's score depend on what shared its batch.
-"""
-
-_KWARGS_DESCRIPTION = """
-Args:
-    predictions (`list[str]`): Paths to the generated audio.
-    references (`list[str]`): Paths to the reference audio, one per generation.
-
-Returns:
-    similarity (`float`): Mean cosine similarity across every pair.
-    utterances (`list[float]`): Per-pair cosine similarity, in input order.
-    pairs (`int`): Pairs compared.
-
-Examples:
-    >>> ssim = Ssim()
-    >>> ssim.add_batch(predictions=["generated.wav"], references=["target.wav"])
-    >>> ssim.compute()["similarity"]
-"""
 
 
-@evaluate.utils.file_utils.add_start_docstrings(_DESCRIPTION, _KWARGS_DESCRIPTION)
-class Ssim(evaluate.Metric):
+
+class Ssim(Metric):
     def __init__(
         self,
+        config: MetricConfig,
         model_id: str = "speechbrain/spkrec-ecapa-voxceleb",
         device: str | None = None,
         dtype: str | torch.dtype = torch.float32,
@@ -53,7 +34,7 @@ class Ssim(evaluate.Metric):
             batch_size (`int`, *optional*, defaults to 8):
                 Clips per forward pass.
         """
-        super().__init__(**kwargs)
+        super().__init__(config)
         self.model_id = model_id
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
@@ -61,22 +42,7 @@ class Ssim(evaluate.Metric):
         self._model = None
         self._extractor = None
 
-    def _info(self) -> evaluate.MetricInfo:
-        return evaluate.MetricInfo(
-            module_type="metric",
-            description=_DESCRIPTION,
-            citation="",
-            inputs_description=_KWARGS_DESCRIPTION,
-            features=datasets.Features(
-                {
-                    "predictions": datasets.Value("string"),
-                    "references": datasets.Value("string"),
-                }
-            ),
-            codebase_urls=["https://github.com/speechbrain/speechbrain"],
-        )
-
-    def load_encoder(self) -> None:
+    def load(self) -> None:
         """Loads the speaker encoder named by `model_id`, once."""
         if self._model is not None:
             return
@@ -101,7 +67,7 @@ class Ssim(evaluate.Metric):
         Returns:
             `dict[str, torch.Tensor]`: The embedding of each distinct path.
         """
-        self.load_encoder()
+        self.load()
         sampling_rate = self._extractor.sampling_rate
 
         # Sorting by length keeps a batch's padding to what its own members need, which costs nothing
@@ -127,17 +93,47 @@ class Ssim(evaluate.Metric):
             embeddings.update(zip(batch, vectors.cpu()))
         return embeddings
 
-    def _compute(self, predictions: list[str], references: list[str]) -> dict:
-        embeddings = self.embed(list(predictions) + list(references))
-        similarities = [
-            float(embeddings[reference] @ embeddings[prediction])
-            for prediction, reference in zip(predictions, references)
-        ]
-        return {
-            "similarity": sum(similarities) / len(similarities) if similarities else float("nan"),
-            "utterances": similarities,
-            "pairs": len(similarities),
-        }
+    def score(self, artifacts: Sequence[Any], **kwargs: Any) -> list[dict[str, Any]]:
+        """Embeds each pair and reports the cosine between them.
 
+        Args:
+            artifacts (`Sequence[Any]`):
+                Artifacts carrying `audio` and `reference_audio`, both paths.
+            **kwargs:
+                Unused.
+
+        Returns:
+            `list[dict[str, Any]]`: One mapping per artifact, holding the similarity, the pair it
+            was measured over and the encoder that produced the embeddings.
+        """
+        generated = [artifact["audio"] for artifact in artifacts]
+        reference = [artifact["reference_audio"] for artifact in artifacts]
+        embeddings = self.embed(generated + reference)
+        return [
+            {
+                "id": artifact.get("id"),
+                "similarity": float(embeddings[target] @ embeddings[source]),
+                "audio": source,
+                "reference_audio": target,
+                "encoder": self.model_id,
+            }
+            for artifact, source, target in zip(artifacts, generated, reference)
+        ]
+
+    def pool(self, statistics: Sequence[Mapping[str, Any]]) -> dict[str, float]:
+        """Averages the similarities over every pair.
+
+        Args:
+            statistics (`Sequence[Mapping[str, Any]]`):
+                Everything [`Ssim.score`] returned.
+
+        Returns:
+            `dict[str, float]`: The mean cosine under this metric's name, and the pairs behind it.
+        """
+        values = [float(statistic["similarity"]) for statistic in statistics]
+        return {
+            self.name: sum(values) / len(values) if values else float("nan"),
+            "pairs": float(len(values)),
+        }
 
 __all__ = ["Ssim"]

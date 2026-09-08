@@ -1,46 +1,20 @@
 """Predicted mean opinion score of generated speech, without a reference recording."""
 
-import datasets
-import evaluate
 import numpy as np
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 import torch
 
 from ..models.utmos_v2 import UTMOSv2FeatureExtractor, UTMOSv2ForAudioClassification
-from .base import load_audio
+from .base import Metric, MetricConfig
+from ..utils.audio_utils import load_audio
 
 
-_DESCRIPTION = """
-Mean opinion score a listening panel would give a clip, predicted by UTMOSv2 and needing no reference
-recording. The features are drawn at random from the clip, so one call is one sample of the score
-rather than the score; each clip is drawn `draws` times and the spread across those draws is reported
-alongside the mean, because a mean quoted without it cannot be told from a neighbouring one.
-"""
-
-_KWARGS_DESCRIPTION = """
-Args:
-    predictions (`list[str]`): Paths to the audio to score.
-
-Returns:
-    utmos (`float`): Mean predicted score over the clips that could be scored, on the five point
-        opinion scale. Read it beside `scored`, since a mean over a subset says nothing about the
-        clips left out of it.
-    utterances (`list[float]`): Per-clip mean over its draws, in input order, `nan` where the clip
-        could not be scored.
-    deviation (`list[float]`): Per-clip standard deviation over its draws, in input order, `nan`
-        where the clip could not be scored.
-    scored (`int`): Clips behind `utmos`.
-    unscorable (`int`): Clips that held no speech to score. An opinion score rates speech that was
-        heard, so silence has no place on the scale and is reported as its own count rather than
-        given a number.
-    draws (`int`): Draws averaged per clip.
-    domain (`str`): Listening test the prediction imitates.
-"""
-
-
-@evaluate.utils.file_utils.add_start_docstrings(_DESCRIPTION, _KWARGS_DESCRIPTION)
-class Utmos(evaluate.Metric):
+class Utmos(Metric):
     def __init__(
         self,
+        config: MetricConfig,
         model_id: str = "sarulab-speech/UTMOSv2",
         domain: str = "sarulab",
         draws: int = 64,
@@ -73,7 +47,7 @@ class Utmos(evaluate.Metric):
                 the scorer is an ensemble of five predictors, so this is bounded by memory rather
                 than by throughput.
         """
-        super().__init__(**kwargs)
+        super().__init__(config)
         self.model_id = model_id
         self.domain = domain
         self.draws = draws
@@ -84,17 +58,7 @@ class Utmos(evaluate.Metric):
         self._model = None
         self._extractor = None
 
-    def _info(self) -> evaluate.MetricInfo:
-        return evaluate.MetricInfo(
-            module_type="metric",
-            description=_DESCRIPTION,
-            citation="",
-            inputs_description=_KWARGS_DESCRIPTION,
-            features=datasets.Features({"predictions": datasets.Value("string")}),
-            codebase_urls=["https://github.com/sarulab-speech/UTMOSv2"],
-        )
-
-    def load_scorer(self) -> None:
+    def load(self) -> None:
         """Loads the UTMOSv2 checkpoint named by `model_id`, once."""
         if self._model is not None:
             return
@@ -109,7 +73,7 @@ class Utmos(evaluate.Metric):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def score(self, audio_paths: list[str]) -> torch.Tensor:
+    def predict(self, audio_paths: list[str]) -> torch.Tensor:
         """Scores each clip once per draw.
 
         Args:
@@ -119,7 +83,7 @@ class Utmos(evaluate.Metric):
         Returns:
             `torch.Tensor`: Every score, shaped `(clips, draws)`, `nan` for a clip holding no speech.
         """
-        self.load_scorer()
+        self.load()
         sampling_rate = self._extractor.sampling_rate
         loaded = [load_audio(path, sampling_rate).numpy() for path in audio_paths]
 
@@ -149,24 +113,56 @@ class Utmos(evaluate.Metric):
         scores[rows] = drawn
         return scores
 
-    def _compute(self, predictions: list[str]) -> dict:
+    def score(self, artifacts: Sequence[Any], **kwargs: Any) -> list[dict[str, Any]]:
+        """Predicts the opinion score of each clip, over several feature draws.
+
+        Args:
+            artifacts (`Sequence[Any]`):
+                Artifacts carrying `audio`, a path. No reference is read: the score is predicted
+                from the clip alone.
+            **kwargs:
+                Unused.
+
+        Returns:
+            `list[dict[str, Any]]`: One mapping per artifact, holding the mean over the draws and
+            the spread across them. A mean quoted without the spread cannot be told from a
+            neighbouring one.
+        """
+        paths = [artifact["audio"] for artifact in artifacts]
         # A path repeated across the batch is scored once. The scorer dominates the runtime here.
-        unique_paths = list(dict.fromkeys(predictions))
-        scores = self.score(unique_paths)
-        by_path = dict(zip(unique_paths, scores))
+        unique_paths = list(dict.fromkeys(paths))
+        by_path = dict(zip(unique_paths, self.predict(unique_paths)))
+        return [
+            {
+                "id": artifact.get("id"),
+                "utmos": float(by_path[path].mean()),
+                "deviation": float(by_path[path].std()),
+                "audio": path,
+                "draws": self.draws,
+                "domain": self.domain,
+            }
+            for artifact, path in zip(artifacts, paths)
+        ]
 
-        drawn = torch.stack([by_path[path] for path in predictions])
-        means = drawn.mean(1)
-        scorable = means.isfinite()
+    def pool(self, statistics: Sequence[Mapping[str, Any]]) -> dict[str, float]:
+        """Averages the clips that could be scored.
+
+        Args:
+            statistics (`Sequence[Mapping[str, Any]]`):
+                Everything [`Utmos.score`] returned.
+
+        Returns:
+            `dict[str, float]`: The mean score under this metric's name, on the five point opinion
+            scale, and the clips behind it. Read the mean beside `unscorable`, since a mean over a
+            subset says nothing about the rest.
+        """
+        values = [float(statistic["utmos"]) for statistic in statistics]
+        scored = [value for value in values if value == value and abs(value) != float("inf")]
         return {
-            "utmos": float(means[scorable].mean()) if bool(scorable.any()) else float("nan"),
-            "utterances": means.tolist(),
-            "deviation": drawn.std(1).tolist(),
-            "scored": int(scorable.sum()),
-            "unscorable": int((~scorable).sum()),
-            "draws": self.draws,
-            "domain": self.domain,
+            self.name: sum(scored) / len(scored) if scored else float("nan"),
+            "scored": float(len(scored)),
+            "unscorable": float(len(values) - len(scored)),
+            "draws": float(self.draws),
         }
-
 
 __all__ = ["Utmos"]

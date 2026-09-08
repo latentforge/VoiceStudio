@@ -1,32 +1,15 @@
 """F0 frame error between a reference recording and a generated one."""
 
-import datasets
-import evaluate
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 import torch
 
-from .base import load_batch
+from .base import Metric, MetricConfig
+from ..utils.audio_utils import load_batch
 
 
-_DESCRIPTION = """
-F0 frame error between a reference recording and a generated one, the fraction of frames on which the
-two disagree about pitch. A frame counts as an error when the two disagree about voicing, or when both
-are voiced and the generated F0 departs from the reference by more than `pitch_tolerance`. Pitch comes
-from YIN, run over every frame of every clip at once.
-"""
 
-_KWARGS_DESCRIPTION = """
-Args:
-    predictions (`list[str]`): Paths to the generated audio.
-    references (`list[str]`): Paths to the reference audio, one per generation.
-
-Returns:
-    ffe (`float`): Error frames over compared frames, pooled across every pair.
-    gross_pitch_error (`float`): Frames where both are voiced but the pitches disagree, over compared
-        frames.
-    voicing_decision_error (`float`): Frames where the two disagree about voicing, over compared frames.
-    frames (`int`): Frames compared, the denominator of the three rates.
-    utterances (`list[float]`): Per-pair F0 frame error, in input order.
-"""
 
 
 def yin(frames: torch.Tensor, sampling_rate: int, tau_min: int, tau_max: int, threshold: float):
@@ -86,10 +69,10 @@ def yin(frames: torch.Tensor, sampling_rate: int, tau_min: int, tau_max: int, th
     return torch.where(voiced, sampling_rate / tau.to(frames.dtype), frames.new_zeros(()))
 
 
-@evaluate.utils.file_utils.add_start_docstrings(_DESCRIPTION, _KWARGS_DESCRIPTION)
-class Ffe(evaluate.Metric):
+class Ffe(Metric):
     def __init__(
         self,
+        config: MetricConfig,
         sampling_rate: int = 16000,
         frame_length: int = 512,
         hop_length: int = 256,
@@ -103,6 +86,8 @@ class Ffe(evaluate.Metric):
     ):
         """
         Args:
+            config (`MetricConfig`):
+                What the metric is called, and where its model runs.
             sampling_rate (`int`, *optional*, defaults to 16000):
                 Rate both sides are resampled to before analysis.
             frame_length (`int`, *optional*, defaults to 512):
@@ -122,7 +107,7 @@ class Ffe(evaluate.Metric):
             device (`str`, *optional*):
                 Device the analysis runs on. Defaults to CUDA where it is available.
         """
-        super().__init__(**kwargs)
+        super().__init__(config)
         self.sampling_rate = sampling_rate
         self.frame_length = frame_length
         self.hop_length = hop_length
@@ -132,20 +117,6 @@ class Ffe(evaluate.Metric):
         self.pitch_tolerance = pitch_tolerance
         self.batch_size = batch_size
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-
-    def _info(self) -> evaluate.MetricInfo:
-        return evaluate.MetricInfo(
-            module_type="metric",
-            description=_DESCRIPTION,
-            citation="",
-            inputs_description=_KWARGS_DESCRIPTION,
-            features=datasets.Features(
-                {
-                    "predictions": datasets.Value("string"),
-                    "references": datasets.Value("string"),
-                }
-            ),
-        )
 
     def estimate_f0(self, audio_paths: list[str]) -> dict[str, torch.Tensor]:
         """Estimates an F0 contour per clip.
@@ -186,16 +157,26 @@ class Ffe(evaluate.Metric):
 
         return contours
 
-    def _compute(self, predictions: list[str], references: list[str]) -> dict:
-        contours = self.estimate_f0(list(predictions) + list(references))
+    def score(self, artifacts: Sequence[Any], **kwargs: Any) -> list[dict[str, Any]]:
+        """Compares each pair's pitch contour frame by frame.
 
-        utterances = []
-        total_frames = 0
-        total_gross = 0
-        total_voicing = 0
-        for prediction, reference in zip(predictions, references):
-            estimated = contours[prediction]
-            truth = contours[reference]
+        Args:
+            artifacts (`Sequence[Any]`):
+                Artifacts carrying `audio` and `reference_audio`, both paths.
+            **kwargs:
+                Unused.
+
+        Returns:
+            `list[dict[str, Any]]`: One mapping per artifact, holding the frames compared and the
+            frames each kind of error was found on.
+        """
+        generated = [artifact["audio"] for artifact in artifacts]
+        reference = [artifact["reference_audio"] for artifact in artifacts]
+        contours = self.estimate_f0(generated + reference)
+
+        statistics = []
+        for artifact, source, target in zip(artifacts, generated, reference):
+            estimated, truth = contours[source], contours[target]
             frames = min(estimated.shape[0], truth.shape[0])
             estimated, truth = estimated[:frames], truth[:frames]
 
@@ -203,20 +184,43 @@ class Ffe(evaluate.Metric):
             both_voiced = (estimated != 0) & (truth != 0)
             departure = (estimated / (truth + torch.finfo(truth.dtype).eps) - 1).abs()
             gross_error = both_voiced & (departure > self.pitch_tolerance)
+            statistics.append(
+                {
+                    "id": artifact.get("id"),
+                    "frames": int(frames),
+                    "gross_pitch_error": int(gross_error.sum()),
+                    "voicing_decision_error": int(voicing_error.sum()),
+                    "audio": source,
+                    "reference_audio": target,
+                }
+            )
+        return statistics
 
-            errors = int(gross_error.sum()) + int(voicing_error.sum())
-            utterances.append(errors / frames if frames else float("inf"))
-            total_frames += frames
-            total_gross += int(gross_error.sum())
-            total_voicing += int(voicing_error.sum())
+    def pool(self, statistics: Sequence[Mapping[str, Any]]) -> dict[str, float]:
+        """Divides the summed error frames by the summed frames.
 
+        Args:
+            statistics (`Sequence[Mapping[str, Any]]`):
+                Everything [`Ffe.score`] returned.
+
+        Returns:
+            `dict[str, float]`: The rate under this metric's name, its two terms read separately,
+            and the frames they were divided by. A pitch error and a voicing error are different
+            failures and a total that hides which one moved says little.
+        """
+        totals = {key: 0 for key in ("frames", "gross_pitch_error", "voicing_decision_error")}
+        for statistic in statistics:
+            for key in totals:
+                totals[key] += int(statistic.get(key, 0))
+        frames = totals["frames"]
+        errors = totals["gross_pitch_error"] + totals["voicing_decision_error"]
         return {
-            "ffe": (total_gross + total_voicing) / total_frames if total_frames else float("inf"),
-            "gross_pitch_error": total_gross / total_frames if total_frames else float("inf"),
-            "voicing_decision_error": total_voicing / total_frames if total_frames else float("inf"),
-            "frames": total_frames,
-            "utterances": utterances,
+            self.name: errors / frames if frames else float("inf"),
+            "gross_pitch_error": totals["gross_pitch_error"] / frames if frames else float("inf"),
+            "voicing_decision_error": (
+                totals["voicing_decision_error"] / frames if frames else float("inf")
+            ),
+            "frames": float(frames),
         }
-
 
 __all__ = ["Ffe"]
