@@ -23,7 +23,7 @@ from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 # they were converted from live in.
 CACHE_DIR_NAME = "converted"
 
-# Bytes a shard holds before the writer starts another one, which is what bounds how much of a converted
+# Bytes a shard holds before the metric_logger starts another one, which is what bounds how much of a converted
 # checkpoint is resident at a time.
 MAX_SHARD_SIZE = 2 * 1024**3
 

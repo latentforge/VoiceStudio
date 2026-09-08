@@ -4,9 +4,51 @@ import functools
 import math
 
 import numpy as np
+import soundfile
 import torch
 import torchaudio
+import torchaudio.functional as audio_functional
 
+
+def load_audio(path: str, sampling_rate: int) -> torch.Tensor:
+    """Reads one clip as a mono waveform at the requested sampling rate.
+
+    Args:
+        path (`str`):
+            Path to the audio file.
+        sampling_rate (`int`):
+            Rate the returned waveform is resampled to.
+
+    Returns:
+        `torch.Tensor`: The mono waveform, shaped `(samples,)`.
+    """
+    # `soundfile` decodes without the FFmpeg bindings `torchaudio.load` reaches for.
+    samples, source_rate = soundfile.read(path, dtype="float32", always_2d=True)
+    waveform = torch.from_numpy(samples).mean(1)
+    if source_rate != sampling_rate:
+        waveform = audio_functional.resample(waveform, source_rate, sampling_rate)
+    return waveform
+
+
+def load_batch(paths: list[str], sampling_rate: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Reads several clips into one padded batch.
+
+    Args:
+        paths (`list[str]`):
+            Paths to the audio files.
+        sampling_rate (`int`):
+            Rate the returned waveforms are resampled to.
+
+    Returns:
+        `tuple[torch.Tensor, torch.Tensor]`: The waveforms right-padded with zeros into a
+        `(batch, samples)` tensor, and the unpadded length of each.
+    """
+    waveforms = [load_audio(path, sampling_rate) for path in paths]
+    lengths = torch.tensor([waveform.shape[0] for waveform in waveforms])
+    padded = torch.zeros(len(waveforms), int(lengths.max()), dtype=torch.float32)
+    for index, waveform in enumerate(waveforms):
+        padded[index, : waveform.shape[0]] = waveform
+    return padded, lengths
 
 def show_waveform(
     audio_path: str | None,
