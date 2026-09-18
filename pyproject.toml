@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "voicestudio"
-version = "5.16.0"
+version = "5.16.2"
 description = "VoiceStudio: A unified toolkit for voice cloning, designing and editing"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -27,7 +27,7 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
 dependencies = [
-    "transformers[kernels]>=5.16.1",
+    "transformers[kernels]>=5.16.2",
 ]
 [project.optional-dependencies]
 research = [  # full-research setup

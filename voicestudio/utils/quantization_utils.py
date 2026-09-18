@@ -25,7 +25,12 @@ from torchao.prototype.mx_formats.nvfp4_tensor import (
     per_tensor_amax_to_scale,
 )
 from transformers.quantizers import HfQuantizer
-from transformers.quantizers.auto import register_quantization_config, register_quantizer
+from transformers.quantizers.auto import (
+    AUTO_QUANTIZATION_CONFIG_MAPPING,
+    AUTO_QUANTIZER_MAPPING,
+    register_quantization_config,
+    register_quantizer,
+)
 from transformers.utils.quantization_config import QuantizationConfigMixin
 
 
@@ -344,7 +349,27 @@ def convert_nvfp4_qat(model: nn.Module) -> list[str]:
 QUANTIZATION_METHOD = "nvfp4"
 
 
-@register_quantization_config(QUANTIZATION_METHOD)
+# transformers ships its own `nvfp4` from 5.16 on, and its registries refuse a name they already
+# hold. The rotated NVFP4 defined here is what this package means by the name, so the existing
+# entry is dropped before ours goes in rather than letting an import collide.
+def _force_register_quantization_config(method: str):
+    def register(cls):
+        AUTO_QUANTIZATION_CONFIG_MAPPING.pop(method, None)
+        return register_quantization_config(method)(cls)
+
+    return register
+
+
+def _force_register_quantizer(method: str):
+    def register(cls):
+        AUTO_QUANTIZER_MAPPING.pop(method, None)
+        return register_quantizer(method)(cls)
+
+    return register
+
+
+
+@_force_register_quantization_config(QUANTIZATION_METHOD)
 class NVFP4Config(QuantizationConfigMixin):
     r"""Runs a model's linear projections in NVFP4 on Hadamard rotated operands.
 
@@ -383,7 +408,7 @@ class NVFP4Config(QuantizationConfigMixin):
         super().__init__(**kwargs)
 
 
-@register_quantizer(QUANTIZATION_METHOD)
+@_force_register_quantizer(QUANTIZATION_METHOD)
 class NVFP4HfQuantizer(HfQuantizer):
     r"""Applies [`NVFP4Config`] as a checkpoint loads.
 

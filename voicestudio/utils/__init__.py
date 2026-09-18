@@ -10,7 +10,7 @@ from .log_utils import BaseLogger, WandBLogger
 
 
 if is_torch_available():
-    from .evaluate import EvaluatorMode, EvaluationRecord, Evaluator
+    from .evaluate import EvaluatorMode, EvaluationRecords, Evaluator
     from .stage import TrainingStage
     from .train import Trainer, TrainerCallback, TrainerControl, TrainerState, TrainingConfig
 
